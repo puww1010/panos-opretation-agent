@@ -1,0 +1,18 @@
+{
+  "name": "panos-agent-standalone",
+  "version": "1.0.0",
+  "description": "PAN-OS 防火墙 Agent 控制台（零 WorkBuddy 依赖）",
+  "main": "server.js",
+  "scripts": {
+    "start": "./start.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.0"
+  },
+  "license": "MIT"
+}

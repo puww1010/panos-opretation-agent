@@ -1,0 +1,16 @@
+{
+  "name": "panos-agent-webui",
+  "version": "4.1.0",
+  "private": true,
+  "description": "PAN-OS Agent 控制台（webui）— 独立部署版",
+  "main": "server.js",
+  "scripts": {
+    "start": "bash start.sh"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

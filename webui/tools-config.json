@@ -1,0 +1,27 @@
+{
+  "_doc": "工具级路由配置。每个工具可指定：auto（默认，direct 优先/MCP 兜底）、direct（强制直连 PAN-OS API）、mcp（强制走 MCP server）。修改后重启控制台生效。",
+  "_default": "auto",
+  "routes": {
+    "get_firewall_info": "auto",
+    "get_system_resources": "auto",
+    "get_active_sessions": "auto",
+    "get_ha_status": "auto",
+    "get_licenses": "auto",
+    "get_interfaces": "auto",
+    "get_security_rules": "auto",
+    "get_address_objects": "auto",
+    "get_zones": "auto",
+    "get_routing_table": "auto",
+    "get_content_versions": "auto",
+    "get_wildfire_status": "auto",
+    "get_ipsec_tunnels": "auto",
+    "get_globalprotect_users": "auto",
+    "get_application_filters": "auto",
+    "get_traffic_logs": "direct",
+    "get_threat_logs": "direct",
+    "get_system_logs": "direct",
+    "get_url_filter_logs": "direct",
+    "get_config_logs": "direct",
+    "get_system_environmentals": "direct"
+  }
+}

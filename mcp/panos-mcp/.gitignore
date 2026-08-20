@@ -1,0 +1,8 @@
+node_modules/
+dist/
+extension/
+*.log
+*.mcpb
+.env
+firewalls.json
+*.test.tmp.json

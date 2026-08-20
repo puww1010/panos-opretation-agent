@@ -1,0 +1,1497 @@
+#!/usr/bin/env node
+// PAN-OS 防火墙 Agent 控制台 - 后端 v4（任务系统 + LLM 多提供方）
+// 纯 Node http + MCP SDK。任务类型：query(查询) / inspect(巡检) / change(变更审批闭环)
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
+const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
+
+// ── 路径（默认项目内相对路径，可用环境变量覆盖；脱离 WorkBuddy 独立部署无需改代码）──
+const NODE = process.env.NODE_BIN || "node";
+const PANOS_MCP_DIR = process.env.PANOS_MCP_DIR || path.join(__dirname, "..", "mcp", "panos-mcp");
+const SRC = path.join(PANOS_MCP_DIR, "src", "index.ts");
+const CWD = PANOS_MCP_DIR;
+const CFG = process.env.PANOS_FIREWALLS_CONFIG || path.join(__dirname, "..", "cfgs", "firewalls.json");
+const PORT = process.env.PORT || 8080;
+const REPORTS_DIR = path.join(__dirname, "..", "reports");
+const TASKS_FILE = process.env.TASKS_FILE || path.join(__dirname, "..", "cfgs", "tasks.json");
+
+// ── LLM 提供方（llm-config.json 驱动，可运行时编辑）──
+const LLM_SEED = {
+  deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY" },
+  qwen:     { label: "通义千问", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "Qwen-3.8", env: "QWEN_API_KEY" },
+  kimi:     { label: "Kimi",     base_url: "https://api.moonshot.cn/v1", model: "Kimi K3", env: "KIMI_API_KEY" },
+};
+const LLM_CONFIG_PATH = process.env.LLM_CONFIG || path.join(__dirname, "llm-config.json");
+let LLM_PROVIDERS = {};
+function loadLLMConfig() {
+  const data = JSON.parse(JSON.stringify(LLM_SEED));
+  let onDisk = {};
+  try { onDisk = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8")); } catch {}
+  const providers = onDisk.providers || {};
+  for (const [k, v] of Object.entries(LLM_SEED)) {
+    const disk = providers[k];
+    if (disk) {
+      data[k] = { ...LLM_SEED[k], ...disk };
+      if (disk.key) process.env[LLM_SEED[k].env] = disk.key;
+    } else if (process.env[LLM_SEED[k].env]) {
+      // 文件未配置但进程 env 有，自动接管（start.sh 兼容）
+      data[k] = { ...LLM_SEED[k], key: process.env[LLM_SEED[k].env] };
+    }
+  }
+  // 文件里有的自定义提供方（非种子）
+  for (const [k, v] of Object.entries(providers)) {
+    if (!data[k]) {
+      data[k] = { label: v.label || k, base_url: v.base_url || "", model: v.model || "", env: v.env || (k.toUpperCase() + "_API_KEY"), key: v.key || "" };
+      if (v.key && data[k].env) process.env[data[k].env] = v.key;
+    }
+  }
+  LLM_PROVIDERS = data;
+}
+loadLLMConfig();
+function saveLLMConfig() {
+  const onDisk = { _default: currentLLM, providers: {} };
+  for (const [k, v] of Object.entries(LLM_PROVIDERS)) {
+    onDisk.providers[k] = { label: v.label, base_url: v.base_url, model: v.model, env: v.env, key: v.key };
+  }
+  fs.writeFileSync(LLM_CONFIG_PATH, JSON.stringify(onDisk, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(LLM_CONFIG_PATH, 0o600); } catch {}
+}
+let currentLLM = "keyword";
+try {
+  // 默认提供方：llm-config.json 的 _default（固定为 deepseek）> 进程 env > 首个有 key 的提供方
+  const diskDef = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8"))._default;
+  if (diskDef && LLM_PROVIDERS[diskDef] && LLM_PROVIDERS[diskDef].key) currentLLM = diskDef;
+  else currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
+} catch {
+  currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
+}
+
+// LLM 临时选择：默认读 llm-config.json 的 _default（deepseek），UI 选 qwen 后内存一直保持 qwen。
+// "刷新页面回默认"语义=重启控制台（进程重启时重新读 _default），不是浏览器 F5。
+// 不做定时器重置——避免连续发任务时每个任务结束后被意外重置。
+
+let client = null;
+const tasks = [];        // 任务列表
+const history = [];      // 查询历史
+const llmLogs = [];      // LLM 决策日志（证明 LLM 规划起作用）
+const MAX_HISTORY = 20;
+const MAX_LLM_LOGS = 50;
+const MAX_TASKS = 200;   // 任务持久化上限（超出丢弃最旧）
+let taskSeq = 0;
+
+// ── 任务持久化：重启后保留已完成/已取消任务（内存 + cfgs/tasks.json 双写）──
+function persistTasks() {
+  try {
+    fs.writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2));
+  } catch (e) { console.error("[agent] persist tasks failed:", e.message); }
+}
+function loadTasks() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(TASKS_FILE, "utf-8"));
+    if (!Array.isArray(saved)) return;
+    for (const t of saved) {
+      // 重启后运行中的任务无法恢复执行，置为 failed（保留现场供排查）
+      if (["pending", "running", "executing", "committing"].includes(t.status)) {
+        t.status = "failed"; t.error = (t.error ? t.error + "；" : "") + "控制台重启，任务中断";
+        t.steps = (t.steps || []).concat({ tool: "system", status: "err", msg: "控制台重启，任务中断" });
+      }
+      tasks.push(t);
+      if (t.id > taskSeq) taskSeq = t.id;
+    }
+    while (tasks.length > MAX_TASKS) tasks.shift();
+    console.log("[agent] 已从磁盘恢复 %d 个历史任务", tasks.length);
+  } catch { /* 首次启动无文件，忽略 */ }
+}
+loadTasks();
+
+function recordLLM(role, input, output, ms) {
+  llmLogs.unshift({ ts: new Date().toLocaleString("zh-CN"), provider: currentLLM, role, input: String(input).slice(0, 80), output: String(output || "").slice(0, 200), ms });
+  if (llmLogs.length > MAX_LLM_LOGS) llmLogs.pop();
+}
+
+// ── 动作清单（查询用）──
+const ACTIONS = {
+  device:    { label: "设备状态", tools: ["get_system_resources", "get_active_sessions", "get_ha_status"], keywords: ["状态", "负载", "cpu", "内存", "运行", "device", "status", "health", "resource", "load"] },
+  inventory: { label: "设备清单", tools: ["get_firewall_info", "get_system_environmentals", "get_interfaces", "get_licenses", "get_content_versions"], keywords: ["设备", "清单", "资产", "inventory", "硬件", "型号", "序列号", "版本", "asset", "hardware", "serial", "model", "system"] },
+  security:  { label: "安全策略", tools: ["get_security_rules"], keywords: ["策略", "放行", "policy", "security"] },
+  nat:       { label: "NAT 规则", tools: ["get_nat_rules"], keywords: ["nat", "转换", "映射"] },
+  objects:   { label: "地址对象", tools: ["get_address_objects"], keywords: ["地址", "对象", "address", "object"] },
+  interfaces:{ label: "接口", tools: ["get_interfaces"], keywords: ["接口", "interface", "网口"] },
+  zones:     { label: "区域", tools: ["get_zones"], keywords: ["区域", "zone", "trust", "untrust"] },
+  sessions:  { label: "活跃会话", tools: ["get_active_sessions"], keywords: ["会话", "连接数", "session"] },
+  traffic:   { label: "流量日志", tools: ["get_traffic_logs"], keywords: ["流量", "traffic"] },
+  threat:    { label: "威胁日志", tools: ["get_threat_logs"], keywords: ["威胁", "攻击", "病毒", "threat", "攻击源", "封禁", "拉黑", "入侵"] },
+  syslog:    { label: "系统日志", tools: ["get_system_logs"], keywords: ["系统日志", "事件", "syslog"] },
+  licenses:  { label: "许可证", tools: ["get_licenses"], keywords: ["许可", "授权", "到期", "license", "订阅"] },
+  vpn:       { label: "VPN", tools: ["get_ipsec_tunnels", "get_globalprotect_users"], keywords: ["vpn", "隧道", "ipsec", "globalprotect", "远程接入"] },
+  wildfire:  { label: "WildFire", tools: ["get_wildfire_status"], keywords: ["wildfire", "沙箱", "wild"] },
+  content:   { label: "内容库", tools: ["get_content_versions"], keywords: ["内容库", "更新", "版本", "content", "补丁"] },
+  inspect:   { label: "完整巡检", tools: ["get_firewall_info", "get_ha_status", "get_system_resources", "get_active_sessions", "get_licenses", "get_traffic_logs", "get_threat_logs", "get_wildfire_status", "get_security_rules", "get_content_versions"], keywords: ["巡检", "合规", "全部", "inspect", "audit", "报告"] },
+};
+
+// ── 变更模板（写操作，仅允许模板化，防幻觉）──
+const WHERE_CN = { before: "前（上面）", after: "后（下面）", top: "顶部", bottom: "底部" };
+const CHANGE_TEMPLATES = {
+  add_address_object: { label: "创建地址对象", plan: (p) => `新增地址对象 ${p.name} = ${p.value}（${p.type}），零流量影响（未引用）`, params: ["name", "value"] },
+  delete_address_object: { label: "删除地址对象", plan: (p) => `删除地址对象 ${p.name}`, params: ["name"] },
+  block_ip: { label: "封禁 IP", plan: (p) => `封禁 ${p.ip}：建地址对象 + deny 策略置顶${p.expiry ? "，临时至 " + p.expiry : "，永久"}`, params: ["ip"] },
+  move_security_rule: { label: "移动安全策略", plan: (p) => {
+    const w = WHERE_CN[p.where] || p.where;
+    if (p.where === "top" || p.where === "bottom") return `把策略 ${p.name} 移到${w}（candidate 暂存，需审批后 commit）`;
+    return `把策略 ${p.name} 移到 ${p.destination} 的${w}（candidate 暂存，需审批后 commit）`;
+  }, params: ["name", "where", "destination"] },
+  delete_security_rule: { label: "删除安全策略", plan: (p) => p.name
+    ? `删除安全策略 ${p.name}（candidate 暂存，需审批后 commit）`
+    : `按关键词"${p.keyword}"查找匹配的安全策略并列出（不执行删除）`, params: ["name", "keyword"] },
+  set_security_rule_disabled: { label: "禁用安全策略", plan: (p) => p.name
+    ? `禁用安全策略 ${p.name}（规则保留但不生效，需审批后 commit）`
+    : `按关键词"${p.keyword}"查找匹配的安全策略并列出（不执行禁用）`, params: ["name", "keyword"] },
+  set_security_rule_enabled: { label: "启用安全策略", plan: (p) => p.name
+    ? `启用安全策略 ${p.name}（需审批后 commit）`
+    : `按关键词"${p.keyword}"查找匹配的安全策略并列出（不执行启用）`, params: ["name", "keyword"] },
+  allow_ip: { label: "放行 IP", plan: (p) => `放行 ${p.ip}：建地址对象 + allow 策略置顶${p.expiry ? "，临时至 " + p.expiry : "，永久"}`, params: ["ip"] },
+};
+
+async function connect() {
+  const transport = new StdioClientTransport({
+    command: NODE, args: ["--experimental-strip-types", SRC], cwd: CWD,
+    env: { ...process.env,
+      NODE_PATH: path.join(PANOS_MCP_DIR, "node_modules"),  // 强制 MCP server 用自身依赖，避免解析到外部不完整依赖
+      PANOS_FIREWALLS_CONFIG: CFG,
+      PANOS_PROXY: "", HTTPS_PROXY: "", https_proxy: "", HTTP_PROXY: "", http_proxy: "", ALL_PROXY: "", all_proxy: "", NO_PROXY: "*", no_proxy: "*" },
+  });
+  client = new Client({ name: "panos-agent", version: "4.0.0" });
+  await client.connect(transport);
+  console.log("[agent] MCP connected");
+}
+
+// ── 直接调防火墙 API（绕开 MCP server 故障 + Node fetch 代理干扰）──
+const https = require("https");
+const { execFile } = require("child_process");
+const FEISHU_CHAT = process.env.FEISHU_CHAT_ID || "oc_0238b0ea1d6d7a74180cfce85b18cf67";
+// lark-cli 可由 LARK_CLI 环境变量指定；未配置则 PATH 中查找（飞书桥为可选功能）
+const LARK_CLI = process.env.LARK_CLI || "lark-cli";
+// lark-cli 是 `#!/usr/bin/env node` wrapper，且可能 spawn 自身依赖——确保 PATH 含 node 与 lark 目录
+(() => {
+  const add = (d) => { if (d && d !== "." && process.env.PATH && !process.env.PATH.split(":").includes(d)) process.env.PATH = d + ":" + process.env.PATH; };
+  add(path.dirname(NODE));
+  add(path.dirname(LARK_CLI));
+})();
+function feishuSend(text) {
+  return new Promise((resolve) => {
+    execFile(LARK_CLI, ["im", "+messages-send", "--chat-id", FEISHU_CHAT, "--msg-type", "text", "--text", text], { timeout: 15000 }, (err, stdout, stderr) => {
+      if (err) resolve({ ok: false, error: String(stderr || err.message).slice(0, 1000) });
+      else {
+        try { const d = JSON.parse(stdout); resolve({ ok: !!d.ok, data: d.data ? d.data.message_id : null, error: d.error ? JSON.stringify(d.error).slice(0, 200) : "" }); }
+        catch { resolve({ ok: false, error: stdout.slice(0, 200) }); }
+      }
+    });
+  });
+}
+function feishuDaemonRunning() {
+  return new Promise((resolve) => {
+    fs.stat("/tmp/feishu-bridge.heartbeat", (err, st) => {
+      resolve(!err && Date.now() - st.mtimeMs < 120000);
+    });
+  });
+}
+const DIRECT_FW = JSON.parse(require("fs").readFileSync(CFG, "utf-8")).firewalls[0] || {};
+const DIRECT_KEY = DIRECT_FW.api_key || "";
+const DIRECT_HOST = (() => { const h = DIRECT_FW.host || ""; return h.startsWith("http") ? h.replace(/^https?:\/\//, "").replace(/\/$/, "").replace(/:\d+$/, "") : h.replace(/\/$/, ""); })();
+const DIRECT_PORT = 443;
+
+function httpsGet(path) {
+  return new Promise((resolve, reject) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 20000);
+    const req = https.request({ host: DIRECT_HOST, port: DIRECT_PORT, path, method: "GET", agent: false, rejectUnauthorized: false, signal: ac.signal }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => { clearTimeout(timer); resolve(b); });
+    });
+    req.on("error", (e) => { clearTimeout(timer); reject(e); });
+    req.end();
+  });
+}
+
+async function directLog(type, nlogs = 20, query = "") {
+  if (!DIRECT_KEY) throw new Error("无防火墙 key");
+  const q = query ? `&query=${encodeURIComponent(query)}` : "";
+  const start = await httpsGet(`/api/?type=log&log-type=${type}&nlogs=${nlogs}${q}&key=${DIRECT_KEY}`);
+  const jobm = start.match(/jobid[(\(\s*](\d+)/);
+  if (!jobm) throw new Error("log job 未启动: " + start.slice(0, 100));
+  const jobid = jobm[1];
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 1000));   // 轮询 5s
+    const s = await httpsGet(`/api/?type=op&cmd=${encodeURIComponent("<show><jobs><id>" + jobid + "</id></jobs></show>")}&key=${DIRECT_KEY}`);
+    const statusm = s.match(/<status>\s*([^<\s]+)/);
+    const status = statusm ? statusm[1] : "";
+    if (status === "FIN" || status === "ACT") break;
+    if (status === "FAIL" || status === "STOPPED") throw new Error("log job " + status);
+  }
+  const res = await httpsGet(`/api/?type=log&action=get&jobid=${jobid}&key=${DIRECT_KEY}`);
+  // 宽松解析：entry 可能带属性（<entry logid="...">），保留原文 + 提取关键字段
+  const entryBlocks = res.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || [];
+  const entries = entryBlocks.map((blk) => {
+    const e = { _raw: blk.length > 500 ? blk.slice(0, 500) + "..." : blk };
+    // 常见字段提取
+    ["receive_time", "src", "dst", "sport", "dport", "app", "action", "rule", "from", "to", "subtype", "severity", "eventid", "opaque", "hostname", "model", "sw-version", "kbps", "num-active", "ip-address", "serial", "threatid", "admin", "cmd", "result", "client", "full-path", "path", "type", "high_res_timestamp"].forEach((k) => {
+      const m = blk.match(new RegExp("<" + k + ">([\\s\\S]*?)<\\/" + k + ">"));
+      if (m) e[k] = m[1].trim();
+    });
+    return e;
+  });
+  return { entry: entries, raw: res.length > 8000 ? res.slice(0, 8000) + "..." : res };
+}
+
+// ── 日志深度分析（第1项 Top N + 时间窗口；第5项 样本 200）──
+function logStats(entries, fields, topN = 10) {
+  const out = {};
+  for (const f of fields) {
+    const cnt = {};
+    for (const e of entries) {
+      const v = e[f];
+      if (v !== undefined && v !== null && v !== "") cnt[v] = (cnt[v] || 0) + 1;
+    }
+    out[f] = Object.entries(cnt).sort((a, b) => b[1] - a[1]).slice(0, topN);
+  }
+  return out;
+}
+function filterByMinutes(entries, minutes) {
+  if (!minutes) return entries;
+  const cutoff = Date.now() - minutes * 60000;
+  return entries.filter((e) => {
+    const t = Date.parse(String(e.receive_time || "").replace(/\//g, "-"));
+    if (isNaN(t)) return true;   // 无时间戳字段的记录保留
+    return t >= cutoff;
+  });
+}
+function fmtTop(top, fields) {
+  return fields.map((f) => {
+    const arr = top[f] || [];
+    return arr.length ? f + " Top: " + arr.map(([v, c]) => `${v}×${c}`).join(" ") : "";
+  }).filter(Boolean).join("；") || "无统计";
+}
+async function deepLog(type, opts = {}) {
+  const { minutes = 60, nlogs = 200, query = "" } = opts;
+  const data = await directLog(type, nlogs, query);
+  const entries = (data.entry || []).filter((e) => !e._raw || Object.keys(e).length > 1);
+  const windowed = filterByMinutes(entries, minutes);
+  // 窗口内无数据时降级用全部样本（避免"无统计"误导），并标注时间范围
+  const effective = windowed.length ? windowed : entries;
+  const top = logStats(effective, ["src", "dst", "app", "action", "subtype", "severity"]);
+  return {
+    entries: effective, minutes, nlogs, top,
+    rawCount: entries.length,
+    inWindow: windowed.length,
+    degraded: windowed.length === 0 && entries.length > 0,
+    oldest: entries.length ? (entries[entries.length - 1].receive_time || "?") : "",
+  };
+}
+async function directOp(cmd) { return await httpsGet(`/api/?type=op&cmd=${encodeURIComponent(cmd)}&key=${DIRECT_KEY}`); }
+async function directCommit(desc) {
+  // 异步 commit：明确返回 <job>ID</job>，用 POST（commit 端点标准做法）。
+  // 即使 GET 也能工作，POST 更稳。type=commit 同步 commit 在 PAN-OS 上完成后才返回，响应里不一定带 <job>。
+  const cmd = `<commit><description>${desc}</description><async/></commit>`;
+  return await directHttpsPost(`https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=commit&cmd=${encodeURIComponent(cmd)}&key=${DIRECT_KEY}`);
+}
+async function directConfig(xpath) {
+  return await httpsGet(`/api/?type=config&action=get&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
+}
+async function directConfigSet(xpath, element) {
+  return await directHttpsPost(`https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=set&xpath=${encodeURIComponent(xpath)}&element=${encodeURIComponent(element)}&key=${DIRECT_KEY}`);
+}
+async function directConfigDelete(xpath) {
+  return await directHttpsPost(`https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=delete&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
+}
+async function directHttpsPost(fullUrl) {
+  // 从 fullUrl 提取 host/path（避免 new URL 解析问题）
+  const m = fullUrl.match(/^https:\/\/([^\/:]+)(?::(\d+))?(\/.+)$/);
+  if (!m) throw new Error("Invalid URL: " + fullUrl.slice(0, 80));
+  const host = m[1], port = parseInt(m[2] || "443", 10), path = m[3];
+  return new Promise((resolve, reject) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 20000);
+    const req = https.request({ host, port, path, method: "POST", agent: false, rejectUnauthorized: false, signal: ac.signal }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => { clearTimeout(timer); resolve(b); });
+    });
+    req.on("error", (e) => { clearTimeout(timer); reject(e); });
+    req.end();
+  });
+}
+
+async function callToolRaw(name, args = {}, firewall) {
+  if (firewall) args.firewall = firewall;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 30000);
+  try {
+    const r = await client.callTool({ name, arguments: args }, undefined, { signal: ac.signal });  // SDK 1.30 签名：callTool(params, resultSchema, options)——signal 必须放第 3 参，放第 2 参会被当成 zod schema 导致 v3Schema.safeParse 崩溃
+    const txt = r.content && r.content[0] && r.content[0].text;
+    try { return { ok: true, data: JSON.parse(txt) }; } catch { return { ok: true, data: { raw: String(txt) } }; }
+  } catch (e) { return { ok: false, error: e }; }
+  finally { clearTimeout(timer); }
+}
+
+// 直接调 MCP server 上的 run_op_command（不走 MCP 工具包装），解析关键字段
+function xmlEntries(xml) {
+  const blocks = xml.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || [];
+  return blocks.map((blk) => {
+    const e = {};
+    const tag = /<(\w+)>([^<]*)<\/\1>/g;
+    let tm;
+    while ((tm = tag.exec(blk)) !== null) if (!(tm[1] in e)) e[tm[1]] = tm[2];
+    return e;
+  });
+}
+async function directRunOp(arg) {
+  const isObj = arg && typeof arg === "object";
+  const txt = isObj ? (arg.type === "config" ? await directConfig(arg.xpath) : "") : await directOp(arg);
+  // 优先 entry 数组（licenses/security_rules/address_objects 等）
+  const entries = xmlEntries(txt);
+  if (entries.length) return { entry: entries, _count: entries.length };
+  // 再字段提取（设备/会话等无 entry 的命令）
+  const fields = {};
+  const re = /<(\w+)>([^<]+)<\/\1>/g;
+  let m;
+  while ((m = re.exec(txt)) !== null) if (!(m[1] in fields)) fields[m[1]] = m[2];
+  ["response", "result", "job", "status", "msg"].forEach((k) => delete fields[k]);
+  const KNOWN = ["hostname", "model", "sw-version", "ip-address", "serial", "uptime", "mac-address", "num-active", "num-tcp", "num-udp", "num-max", "kbps", "pps", "enabled", "ntun", "feature", "expires", "expired", "description", "ip", "type", "state", "zone", "name", "total-count"];
+  const picked = {};
+  KNOWN.forEach((k) => { if (fields[k] !== undefined) picked[k] = fields[k]; });
+  if (Object.keys(picked).length) return picked;
+  return { raw: txt.slice(0, 2000) };
+}
+
+const toolCache = new Map();
+const CACHE_TTL = { get_traffic_logs: 20000, get_threat_logs: 20000, get_system_logs: 20000, get_url_filter_logs: 20000, default: 60000 };
+
+// 核心查询工具直连 + 策展解析（比 MCP 快一倍，输出适合人读；MCP 返回的是未策展的嵌套/原始数据）
+async function directCurated(name) {
+  const cmdMap = {
+    get_firewall_info: "<show><system><info></info></system></show>",
+    get_system_resources: "<show><system><resources></resources></system></show>",
+    get_active_sessions: "<show><session><info></info></session></show>",
+    get_ha_status: "<show><high-availability><state></state></high-availability></show>",
+    get_licenses: "<request><license><info></info></license></request>",
+    get_interfaces: "<show><interface>all</interface></show>",
+  };
+  if (!cmdMap[name]) throw new Error("无策展命令: " + name);
+  // show system info 尾部带 <plugin><entry> 会干扰 entry 优先策略，改用纯字段提取
+  if (name === "get_firewall_info") {
+    const txt = await directOp(cmdMap[name]);
+    const fields = {};
+    const re = /<([\w-]+)>([^<]+)<\/\1>/g;  // [\w-] 匹配带连字符的标签（ip-address/sw-version/mac-address 等）
+    let m;
+    while ((m = re.exec(txt)) !== null) if (!(m[1] in fields)) fields[m[1]] = m[2].trim();
+    ["response", "result", "job", "status", "msg", "pkginfo", "pkgtype"].forEach((k) => delete fields[k]);
+    return fields;
+  }
+  let r2 = await directRunOp(cmdMap[name]);
+  if (name === "get_system_resources" && r2.raw && typeof r2.raw === "string") {
+    const t = r2.raw;
+    const load = t.match(/load average: ([^\n]+)/);
+    const mem = t.match(/MiB Mem :\s*([\d.]+) total,\s*([\d.]+) free,\s*([\d.]+) used/);
+    r2 = { "load average": load ? load[1].trim() : "?", "mem total": mem ? mem[1] + " MiB" : "?", "mem used": mem ? mem[3] + " MiB" : "?" };
+  }
+  return r2;
+}
+
+async function callTool(name, args = {}, firewall) {
+  const key = name + "|" + (firewall || "") + "|" + JSON.stringify(args || {});
+  const hit = toolCache.get(key);
+  const ttl = CACHE_TTL[name] || CACHE_TTL.default;
+  if (hit && Date.now() - hit.ts < ttl) return hit.data;
+  const data = await callToolImpl(name, args, firewall);
+  toolCache.set(key, { data, ts: Date.now() });
+  return data;
+}
+
+// ── 工具级路由配置（tools-config.json，按工具指定 mcp/direct/auto）──
+const TOOLS_CONFIG_PATH = process.env.TOOLS_CONFIG || path.join(__dirname, "tools-config.json");
+let TOOL_ROUTES = {};
+try { TOOL_ROUTES = JSON.parse(fs.readFileSync(TOOLS_CONFIG_PATH, "utf-8")); }
+catch (e) { console.warn("[agent] tools-config.json 未找到或无效，全部 auto 模式:", TOOLS_CONFIG_PATH); }
+function toolRoute(name) { const r = (TOOL_ROUTES.routes && TOOL_ROUTES.routes[name]) || TOOL_ROUTES._default || "auto"; return r; }
+
+async function callToolImpl(name, args = {}, firewall) {
+  const route = toolRoute(name);
+  if (route === "direct") return await directForTool(name, args);
+  if (route === "mcp") {
+    const r = await callToolRaw(name, args, firewall);
+    if (r.ok) return r.data;
+    throw r.error;
+  }
+  // 直连专用工具（MCP 117 工具中不存在）：硬件环境（温度/电源/风扇）
+  if (name === "get_system_environmentals") {
+    return await directRunOp("<show><system><environmentals></environmentals></system></show>");
+  }
+  // 日志类工具直接走直连（跳过 MCP：MCP server 的日志工具存在 v3Schema 故障，且等待 30s 超时太慢）
+  if (["get_traffic_logs", "get_threat_logs", "get_system_logs", "get_url_filter_logs", "get_config_logs"].includes(name)) {
+    const typeMap = { get_traffic_logs: "traffic", get_threat_logs: "threat", get_system_logs: "system", get_url_filter_logs: "url", get_config_logs: "config" };
+    const nlogs = args.nlogs || 20;
+    return await directLog(typeMap[name], nlogs, args.query || "");
+  }
+  // 核心查询工具直连优先（更快 + 输出已策展可读；失败回退 MCP）
+  if (["get_firewall_info", "get_system_resources", "get_active_sessions", "get_ha_status", "get_licenses", "get_interfaces"].includes(name)) {
+    try { return await directCurated(name); }
+    catch (e) { console.error("[agent] 策展直连失败，回退 MCP:", name, String(e.message || e)); }
+  }
+  const r = await callToolRaw(name, args, firewall);
+  if (r.ok) return r.data;
+  // MCP server 全局故障（v3Schema）时，回退到直接 HTTP 调用防火墙 API
+  if (["get_firewall_info", "get_system_resources", "get_active_sessions", "get_content_versions", "get_wildfire_status", "get_security_rules", "get_address_objects", "get_interfaces", "get_zones", "get_licenses", "get_routing_table", "get_arp_table", "get_ha_status", "get_ipsec_tunnels", "get_globalprotect_users", "get_application_filters"].includes(name)) {
+    const cmdMap = {
+      get_firewall_info: "<show><system><info></info></system></show>",
+      get_system_resources: "<show><system><resources></resources></system></show>",
+      get_active_sessions: "<show><session><info></info></session></show>",
+      get_content_versions: "<show><jobs><id>content-update</id></jobs></show>",
+      get_wildfire_status: "<show><wildfire><status></status></wildfire></show>",
+      get_security_rules: { type: "config", xpath: "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules" },
+      get_address_objects: { type: "config", xpath: "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address" },
+      get_interfaces: "<show><interface>all</interface></show>",
+      get_zones: { type: "config", xpath: "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/zone" },
+      get_licenses: "<request><license><info></info></license></request>",
+      get_routing_table: "<show><routing>route</routing></show>",
+      get_ha_status: "<show><high-availability><state></state></high-availability></show>",
+      get_ipsec_tunnels: "<show><vpn>ipsec</vpn></show>",
+      get_globalprotect_users: "<show><global-protect-gateway><clients></clients></global-protect-gateway></show>",
+      get_application_filters: "<show><running><application-filter><entry></entry></application-filter></running></show>",
+    };
+    try {
+      // get_firewall_info 特殊解析：show system info 尾部带 <plugin><entry> 会干扰 entry 优先策略
+      if (name === "get_firewall_info") return await directCurated(name);
+      let r2 = await directRunOp(cmdMap[name]);
+      if (name === "get_system_resources" && r2.raw && typeof r2.raw === "string") {
+        const t = r2.raw;
+        const load = t.match(/load average: ([^\n]+)/);
+        const mem = t.match(/MiB Mem :\s*([\d.]+) total,\s*([\d.]+) free,\s*([\d.]+) used/);
+        r2 = { "load average": load ? load[1].trim() : "?", "mem total": mem ? mem[1] + " MiB" : "?", "mem used": mem ? mem[3] + " MiB" : "?" };
+      }
+      return r2;
+    } catch (e) { throw new Error(`${name} 直连也失败：${e.message}`); }
+  }
+  throw r.error;
+}
+
+// direct 路由：强制走直连路径（日志 directLog / 核心 directCurated / 查询 directRunOp）
+async function directForTool(name, args = {}) {
+  const typeMap = { get_traffic_logs: "traffic", get_threat_logs: "threat", get_system_logs: "system", get_url_filter_logs: "url", get_config_logs: "config" };
+  if (typeMap[name]) return await directLog(typeMap[name], args.nlogs || 20, args.query || "");
+  if (name === "get_system_environmentals") return await directRunOp("<show><system><environmentals></environmentals></system></show>");
+  if (["get_firewall_info", "get_system_resources", "get_active_sessions", "get_ha_status", "get_licenses", "get_interfaces"].includes(name)) {
+    return await directCurated(name);
+  }
+  const cmdMap = {
+    get_firewall_info: "<show><system><info></info></system></show>",
+    get_system_resources: "<show><system><resources></resources></system></show>",
+    get_active_sessions: "<show><session><info></info></session></show>",
+    get_content_versions: "<show><jobs><id>content-update</id></jobs></show>",
+    get_wildfire_status: "<show><wildfire><status></status></wildfire></show>",
+    get_security_rules: { type: "config", xpath: "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules" },
+    get_address_objects: { type: "config", xpath: "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address" },
+    get_interfaces: "<show><interface>all</interface></show>",
+    get_zones: { type: "config", xpath: "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/zone" },
+    get_licenses: "<request><license><info></info></license></request>",
+    get_routing_table: "<show><routing>route</routing></show>",
+    get_arp_table: "<show><arp><entry name='all'/></arp></show>",
+    get_ha_status: "<show><high-availability><state></state></high-availability></show>",
+    get_ipsec_tunnels: "<show><vpn>ipsec</vpn></show>",
+    get_globalprotect_users: "<show><global-protect-gateway><clients></clients></global-protect-gateway></show>",
+    get_application_filters: "<show><running><application-filter><entry></entry></application-filter></running></show>",
+  };
+  if (cmdMap[name]) {
+    let r2 = await directRunOp(cmdMap[name]);
+    if (name === "get_system_resources" && r2.raw && typeof r2.raw === "string") {
+      const t = r2.raw;
+      const load = t.match(/load average: ([^\n]+)/);
+      const mem = t.match(/MiB Mem :\s*([\d.]+) total,\s*([\d.]+) free,\s*([\d.]+) used/);
+      r2 = { "load average": load ? load[1].trim() : "?", "mem total": mem ? mem[1] + " MiB" : "?", "mem used": mem ? mem[3] + " MiB" : "?" };
+    }
+    return r2;
+  }
+  throw new Error(name + " 无 direct 路由（请配置为 mcp 或 auto）");
+}
+
+// ── LLM 分类（当前提供方）──
+async function llmClassify(role, system, input, timeoutMs = 20000) {
+  const p = LLM_PROVIDERS[currentLLM];
+  if (!p || !p.key) return null;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`${p.base_url}/chat/completions`, {
+      method: "POST", signal: ac.signal,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
+      body: JSON.stringify({ model: p.model, ...(currentLLM === "kimi" ? {} : { temperature: 0 }),
+        messages: [{ role: "system", content: system }, { role: "user", content: input }],
+        ...(currentLLM === "deepseek" ? { thinking: { type: "disabled" } } : {}) }),
+    });
+    if (!r.ok) { console.error("[agent] LLM http", r.status); return null; }
+    const d = await r.json();
+    const text = d.choices?.[0]?.message?.content || "";
+    recordLLM(role, input, text, Date.now() - t0);
+    return text;
+  } catch (e) { console.error("[agent] LLM error:", e.message); recordLLM(role, input, "ERROR: " + e.message, Date.now() - t0); return null; }
+  finally { clearTimeout(timer); }
+}
+
+async function llmResolveAction(input) {
+  const list = Object.entries(ACTIONS).map(([k, v]) => `${k}: ${v.label}（如"${v.keywords[0]}"）`).join("\n");
+  const text = await llmClassify("意图规划",
+    `你是防火墙运维意图分类器。从动作列表选一个 key；若输入与防火墙查询无关输出 {"action":null}；若输入是配置变更请求（创建/删除/封禁/改策略）输出 {"action":"change"}；若输入是故障诊断请求（连不上/不通/访问不了/排查/诊断/健康检查/某IP什么情况/一直扫描）输出 {"action":"diag"}；若输入是审计/配置变更查询（谁改的/审计/变更记录/谁修改/谁删了/配置变更）输出 {"action":"audit"}。只输出 JSON：{"action":"<key>"}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, input);
+  if (!text) return null;
+  const m = text.match(/"action"\s*:\s*("?)(\w+|null)\1/);
+  if (!m) return null;
+  const key = m[2];
+  return key === "null" ? null : key;
+}
+
+// 变更参数提取（模板化，LLM 只填参数）
+async function llmExtractChange(input) {
+  const tmplList = Object.entries(CHANGE_TEMPLATES).map(([k, v]) => `${k}: ${v.label}（参数: ${v.params.join(", ")}）`).join("\n");
+  const text = await llmClassify("变更参数提取",
+    `你是防火墙配置变更解析器。从模板列表选一个 template，并提取参数（ip 为合法 IPv4；name 仅 [a-zA-Z0-9_-]）。
+move_security_rule 的 where 取值 top/bottom/before/after 之一：
+- "把 A 移到 B 上面/之前" → where=before, destination=B
+- "把 A 移到 B 下面/之后" → where=after, destination=B
+- "把 A 移到最上面" / "置顶 A" → where=top
+- "把 A 移到最下面" / "置底 A" → where=bottom
+
+delete_security_rule：
+- 用户给了精确规则名（只含字母数字下划线短横线）→ 填 name="<精确名>"
+- 用户只给了模糊描述（"名称带 block 的"、"名字含 social 的"、"那条 deny 开头的"）→
+  **抽取最核心的搜索子串**放进 keyword 字段，去掉"的/带/有/含/按/在/里/上/下/规则/名字/名称"等停用词
+  （例如"名称带 block 的" → keyword="block"；"那条 deny 开头的" → keyword="deny"；"名字含 social 的" → keyword="social"）
+  **不要把整段描述塞进 keyword**
+  系统会列出含核心子串的候选由用户确认
+set_security_rule_disabled（禁用规则）：用法同 delete_security_rule（精确名填 name，模糊 keyword 取核心子串）
+set_security_rule_enabled（启用规则）：用法同 delete_security_rule
+allow_ip（放行 IP）：从"放行/允许/白名单/allow"相关输入提取 ip（合法 IPv4）
+若无法匹配模板输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${tmplList}`, input);
+  if (!text) return null;
+  try {
+    const m = text.match(/\{[\s\S]*\}/);
+    const o = JSON.parse(m ? m[0] : "{}");
+    if (!o.template || !CHANGE_TEMPLATES[o.template]) return null;
+    return o;
+  } catch { return null; }
+}
+
+// 诊断意图解析：connectivity / threat_profile / generic
+// 审计请求解析：时间窗口 + 对象类型
+async function llmParseAudit(input) {
+  const text = await llmClassify("审计解析",
+    `你是防火墙审计日志查询解析器。从用户请求中提取：minutes（时间窗口分钟数，如"10分钟前"=10、"最近1小时"=60、"今天"=1440，无则默认60）；object（对象类型："策略"=security、"地址"=address、"全部"=all）。只输出 JSON：{"minutes":<num>,"object":"<type>"}。`,
+    input);
+  if (!text) return { minutes: 60, object: "all" };
+  const m = text.match(/\{[\s\S]*?\}/);
+  if (!m) return { minutes: 60, object: "all" };
+  try {
+    const o = JSON.parse(m[0]);
+    return { minutes: Number(o.minutes) || 60, object: String(o.object || "all") };
+  } catch { return { minutes: 60, object: "all" }; }
+}
+
+// LLM 诊断综合解读（基于实际数据给出根因/置信度/建议）
+async function llmSynthesize(input, sections, stats) {
+  const ctx = sections.map((s) => "[" + s.step + "] " + s.result).join("\n");
+  const statCtx = stats ? "\n日志统计(前10):\n" + JSON.stringify(stats).slice(0, 1200) : "";
+  const text = await llmClassify("诊断综合",
+    `你是 PAN-OS 防火墙诊断专家。**禁止套模板**，必须真正读数据、交叉对照、做证据链推理。
+
+【重要推理原则】
+- **"观察缺失 ≠ 否定结论"**：流量日志没有 X ≠ "X 没发生"。可能是：根本没到达防火墙、被前置设备丢掉、查询命令不带正确字段、过滤窗口太窄、主机方向问题。**涉及"未观测到"的关键证据时，置信度不应给"高"**——只能给"中"或"低"。
+- **直接证据 > 间接推断**：日志里出现 N 条 → 直接证据；"观察缺失" → 弱证据，不能用它下确定性结论。
+- **必须"过数据"**：用户提到的 IP/主机/对象，**逐段检查**它在每段数据中是否出现、出现几次（正向证据）。如果没出现 → 这本身也是证据（"用户对象未被防火墙观测到"→ 报告这个事实），但要避免跳到"对象损坏/不存在"这种跳跃结论。
+- **PAN-OS zone 是核心**：策略匹配靠 zone。跨 zone 默认拒绝。即便没有该 IP 的具体策略，只要 zone 间没明确允许，就不通；如果 source-zone 都没匹配上更应怀疑 zone 配置。先列 zone，再列策略。
+- **跨子网时 ARP 表空 ≠ 主机不可达**：源主机（不同子网）的 MAC 在网关处处理，不一定进入防火墙 ARP 表。ARP 表空只能说明"防火墙未直接 ARP 过该主机"，结合 traceroute/ping 才能推断。
+- **路由缺失推断要克制**：没默认路由未必是该主机不通，可能防火墙只需 stub 路由。需看源 IP 是否有特定路由 + 是否经转发。
+- **如果用户描述与数据"明显冲突"**（例如用户说"192.168.0.3 不能访问 192.168.1.2"但你看到数据里两个 IP 均未出现），需在 verdict 中明确指出**"用户陈述与防火墙观测一致（防火墙没观测到这两个 IP 的交互），建议先在源主机实测确认前提"**，**不要硬去找"为什么不通"的根因**。
+
+【输出格式】
+JSON：
+{
+  "verdict": "一段话根因（含证据引用：[流量]、[策略]、[zone] 等指明依据）",
+  "confidence": "高/中/低",
+  "confidence_reason": "为什么是这个置信度",
+  "evidence": ["关键证据1:…", "关键证据2:…", "反驳证据:…"],
+  "recommendation": "可执行下一步（具体到工具/命令）"
+}
+
+【用户症状】"${input}"
+【数据】
+${ctx}${statCtx}`,
+    input, 45000);
+  if (!text) return null;
+  const m = text.match(/\{[\s\S]*?\}/);
+  if (!m) return { verdict: text.slice(0, 300), confidence: "?", recommendation: "" };
+  try {
+    const o = JSON.parse(m[0]);
+    return {
+      verdict: String(o.verdict || "").slice(0, 600),
+      confidence: ["高", "中", "低"].includes(o.confidence) ? o.confidence : "?",
+      confidenceReason: String(o.confidence_reason || "").slice(0, 200),
+      evidence: Array.isArray(o.evidence) ? o.evidence.slice(0, 8).map(String) : [],
+      recommendation: String(o.recommendation || "").slice(0, 800),
+    };
+  } catch { return { verdict: text.slice(0, 300), confidence: "?", recommendation: "" }; }
+}
+async function llmParseDiag(input) {
+  const text = await llmClassify("诊断规划",
+    `你是网络诊断解析器。判断用户症状属于：connectivity（连通性排查，涉及源/目的/IP/端口/连不上/不通/访问不了）、threat_profile（威胁源画像，涉及"什么情况/一直扫描/攻击/画像"且给定了IP）、generic（通用健康检查）。提取参数：ip（IPv4）、port（端口）、direction（inbound/outbound）、target_label（如"外网"）、minutes（时间窗口分钟数，如"最近10分钟"=10、"最近1小时"=60、"今天"=1440，无则默认60）、probe（可选：用户要求"ping/测试连通/探测"填"ping"；要求"追踪路由/traceroute"填"traceroute"；否则不填）。无法判断输出 {"type":null}。只输出 JSON：{"type":"<t>","params":{}}。`, input);
+  if (!text) return null;
+  try {
+    const m = text.match(/\{[\s\S]*\}/);
+    const o = JSON.parse(m ? m[0] : "{}");
+    if (o.params && o.params.minutes !== undefined) o.params.minutes = Number(o.params.minutes) || 60;
+    if (o.params && o.params.probe !== undefined && !["ping", "traceroute"].includes(o.params.probe)) delete o.params.probe;
+    return o;
+  } catch { return null; }
+}
+
+// ── 任务系统 ──
+function newTask(type, input, extra = {}) {
+  return { id: ++taskSeq, type, input, status: "pending", steps: [], result: null, error: null, createdAt: new Date().toLocaleString("zh-CN"), ...extra };
+}
+function saveTask(t) { const i = tasks.findIndex((x) => x.id === t.id); if (i >= 0) tasks[i] = t; persistTasks(); }
+
+async function runQueryTask(t, action, firewall) {
+  t.status = "running";
+  const results = [];
+  for (const tool of ACTIONS[action].tools) {
+    if (t.cancelled) { t.status = "cancelled"; break; }
+    const step = { tool, status: "running", startMs: Date.now() };
+    t.steps.push(step);
+    try {
+      const r = await callTool(tool, {}, firewall);
+      step.status = "ok"; step.ms = Date.now() - step.startMs;
+      results.push({ tool, data: r });
+    } catch (e) {
+      step.status = "err"; step.ms = Date.now() - step.startMs; step.msg = String(e.message || e);
+      results.push({ tool, error: step.msg });
+    }
+  }
+  if (t.status !== "cancelled") {
+    t.result = { label: ACTIONS[action].label, results };
+    t.status = "done";
+    history.unshift({ ts: new Date().toLocaleString("zh-CN"), input: String(t.input), action, label: ACTIONS[action].label });
+    if (history.length > MAX_HISTORY) history.pop();
+  }
+  saveTask(t);
+}
+
+async function runInspectTask(t, firewall) {
+  t.status = "running";
+  const tools = ACTIONS.inspect.tools;
+  const results = [];
+  for (const tool of tools) {
+    if (t.cancelled) { t.status = "cancelled"; break; }
+    const step = { tool, status: "running", startMs: Date.now() };
+    t.steps.push(step);
+    try { results.push({ tool, data: await callTool(tool, {}, firewall) }); step.status = "ok"; step.ms = Date.now() - step.startMs; }
+    catch (e) { step.status = "err"; step.ms = Date.now() - step.startMs; step.msg = String(e.message || e); results.push({ tool, error: step.msg }); }
+  }
+  if (t.status === "cancelled") { saveTask(t); return; }
+  // 简版合规评分（8 项中的 5 项计分）
+  const d = (tool) => results.find((r) => r.tool === tool)?.data || {};
+  const fw = d("get_firewall_info");
+  const rules = d("get_security_rules")?.rules?.entry || [];
+  const lic = d("get_licenses")?.licenses?.entry || [];
+  const threat = d("get_threat_logs")?.entry || [];
+  const wildfire = d("get_wildfire_status")?.raw || String(d("get_wildfire_status"));
+  const checks = [
+    { name: "策略最小权限", pass: !rules.some((r) => r.action === "allow" && !r.disabled && r.source?.member === "any" && r.destination?.member === "any") },
+    { name: "威胁防护启用", pass: !/Disabled due to configuration/.test(wildfire) },
+    { name: "许可有效性", pass: !lic.some((l) => l.expired === "yes") },
+    { name: "日志连续性", pass: threat.length > 0 && Date.now() - new Date(threat[0].receive_time).getTime() < 7 * 864e5 },
+    { name: "内容库更新", pass: true },
+  ];
+  const scored = checks.filter((c) => c.name !== "内容库更新");
+  const pass = scored.filter((c) => c.pass).length;
+  const rate = Math.round((pass / scored.length) * 100);
+  const grade = rate >= 90 ? "优秀" : rate >= 75 ? "良好" : rate >= 60 ? "需改进" : "不达标";
+  const date = new Date().toISOString().slice(0, 10);
+  const md = `# PAN-OS 合规巡检报告（WebUI 任务）\n\n| 项 | 值 |\n|---|---|\n| 设备 | ${fw.hostname || "?"} (${fw.serial || "?"}) |\n| 版本 | ${fw["sw-version"] || "?"} |\n| 时间 | ${date} |\n| 评级 | ${grade} (${rate}%) |\n\n| 检查项 | 结果 |\n|---|---|\n` + checks.map((c) => `| ${c.name} | ${c.pass ? "✅ 通过" : "❌ 不通过"} |`).join("\n");
+  if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
+  const file = path.join(REPORTS_DIR, `compliance-${date}-task.md`);
+  fs.writeFileSync(file, md);
+  t.result = { grade, rate, file, checks, hostname: fw.hostname, model: fw.model };
+  t.steps.push(`报告落盘 ${path.basename(file)}`);
+  t.status = "done";
+  saveTask(t);
+}
+
+// 变更执行（candidate 阶段）
+async function runChangeCandidate(t, tmpl, params, firewall) {
+  t.status = "executing";
+  const p = { ...params, type: params.type || "ip-netmask" };
+  // name 合法化：仅保留 a-zA-Z0-9_-, 否则自动生成
+  if (p.name && !/^[a-zA-Z0-9_\-]+$/.test(p.name)) {
+    t.steps.push(`原 name "${p.name}" 不合法，自动生成`);
+    p.name = `obj_${(p.value || p.ip || "x").replace(/[^a-zA-Z0-9]/g, "_")}_${Date.now().toString(36)}`;
+  }
+  // 改用 directOp（XML 命令），绕开 MCP v3Schema 故障
+  if (tmpl === "add_address_object") {
+    // 用 type=config (POST) 走 setConfig，绕开 op 的 vsys context 问题
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address/entry[@name='${p.name}']`;
+    const xml = `<${p.type}>${p.value}</${p.type}>`;
+    const r = await directConfigSet(xpath, xml);
+    t.steps.push("candidate: add_address_object (type=config) → " + JSON.stringify(r).slice(0, 80));
+  } else if (tmpl === "delete_address_object") {
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address/entry[@name='${p.name}']`;
+    const r = await directConfigDelete(xpath);
+    t.steps.push("candidate: delete_address_object (type=config) → " + JSON.stringify(r).slice(0, 80));
+  } else if (tmpl === "block_ip") {
+    // 封禁 IP：写 address 对象 + security rule。必须用 type=config (set)，type=op 不会持久化到候选配置。
+    const ts = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const name = `block-${p.ip}-${ts}`;
+    const XPATH_BASE = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']`;
+    // 1) 地址对象
+    const r1 = await directConfigSet(
+      `${XPATH_BASE}/address/entry[@name='${name}']`,
+      `<ip-netmask>${p.ip}/32</ip-netmask>`
+    );
+    t.steps.push("candidate: address " + name + " → " + JSON.stringify(r1).slice(0, 80));
+    // 2) 安全规则（拒绝 any → this src）。element 仅用必需字段，避免 log-setting/profile 缺失导致 code 12。
+    const ruleXml = `<from><member>any</member></from><to><member>any</member></to><source><member>${name}</member></source><destination><member>any</member></destination><service><member>any</member></service><application><member>any</member></application><action>deny</action><description>WebUI block by Agent</description>`;
+    const r2 = await directConfigSet(
+      `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`,
+      ruleXml
+    );
+    t.steps.push("candidate: deny rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
+    p._objName = name;
+  } else if (tmpl === "move_security_rule") {
+    // 移动策略：调 MCP 工具。where 取值 top/bottom/before/after；中文"上面/下面"在 LLM 提取阶段已映射。
+    if (!p.name || !p.where) throw new Error("move_security_rule 缺少 name 或 where");
+    if ((p.where === "before" || p.where === "after") && !p.destination) {
+      throw new Error("move_security_rule 在 before/after 时必须提供 destination（参照规则名）");
+    }
+    const r = await callTool("move_security_rule", {
+      name: p.name, where: p.where, destination: p.destination, firewall,
+    }, firewall);
+    t.steps.push("candidate: move_security_rule " + JSON.stringify(r).slice(0, 120));
+  } else if (tmpl === "delete_security_rule") {
+    // 模糊关键词：先列候选，不删除
+    const res = await resolveRuleTarget(t, p, firewall, "删除");
+    if (!res) return; // 已转 awaiting_selection，等用户点选
+    const r = await callTool("delete_security_rule", { name: res.name, firewall }, firewall);
+    t.steps.push("candidate: delete_security_rule " + res.name + " → " + JSON.stringify(r).slice(0, 120));
+    p.name = res.name;
+  } else if (tmpl === "set_security_rule_disabled") {
+    const res = await resolveRuleTarget(t, p, firewall, "禁用");
+    if (!res) return;
+    const r = await callTool("set_security_rule_disabled", { name: res.name, disabled: true, firewall }, firewall);
+    t.steps.push("candidate: disable " + res.name + " → " + JSON.stringify(r).slice(0, 120));
+    p.name = res.name;
+  } else if (tmpl === "set_security_rule_enabled") {
+    const res = await resolveRuleTarget(t, p, firewall, "启用");
+    if (!res) return;
+    const r = await callTool("set_security_rule_disabled", { name: res.name, disabled: false, firewall }, firewall);
+    t.steps.push("candidate: enable " + res.name + " → " + JSON.stringify(r).slice(0, 120));
+    p.name = res.name;
+  } else if (tmpl === "allow_ip") {
+    // 放行 IP：对称 block_ip，写 address 对象 + allow 规则
+    const ts = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const name = `allow-${p.ip}-${ts}`;
+    const XPATH_BASE = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']`;
+    const r1 = await directConfigSet(
+      `${XPATH_BASE}/address/entry[@name='${name}']`,
+      `<ip-netmask>${p.ip}/32</ip-netmask>`
+    );
+    t.steps.push("candidate: address " + name + " → " + JSON.stringify(r1).slice(0, 80));
+    const ruleXml = `<from><member>any</member></from><to><member>any</member></to><source><member>${name}</member></source><destination><member>any</member></destination><service><member>any</member></service><application><member>any</member></application><action>allow</action><description>WebUI allow by Agent</description>`;
+    const r2 = await directConfigSet(
+      `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`,
+      ruleXml
+    );
+    t.steps.push("candidate: allow rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
+    p._objName = name;
+  }
+  t.params = p;
+  t.status = "awaiting_commit";
+  saveTask(t);
+}
+
+// 规则名解析：精确 name 直接返回 {name}；只有模糊 keyword 时把任务停在 awaiting_selection 并 return null
+async function resolveRuleTarget(t, p, firewall, verb) {
+  if (p.name && /^[a-zA-Z0-9_\-]+$/.test(p.name)) return { name: p.name };
+  await setAwaitingSelection(t, p, firewall, verb, []);
+  return null;
+}
+
+// 模糊路径专用：调 get_security_rules 过滤匹配，转 awaiting_selection 状态
+async function setAwaitingSelection(t, p, firewall, verb, _extraSteps) {
+  const kw = (p.keyword || "").trim();
+  if (!kw) throw new Error(`该操作需要精确规则名或模糊 keyword 之一`);
+  const data = await callTool("get_security_rules", {}, firewall);
+  const all = data?.rules?.entry || [];
+  // 1) 先按整串子串匹配（保持原行为）
+  let matches = all.filter((r) => r["@_name"]?.toLowerCase().includes(kw.toLowerCase()));
+  let mode = "整串匹配";
+  // 2) 0 命中时 fallback 拆词 OR 匹配（处理 LLM 把"name带有block"整段当 keyword 的情况）
+  if (matches.length === 0) {
+    const tokens = tokenizeForMatch(kw);
+    if (tokens.length > 0) {
+      const seen = new Set();
+      matches = all.filter((r) => {
+        const name = (r["@_name"] || "").toLowerCase();
+        const hit = tokens.some((tk) => name.includes(tk.toLowerCase()));
+        if (hit && !seen.has(r["@_name"])) { seen.add(r["@_name"]); return true; }
+        return false;
+      });
+      if (matches.length) mode = `拆词 OR 匹配 [${tokens.join(", ")}]`;
+    }
+  }
+  const top = matches.slice(0, 10).map((r) => r["@_name"]);
+  t.steps.push(`${mode} "${kw}" 命中 ${matches.length} 条规则` + (top.length ? `：${top.join("、")}` : ""));
+  t.status = "awaiting_selection";
+  t.result = { awaitingSelection: true, verb, keyword: kw, matched: top, totalMatches: matches.length, mode };
+  t._candidate = { name: p.name, keyword: kw, template: t.template, firewall };
+  saveTask(t);
+}
+
+// 把模糊描述拆成可独立匹配的核心 token（中文/英文连续段 + 过滤常见停用词）
+function tokenizeForMatch(text) {
+  const STOP = new Set([
+    "的", "在", "和", "与", "或", "带", "有", "含", "按", "上", "里", "下", "中", "为", "是",
+    "规则", "名字", "名称", "rule", "policy", "删除", "封禁", "放行", "禁用", "启用",
+    "请", "把", "我", "你", "他", "的", "把", "来", "下", "起", "到",
+    "this", "that", "the", "with", "and", "or", "rule", "policy"
+  ]);
+  const tokens = text.match(/[\u4e00-\u9fa5]+|[A-Za-z][A-Za-z0-9_-]*/g) || [];
+  return tokens
+    .map((t) => t.trim())
+    .filter((t) => t && t.length >= 2 && !STOP.has(t.toLowerCase()) && !STOP.has(t));
+}
+
+async function runChangeCommit(t, firewall) {
+  t.status = "committing";
+  let job = null;
+  try {
+    // 走 directCommit（POST + <async/>），绕开 MCP commit 工具的 v3Schema 故障
+    const r = await directCommit("WebUI Agent: " + (t.templateLabel || t.type));
+    const txt = String(r);
+    // 鲁棒解析 job：<job>ID</job> / <id>ID</id> / "jobid 123" / "id 123" / JSON "job":ID
+    const m = txt.match(/<job>(\d+)<\/job>/i)
+      || txt.match(/<id>(\d+)<\/id>/i)
+      || txt.match(/jobid[\s=]+["']?(\d+)/i)
+      || txt.match(/\bid\s+(\d+)\b/i)
+      || txt.match(/"job"\s*:\s*(\d+)/);
+    job = m ? m[1] : null;
+    t.steps.push("commit 入队" + (job ? ` job=${job}` : "：无 job（响应：" + txt.slice(0, 120) + "）"));
+    if (!job) {
+      t.steps.push("可能原因：candidate 未生效（无变更可提交）或 commit 端点未返回 job");
+      t.status = "done";
+      t.result = Object.assign(t.result || {}, { needsManualCommit: true, raw: txt.slice(0, 300) });
+      saveTask(t);
+      return;
+    }
+  } catch (e) {
+    t.steps.push("commit 入队失败：" + e.message.slice(0, 80));
+    t.status = "done";
+    t.result = Object.assign(t.result || {}, { needsManualCommit: true });
+    saveTask(t);
+    return;
+  }
+  // 轮询 job（每次 3 秒，最多 60 次 = 3 分钟）
+  for (let i = 0; i < 60; i++) {
+    await new Promise((res) => setTimeout(res, 3000));
+    try {
+      const s2 = await directOp(`<show><jobs><id>${job}</id></jobs></show>`);
+      const stxt = String(s2);
+      const stm = stxt.match(/<status>\s*([^<\s]+)/i);
+      const st = stm ? stm[1].toUpperCase() : "";
+      const pct = stxt.match(/<progress>\s*(\d+)/i);
+      if (i % 5 === 0) t.steps.push(`commit job=${job} status=${st}${pct ? ` (${pct[1]}%)` : ""}`);
+      if (st === "FIN" || st === "FINOK" || stxt.includes("FIN OK")) {
+        t.steps.push("commit 完成 (job=" + job + ")");
+        t.status = "done";
+        t.result = Object.assign(t.result || {}, { job });
+        saveTask(t);
+        return;
+      }
+      if (st === "FAIL" || st === "STOPPED" || st === "ERROR") {
+        t.steps.push("commit 失败：" + st + " job=" + job);
+        t.status = "done";
+        t.result = Object.assign(t.result || {}, { job, commitFailed: true });
+        saveTask(t);
+        return;
+      }
+    } catch (e) {
+      // 单次轮询错误不中断，继续
+    }
+  }
+  // 超时：标记需要手动 commit（但提供 job id 供用户去 PAN-OS UI 跟进）
+  t.steps.push(`commit 轮询超时（job ${job}）— 可能仍在执行，请到 PAN-OS UI 查看或继续轮询`);
+  t.status = "done";
+  t.result = Object.assign(t.result || {}, { job, needsManualCommit: true, timedOut: true });
+  saveTask(t);
+}
+
+// ── 意图 → 任务路由 ──
+async function createTaskFromInput(input, firewall) {
+  let action = null, fromLLM = false;
+  for (const [k, v] of Object.entries(ACTIONS)) { if (k === input || v.label === input) action = k; }
+  if (!action) {
+    action = await llmResolveAction(input);
+    if (action) fromLLM = true;
+  }
+  if (action === "change") {
+    const c = await llmExtractChange(input);
+    if (!c) return { error: "无法解析变更意图（支持：创建/删除地址对象、封禁/放行 IP、移动/删除/禁用/启用安全策略）" };
+    const tmpl = CHANGE_TEMPLATES[c.template];
+    // 规则类模板（delete/disable/enable）若只有模糊 keyword，先预检转 awaiting_selection
+    const RULE_TMPL = ["delete_security_rule", "set_security_rule_disabled", "set_security_rule_enabled"];
+    const needPrecheck = RULE_TMPL.includes(c.template) && !(c.params?.name && /^[a-zA-Z0-9_\-]+$/.test(c.params.name));
+    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
+    t.plan = tmpl.plan(c.params || {});
+    if (needPrecheck) {
+      // 同步做一次预检（list candidates）→ 任务状态已是 awaiting_selection，前端直接展示候选按钮
+      try { await setAwaitingSelection(t, c.params, firewall, tmpl.label, []); }
+      catch (e) { t.status = "failed"; t.error = e.message; saveTask(t); }
+    } else {
+      t.steps.push("变更计划已生成，等待审批");
+    }
+    t.llm = currentLLM;  // 记录处理该任务时实际使用的 LLM provider key
+    tasks.push(t); persistTasks();
+    return needPrecheck && t.status === "awaiting_selection"
+      ? { taskId: t.id, status: t.status, plan: t.plan, candidates: t.result.matched, totalMatches: t.result.totalMatches }
+      : { taskId: t.id, status: t.status, plan: t.plan };
+  }
+  if (action === "audit") {
+    const a = await llmParseAudit(input);
+    const t = newTask("audit", input, { firewall, audit: a });
+    t.llm = currentLLM;
+    t.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+    t.steps.push(t.decision);
+    tasks.push(t); persistTasks();
+    runAuditTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    return { taskId: t.id, status: t.status, type: "audit" };
+  }
+  if (action === "diag") {
+    const d = await llmParseDiag(input);
+    if (!d || !d.type) return { error: "无法解析诊断意图（示例：内部连不上外网 / 查一下 1.2.3.4 什么情况 / 全面健康检查）" };
+    const t = newTask("diag", input, { firewall, diag: d });
+    t.llm = currentLLM;
+    t.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+    t.steps.push(t.decision);
+    tasks.push(t); persistTasks();
+    runDiagTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    return { taskId: t.id, status: t.status, type: "diag" };
+  }
+  if (action === "inspect") {
+    const t = newTask("inspect", input, { firewall });
+    tasks.push(t); persistTasks();
+    runInspectTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    return { taskId: t.id, status: t.status, type: "inspect" };
+  }
+  if (action && ACTIONS[action]) {
+    const t = newTask("query", input, { action, firewall });
+    if (fromLLM) t.llm = currentLLM;
+    t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）` : `关键词匹配 → 动作 ${action}`;
+    t.steps.push(t.decision);
+    tasks.push(t); persistTasks();
+    runQueryTask(t, action, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
+  }
+  return { error: "无法识别意图，试试：设备清单 / 设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4" };
+}
+
+// ── 审计日志任务 ──
+async function runAuditTask(t, firewall) {
+  t.status = "running";
+  t.steps.push("查询配置变更日志 (config log)");
+  const step = { tool: "get_config_logs", status: "running", startMs: Date.now() };
+  t.steps.push(step);
+  let entries = [];
+  try {
+    const data = await callTool("get_config_logs", { nlogs: 200 }, firewall);
+    entries = data.entry || [];
+  } catch (e) {
+    step.status = "err"; step.msg = String(e.message || e);
+    t.status = "failed"; t.error = step.msg; saveTask(t); return;
+  }
+  step.status = "ok"; step.ms = Date.now() - step.startMs;
+
+  const { minutes, object } = t.audit || { minutes: 60, object: "all" };
+  const cutoff = Date.now() - minutes * 60000;
+  const isSec = (p) => /rulebase\/security|security\/rules/.test(p || "");
+  const rows = entries
+    .map((e) => ({
+      time: e.receive_time || e.time_generated || "",
+      admin: e.admin || "?",
+      cmd: e.cmd || "?",
+      result: e.result || "?",
+      client: e.client || "?",
+      path: (e["full-path"] || e.path || "").slice(0, 80),
+    }))
+    .filter((r) => {
+      // 时间过滤
+      if (!r.time) return true;
+      const t = Date.parse(r.time.replace("/", "-").replace("/", "-"));
+      if (isNaN(t)) return true;
+      if (t < cutoff) return false;
+      // 对象过滤
+      if (object === "security") return isSec(r.path);
+      return true;
+    });
+  t.result = { title: `配置变更审计（最近 ${minutes} 分钟${object === "security" ? " · 策略相关" : ""}）`, rows, total: rows.length, minutes, object };
+  t.steps.push(`筛选出 ${rows.length} 条变更记录`);
+  t.status = "done";
+  saveTask(t);
+}
+
+// ── 智能诊断任务 ──
+function ipInRules(rules, ip) {
+  return rules.filter((r) => {
+    const src = r.source?.member, dst = r.destination?.member, act = r.action;
+    const hit = (m) => Array.isArray(m) ? m.includes(ip) || m.includes("any") : m === ip || m === "any";
+    return hit(src) && hit(dst) && (act === "allow" || act === "deny");
+  }).map((r) => ({ name: r["@_name"], action: r.action, disabled: r.disabled === "yes", from: r.from?.member, to: r.to?.member }));
+}
+
+// 判断路由目的（CIDR/精确 IP）是否覆盖目标 IP
+function ipMatchDest(dest, ip) {
+  if (!dest) return false;
+  const [d, bits] = String(dest).split("/");
+  if (d === ip) return true;
+  const n = parseInt(bits, 10);
+  if (!n || isNaN(n)) return false;
+  const ipN = ipv4ToInt(ip), dN = ipv4ToInt(d);
+  if (ipN === null || dN === null) return false;
+  const mask = n === 0 ? 0 : (~0 << (32 - n)) >>> 0;
+  return (ipN & mask) === (dN & mask);
+}
+function ipv4ToInt(ip) {
+  const p = String(ip || "").split(".").map(Number);
+  if (p.length !== 4 || p.some((x) => isNaN(x) || x < 0 || x > 255)) return null;
+  return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
+}
+
+// ── 监控 KPI 概览（30s 缓存）──
+let overviewCache = null, overviewTs = 0;
+// 活跃会话数：<show><session><all> 返回 entry 数（避免解析 353 个 entry 的开销）
+async function getActiveSessions() {
+  const xmlAll = await directOp("<show><session><all></all></session></show>");
+  const num_active = (xmlAll.match(/<entry>/g) || []).length;
+  const xmlInfo = await directOp("<show><session><info></info></session></show>");
+  const f = {};
+  const re = /<(\w+)>([^<]+)<\/\1>/g;
+  let m; while ((m = re.exec(xmlInfo)) !== null) if (!(m[1] in f)) f[m[1]] = m[2];
+  return { num_active, num_max: 65536, kbps: f.kbps, pps: f.pps, cps: f.cps };
+}
+
+async function getOverview() {
+  if (overviewCache && Date.now() - overviewTs < 5000) return overviewCache;
+  const kpi = { device: {}, ha: {}, session: {}, resource: {}, license: {} };
+  const fast = await Promise.allSettled([
+    callTool("get_firewall_info", {}, null).catch(() => null),
+    callTool("get_ha_status", {}, null).catch(() => null),
+    getActiveSessions().catch(() => null),
+    callTool("get_system_resources", {}, null).catch(() => null),
+    callTool("get_licenses", {}, null).catch(() => null),
+  ]);
+  const [fw, ha, sess, res, lic] = fast.map((x) => (x.status === "fulfilled" ? x.value : null));
+  if (fw) { kpi.device = { hostname: fw.hostname, model: fw.model, sw: fw["sw-version"], uptime: fw.uptime, serial: fw.serial }; }
+  if (ha) kpi.ha = { enabled: ha.enabled === "yes" || ha.enabled === true };
+  if (sess) kpi.session = { active: sess.num_active, max: sess.num_max, kbps: sess.kbps, pps: sess.pps };
+  if (res) kpi.resource = { load: res["load average"], memUsed: res["mem used"], memTotal: res["mem total"] };
+  if (lic) {
+    const arr = lic.entry || [];
+    kpi.license = { total: arr.length, expired: arr.filter((e) => String(e.expired).toLowerCase() === "yes").length };
+  }
+  const out = { ts: Date.now(), kpi, health: kpi.device.hostname ? "ok" : "degraded" };
+  overviewCache = out; overviewTs = Date.now();
+  return out;
+}
+
+async function runDiagTask(t, firewall) {
+  t.status = "running";
+  const { type = "generic", params = {} } = t.diag || {};
+  const ip = params.ip || "";
+  const minutes = params.minutes || 60;
+  const sections = [];
+  let cancelled = false;
+  let stats = null;   // 日志统计（喂给 LLM 综合）
+  function addStep(tool) { const s = { tool, status: "running", startMs: Date.now() }; t.steps.push(s); return s; }
+  async function safeCall(tool, args) {
+    if (t.cancelled) { cancelled = true; return null; }
+    const s = addStep(tool);
+    try { const r = await callTool(tool, args, firewall); s.status = "ok"; s.ms = Date.now() - s.startMs; return r; }
+    catch (e) { s.status = "err"; s.ms = Date.now() - s.startMs; s.msg = String(e.message || e); t.steps.push({ tool: `${tool} 失败`, status: "err", msg: s.msg }); return null; }
+  }
+
+  if (cancelled) { t.status = "cancelled"; saveTask(t); return; }
+  if (type === "connectivity") {
+    t.steps.push("诊断类型: 连通性");
+    // 1 策略命中
+    const rules = (await callTool("get_security_rules", {}, firewall))?.rules?.entry || [];
+    const matched = ip ? ipInRules(rules, ip) : rules.filter((r) => r.action === "allow" && !r.disabled);
+    const anyAllow = rules.some((r) => r.action === "allow" && !r.disabled && r.source?.member === "any" && r.destination?.member === "any");
+    sections.push({ step: "策略命中分析", result: anyAllow ? "存在全放行规则，策略层不会阻断该目标" : (matched.length ? `命中 ${matched.length} 条规则: ` + matched.map((m) => `${m.name}(${m.action})`).join(", ") : "未找到明确匹配规则") });
+    // 2 流量证据（deepLog：200 条 + 时间窗口 + Top N 统计）
+    const ld = await deepLog("traffic", { minutes, nlogs: 200 });
+    stats = ld.top;
+    const logs = ld.entries;
+    const hits = logs.filter((l) => (ip && (l.src === ip || l.dst === ip)) || (!ip && l.action !== "allow"));
+    const actions = {};
+    hits.forEach((l) => { actions[l.action] = (actions[l.action] || 0) + 1; });
+    sections.push({ step: "流量证据", result: hits.length ? `最近 ${minutes} 分钟该目标相关 ${hits.length} 条: ` + Object.entries(actions).map(([a, c]) => `${a}×${c}`).join(" ") : (ip ? `最近 ${minutes} 分钟无该目标流量记录` : `最近 ${minutes} 分钟未发现被拦截流量`) });
+    sections.push({ step: "流量 Top 统计", result: fmtTop(ld.top, ["src", "dst", "app", "action"]) + (ld.degraded ? `（窗口内无数据，展示全部 ${ld.rawCount} 条，最早 ${ld.oldest}）` : "") });
+    // 3 路由（spec：路由联动——默认路由 + 是否有指向目标的特定路由）
+    const routes = (await callTool("get_routing_table", {}, firewall))?.entry || [];
+    const hasDefault = Array.isArray(routes) && routes.some((r) => (r.destination || "").includes("0.0.0.0"));
+    let routeDetail = "未发现默认路由（可能影响出网）";
+    if (hasDefault) {
+      const def = routes.find((r) => (r.destination || "").includes("0.0.0.0"));
+      routeDetail = `存在默认路由${def ? ` via ${def.nexthop || def["ip-address"] || "?"}` : ""}`;
+      if (ip) {
+        const specific = routes.filter((r) => ipMatchDest(r.destination, ip));
+        routeDetail += specific.length ? `；另有 ${specific.length} 条指向 ${ip} 的特定路由` : "；无该目标特定路由（走默认）";
+      }
+    }
+    sections.push({ step: "路由可达性", result: routeDetail });
+    // 4 Zone 联动（PAN-OS 核心：策略按 zone 匹配，跨 zone 默认拒绝）
+    try {
+      // 修复：MCP get_zones 返回 {zone:{entry:[...]}}，外层是 zone 包装
+      const zoneRaw = await callTool("get_zones", {}, firewall);
+      const zones = (zoneRaw && (zoneRaw.zone?.entry || zoneRaw.entry)) || [];
+      const interfaces = (await callTool("get_interfaces", {}, firewall))?.hw?.entry || [];
+      // 接口 → zone 映射（PAN-OS zone 内接口路径是 z.network.{layer2|layer3|virtual-wire}.member，member 可能是字符串或字符串数组）
+      const ifZones = {};
+      const toArr = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
+      function zoneIfList(z) {
+        const n = z.network || {};
+        return [
+          ...toArr(n["layer2"]?.member),
+          ...toArr(n["layer3"]?.member),
+          ...toArr(n["virtual-wire"]?.member),
+        ];
+      }
+      for (const z of zones) {
+        for (const i of zoneIfList(z)) ifZones[i] = z["@_name"];
+      }
+      // 源/目的 IP 所属接口？没有精确办法，但可查它们在哪些 zone 边界（用地址对象）
+      const addrRaw = await callTool("get_address_objects", {}, firewall);
+      const addrs = (addrRaw && (addrRaw.entry || addrRaw.address?.entry)) || [];
+      const matchAddr = (testIp) => {
+        const hits = addrs.filter((a) => {
+          const v = a["ip-range"] || a["fqdn"] || a["ip-netmask"] || "";
+          return testIp && v.includes(testIp);
+        }).map((a) => a["@_name"]);
+        return hits;
+      };
+      const list = zones.map((z) => {
+        const ifs = zoneIfList(z);
+        return `${z["@_name"]}(${ifs.length ? "接口=" + ifs.join(",") : "无接口"})`;
+      });
+      let zoneResult = `Zone 共 ${zones.length} 个：` + (list.length ? list.join("; ") : "(空 list — 通常不该空，先看 interfaces 确认是否虚拟 wire)");
+      if (ip) {
+        const addrHits = matchAddr(ip);
+        zoneResult += addrHits.length ? `；${ip} 命中地址对象: ${addrHits.join(", ")}` : `；${ip} 未匹配地址对象`;
+        // 额外给出：源 IP 的接口若在 ifZones 中有映射，可粗略估计 zone
+        //（无法精确反查 IP→interface，仅做提示）
+      }
+      sections.push({ step: "Zone 配置", result: zoneResult });
+    } catch (e) { sections.push({ step: "Zone 配置", result: "Zone 查询失败: " + String(e.message || e).slice(0, 120) }); }
+    // 5 ARP（spec：ARP 联动——目标是否在同一二层/L3 可达 MAC 解析）
+    try {
+      const arp = (await callTool("get_arp_table", {}, firewall))?.entry || [];
+      let arpResult = `ARP 表 ${arp.length ? arp.length + " 条" : "为空"}`;
+      if (ip && arp.length) {
+        const hitArp = arp.filter((a) => a.ip === ip || a["ip-address"] === ip);
+        arpResult += hitArp.length ? `；${ip} 已解析 → ${hitArp.map((a) => `MAC=${a.mac || a["mac-address"] || "?"} 接口=${a.interface || a.ifname || "?"}`).join(", ")}` : `；${ip} 无 ARP 记录（跨网段正常，需结合路由/zone 判定）`;
+      }
+      sections.push({ step: "ARP 联动", result: arpResult });
+    } catch (e) { sections.push({ step: "ARP 联动", result: "ARP 查询失败: " + String(e.message || e).slice(0, 120) }); }
+    // 6 活跃会话联动（spec：会话联动——该 IP 是否有活跃会话、方向、应用）
+    try {
+      const sess = await callTool("get_active_sessions", {}, firewall);
+      const nActive = parseInt((sess && sess["num-active"]) || 0, 10);
+      let sessResult = nActive ? `活跃会话 ${nActive} 个` : "无活跃会话";
+      if (ip && nActive) {
+        try {
+          // 精确到目标 IP 的会话明细：<show><session><all> 全量太重，用 filter 精准查
+          const sessXml = await directOp(`<show><session><filter><source>${ip}</source></filter></session></show>`);
+          const cnt = (sessXml.match(/<entry>/g) || []).length;
+          sessResult = cnt ? `活跃会话中 ${ip} 作为源有 ${cnt} 条` : `活跃会话 ${nActive} 个；${ip} 无作为源的活动会话`;
+        } catch { sessResult = `活跃会话 ${nActive} 个（明细过滤不可用）`; }
+      }
+      sections.push({ step: "会话联动", result: sessResult });
+    } catch (e) { sections.push({ step: "会话联动", result: "会话查询失败: " + String(e.message || e).slice(0, 120) }); }
+    // 7 源 IP 入接口流量（spec：路由/ARP/会话联动——按 IP 找入接口证据；流量日志按 in_if 聚合）
+    if (ip) {
+      try {
+        const ingoing = hits.filter((l) => l.src === ip);
+        if (ingoing.length) {
+          const byIf = {}, byAct = {};
+          ingoing.forEach((l) => {
+            const k = l.inbound_if || l["inbound-if"] || "?";
+            byIf[k] = (byIf[k] || 0) + 1;
+            byAct[l.action] = (byAct[l.action] || 0) + 1;
+          });
+          sections.push({ step: "源 IP 入接口", result: `${ip} 共 ${ingoing.length} 条入向流量；入接口=${Object.entries(byIf).map(([k, v]) => `${k}×${v}`).join(", ")}；action=${Object.entries(byAct).map(([k, v]) => `${k}×${v}`).join(", ")}` });
+        } else {
+          // 即使没命中源 IP，也直说"该 IP 没有任何防火墙观测到的入向流量"，重要诊断信号
+          sections.push({ step: "源 IP 入接口", result: `防火墙流量日志中 ${ip} **没有任何入向记录**（可能是：源主机没发包到防火墙 / 包被前置网络丢弃 / 发包时段超出 ${minutes} 分钟窗口）` });
+        }
+      } catch (e) { sections.push({ step: "源 IP 入接口", result: "查询失败: " + String(e.message || e).slice(0, 120) }); }
+    }
+    // 8 实时探测（spec：抓包分析 run_op_command——ping/traceroute 探测）
+    const probe = params.probe || (ip ? "ping" : null);
+    if (probe && ip) {
+      t.steps.push(`实时探测: ${probe} ${ip}`);
+      const probeCmd = probe === "traceroute"
+        ? `<test><traceroute><destination>${ip}</destination></traceroute></test>`
+        : `<test><ping><destination>${ip}</destination><count>3</count></ping></test>`;
+      try {
+        const raw = await callToolRaw("run_op_command", { command: probeCmd }, firewall);
+        const txt = String(raw?.data || raw || "");
+        // 提取关键行（丢包率/往返时延/可达性）
+        const loss = txt.match(/loss[^%]*(\d+(?:\.\d+)?)%/i);
+        const min = txt.match(/min\/avg\/max[^=]*=\s*([\d.]+)\/([\d.]+)\/([\d.]+)/i);
+        const verdict = /Unsupported command|error/i.test(txt) ? "（防火墙不支持该探测命令或权限不足）" : "";
+        sections.push({ step: "实时探测 " + probe, result: (loss ? `丢包 ${loss[1]}%` : "") + (min ? ` RTT min/avg/max=${min[1]}/${min[2]}/${min[3]}ms` : "") + verdict + (verdict ? " 原始输出: " + txt.slice(0, 200) : "") });
+      } catch (e) {
+        sections.push({ step: "实时探测 " + probe, result: "探测失败: " + String(e.message || e).slice(0, 120) });
+      }
+    } else {
+      sections.push({ step: "实时探测", result: ip ? "未指定 probe（可用 ping / traceroute）" : "未指定目标 IP，跳过实时探测" });
+    }
+    t.result = { title: "连通性诊断" + (ip ? "（" + ip + (params.port ? ":" + params.port : "") + "）" : ""), sections };
+  } else if (type === "threat_profile") {
+    t.steps.push("诊断类型: 威胁源画像");
+    const ld = await deepLog("threat", { minutes, nlogs: 200 });
+    stats = ld.top;
+    const tf = ld.entries.filter((l) => !ip || l.src === ip || l.dst === ip);
+    const byType = {};
+    tf.forEach((l) => { byType[l.subtype || "other"] = (byType[l.subtype || "other"] || 0) + 1; });
+    sections.push({ step: "威胁事件", result: tf.length ? `最近 ${minutes} 分钟共 ${tf.length} 条: ` + Object.entries(byType).map(([k, v]) => `${k}×${v}`).join(", ") : "威胁日志中无该目标记录" });
+    const sev = {};
+    tf.forEach((l) => { sev[l.severity || "?"] = (sev[l.severity || "?"] || 0) + 1; });
+    sections.push({ step: "严重级别", result: Object.entries(sev).map(([k, v]) => `${k}×${v}`).join(" ") || "无" });
+    sections.push({ step: "威胁源 Top", result: fmtTop(ld.top, ["src", "subtype", "severity"]) + (ld.degraded ? `（窗口内无威胁，展示全部 ${ld.rawCount} 条，最早 ${ld.oldest}）` : "") });
+    // 跨日志关联（第2项）：Top 威胁源 → 反查流量 action + 策略命中
+    const trLd = await deepLog("traffic", { minutes, nlogs: 200 });
+    const rules = (await callTool("get_security_rules", {}, firewall))?.entry || [];
+    const topSrcs = (ld.top.src || []).filter(([v]) => !ip || v !== ip).slice(0, 3).map(([v]) => v);
+    if (topSrcs.length) {
+      const parts = [];
+      for (const src of topSrcs) {
+        const h = trLd.entries.filter((l) => l.src === src);
+        const acts = [...new Set(h.map((l) => l.action))];
+        const rm = ipInRules(rules, src);
+        const pol = rm.length ? rm.map((r) => `${r.name}(${r.action})`).join(",") : "未匹配明确规则";
+        parts.push(`${src}: 流量${h.length}条 action=${acts.join("/") || "无"} 策略=${pol}`);
+      }
+      sections.push({ step: "跨日志关联", result: parts.join("；") });
+    } else {
+      sections.push({ step: "跨日志关联", result: "无其他威胁源可关联" });
+    }
+    const trHits = trLd.entries.filter((l) => l.src === ip || l.dst === ip);
+    const bad = tf.some((l) => ["high", "critical"].includes(l.severity)) || trHits.some((l) => l.action === "deny" || l.action === "reset-both");
+    t.result = { title: "威胁源画像" + (ip ? "：" + ip : ""), sections };
+  } else {
+    t.steps.push("诊断类型: 通用健康");
+    const fw = await callTool("get_firewall_info", {}, firewall);
+    sections.push({ step: "设备", result: `${fw.hostname} ${fw.model} ${fw["sw-version"]}` });
+    const res = await callTool("get_system_resources", {}, firewall);
+    const load = typeof res === "string" ? res.split("\n").find((l) => l.includes("load average")) : "";
+    sections.push({ step: "负载", result: load || "（资源查询无摘要）" });
+    const sess = await callTool("get_active_sessions", {}, firewall);
+    sections.push({ step: "会话", result: `活跃 ${sess["num-active"] || 0} / 上限 ${sess["num-max"] || 0}` });
+    const sys = filterByMinutes((await callTool("get_system_logs", {}, firewall))?.entry || [], minutes);
+    const errs = sys.filter((l) => ["error", "critical"].includes(l.severity));
+    sections.push({ step: "系统事件", result: errs.length ? `最近 ${minutes} 分钟内 ${errs.length} 条 error/critical` : `最近 ${minutes} 分钟无 error/critical 事件` });
+    const ldTh = await deepLog("threat", { minutes, nlogs: 200 });
+    stats = ldTh.top;
+    const th = ldTh.entries;
+    sections.push({ step: "威胁近况", result: th.length ? `最近 ${minutes} 分钟威胁日志 ${th.length} 条` : `最近 ${minutes} 分钟无威胁日志` });
+    sections.push({ step: "威胁源 Top", result: fmtTop(ldTh.top, ["src", "subtype", "severity"]) });
+    t.result = { title: "通用健康诊断", sections };
+  }
+  // LLM 综合解读（基于实际数据推理根因/置信度/建议）
+  const synth = await llmSynthesize(t.input, sections, stats);
+  if (synth) {
+    t.result.verdict = synth.verdict;
+    t.result.confidence = synth.confidence;
+    t.result.recommendation = synth.recommendation || "";
+  }
+  if (stats) t.result.logStats = stats;
+  t.status = "done";
+  saveTask(t);
+}
+const server = http.createServer(async (req, res) => {
+  // 所有响应默认 no-cache（前端会随轮询实时变化；浏览器/代理缓存旧值会误导排查）
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  const send = (code, obj) => { res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" }); res.end(JSON.stringify(obj)); };
+  const body = () => new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => ok(b)); });
+  try {
+    if (req.url === "/favicon.ico") { res.writeHead(204); res.end(); return; }
+    if (req.method === "GET" && (req.url.split("?")[0] === "/" || req.url.split("?")[0] === "/index.html")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate" });
+      let html = fs.readFileSync(path.join(__dirname, "index.html"), "utf-8");
+      // 注入 cache-bust 注释（绕过缓存，URL 变化导致内容不同 → 浏览器重新解析）
+      const ver = Date.now().toString(36);
+      html = html.replace("<body>", "<body><!-- build: " + ver + " -->");
+      res.end(html);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/llm/reset") {
+      // 语义（18:18 用户明确）：页面加载/强制刷新时回到 _default（deepseek）；
+      // 会话内手动 select 切换后立即生效，不刷新就保持所选；刷新才回默认。
+      try {
+        const def = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8"))._default;
+        if (def && LLM_PROVIDERS[def] && LLM_PROVIDERS[def].key) currentLLM = def;
+      } catch {}
+      send(200, { current: currentLLM, note: "刷新回默认" });
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/actions") {
+      send(200, { actions: Object.fromEntries(Object.entries(ACTIONS).map(([k, v]) => [k, v.label])),
+        llm: currentLLM !== "keyword", model: currentLLM !== "keyword" ? LLM_PROVIDERS[currentLLM].model : null });
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/llm") {
+      send(200, { current: currentLLM,
+        providers: Object.fromEntries(Object.entries(LLM_PROVIDERS).map(([k, v]) => [k, {
+          label: v.label, model: v.model, base_url: v.base_url, env: v.env,
+          configured: Boolean(v.key),
+          key_hint: v.key ? (v.key.slice(0, 4) + "***" + v.key.slice(-3)) : null,
+        }])) });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/llm/config") {
+      const { provider, base_url, model, key, env, label } = JSON.parse(await body());
+      if (!provider || !/^[a-z0-9_-]+$/.test(provider)) { send(400, { error: "provider 必填且仅小写字母数字下划线" }); return; }
+      const seed = LLM_SEED[provider] || { label: provider, env: (env || provider.toUpperCase() + "_API_KEY") };
+      LLM_PROVIDERS[provider] = {
+        label: label || seed.label,
+        base_url: base_url || seed.base_url,
+        model: model || seed.model,
+        env: env || seed.env,
+        key: key || "",
+      };
+      try { saveLLMConfig(); } catch (e) { send(500, { error: "写入 llm-config.json 失败：" + e.message }); return; }
+      send(200, { ok: true, provider, configured: Boolean(LLM_PROVIDERS[provider].key) });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/llm/config/delete") {
+      const { provider } = JSON.parse(await body());
+      if (LLM_PROVIDERS[provider]) { delete LLM_PROVIDERS[provider]; try { saveLLMConfig(); } catch {} }
+      send(200, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/llm/select") {
+      const { provider } = JSON.parse(await body());
+      // 临时选择（不写盘）：仅当前批次任务生效，任务结束后自动回 _default（见顶部 setInterval）
+      if (provider === "keyword") { currentLLM = "keyword"; send(200, { current: currentLLM }); return; }
+      if (LLM_PROVIDERS[provider] && LLM_PROVIDERS[provider].key) { currentLLM = provider; send(200, { current: currentLLM }); return; }
+      const v = LLM_PROVIDERS[provider];
+      const SIGNUP = { deepseek: "https://platform.deepseek.com", qwen: "https://bailian.console.aliyun.com", kimi: "https://platform.moonshot.cn" };
+      send(400, {
+        error: "「" + (v?.label || provider) + "」未配置 API key",
+        hint: "请按以下步骤配置：\n\n1. 申请 API key：\n   " + (SIGNUP[provider] || v?.base_url || "https://...") + "\n\n2. 在 webui/start.sh 中添加环境变量：\n   export " + (v?.env || "?") + '="你的key"\n\n3. 重启控制台：\n   cd webui && ./start.sh'
+      });
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/firewalls") {
+      let fws = [];
+      try { fws = JSON.parse(fs.readFileSync(CFG, "utf-8")).firewalls.map(({ name, host }) => ({ name, host })); } catch {}
+      send(200, { firewalls: fws, multi: fws.length > 1 });
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/llm/log") { send(200, { logs: llmLogs }); return; }
+    if (req.method === "POST" && req.url === "/api/llm/test") {
+      const { text } = JSON.parse(await body());
+      const t0 = Date.now();
+      const out = await llmClassify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/inspect(完整巡检)/change(变更)/diag(诊断)/null(无关)", text || "");
+      send(200, { output: out, ms: Date.now() - t0, provider: currentLLM });
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks }); return; }
+    if (req.method === "POST" && req.url === "/api/tasks/clean") {
+      // 清除终态任务（done/cancelled/failed），只保留活跃与待审批任务
+      const TERMINAL = new Set(["done", "cancelled", "failed"]);
+      const before = tasks.length;
+      for (let i = tasks.length - 1; i >= 0; i--) { if (TERMINAL.has(tasks[i].status)) tasks.splice(i, 1); }
+      persistTasks();
+      send(200, { removed: before - tasks.length, remain: tasks.length });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/task") {
+      const { query, firewall } = JSON.parse(await body());
+      if (!client) await connect();
+      send(200, await createTaskFromInput(query, firewall));
+      return;
+    }
+    if (req.method === "POST" && req.url.startsWith("/api/task/")) {
+      const parts = req.url.split("/"); // /api/task/:id/:action[/name]
+      const id = Number(parts[3]); const act = parts[4]; const selName = parts[5] ? decodeURIComponent(parts[5]) : null;
+      const t = tasks.find((x) => x.id === id);
+      if (!t) { send(404, { error: "task not found" }); return; }
+      // 用户从候选列表选择精确规则名：用新 name 重跑 candidate 阶段
+      if (act === "select" && t.status === "awaiting_selection" && t._candidate) {
+        const cand = t._candidate;
+        const newParams = { ...cand.name, name: selName, keyword: cand.keyword };
+        t.status = "executing";
+        t.steps.push(`用户从候选选中：${selName}`);
+        saveTask(t);
+        runChangeCandidate(t, cand.template, newParams, cand.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+        send(200, { taskId: t.id, status: t.status }); return;
+      }
+      if (act === "cancel") {
+        t.cancelled = true; t.status = "cancelled"; t.steps.push("手动取消");
+        saveTask(t);
+        send(200, { taskId: t.id, status: t.status }); return;
+      }
+      if (act === "approve" && t.status === "awaiting_approval") {
+        runChangeCandidate(t, t.template, t.params || {}, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+        send(200, { taskId: t.id, status: t.status }); return;
+      }
+      if (act === "reject" && t.status === "awaiting_approval") { t.status = "cancelled"; t.steps.push("已拒绝"); saveTask(t); send(200, { taskId: t.id, status: t.status }); return; }
+      if (act === "confirm" && t.status === "awaiting_commit") {
+        runChangeCommit(t, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+        send(200, { taskId: t.id, status: t.status }); return;
+      }
+      if (act === "cancel" && (t.status === "awaiting_approval" || t.status === "awaiting_commit")) { t.status = "cancelled"; t.steps.push("已取消"); saveTask(t); send(200, { taskId: t.id, status: t.status }); return; }
+      send(400, { error: "非法操作或状态不匹配: " + t.status });
+      return;
+    }
+    if (req.url === "/api/feishu/status") {
+      const running = await feishuDaemonRunning();
+      send(200, { chat: FEISHU_CHAT, running, lark: LARK_CLI });
+      return;
+    }
+    if (req.url === "/api/feishu/send") {
+      const { text } = JSON.parse(await body());
+      if (!text) { send(400, { error: "消息不能为空" }); return; }
+      send(200, await feishuSend(text));
+      return;
+    }
+    if (req.url === "/api/feishu/push-report") {
+      // 推送最新合规报告到飞书
+      const dir = path.join(__dirname, "..", "reports");
+      const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith("compliance-") && f.endsWith(".md")).sort().reverse() : [];
+      if (!files.length) { send(400, { error: "没有合规报告" }); return; }
+      const latest = fs.readFileSync(path.join(dir, files[0]), "utf-8");
+      const summary = latest.slice(0, 1500);
+      send(200, await feishuSend("【PAN-OS 合规报告 " + files[0] + "】\n" + summary));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/overview") {
+      send(200, await getOverview());
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/history") { send(200, { history }); return; }
+    send(404, { error: "Not Found" });
+  } catch (e) { send(500, { error: String(e.message || e) }); }
+});
+
+server.listen(PORT, async () => {
+  console.log(`[agent] PAN-OS Agent 控制台: http://localhost:${PORT}`);
+  try { await connect(); } catch (e) { console.error("[agent] MCP connect fail:", e.message); }
+});

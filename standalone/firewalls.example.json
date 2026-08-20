@@ -1,0 +1,9 @@
+{
+  "firewalls": [
+    {
+      "name": "PA-440",
+      "host": "10.0.0.1",
+      "api_key": "YOUR_PANOS_API_KEY"
+    }
+  ]
+}

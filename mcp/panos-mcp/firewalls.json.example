@@ -1,0 +1,14 @@
+{
+  "firewalls": [
+    {
+      "name": "hq-fw01",
+      "host": "10.0.1.1",
+      "api_key": "LUFRPT..."
+    },
+    {
+      "name": "branch-fw01",
+      "host": "10.0.2.1",
+      "api_key": "LUFRPT..."
+    }
+  ]
+}

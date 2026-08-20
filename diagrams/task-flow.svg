@@ -1,0 +1,47 @@
+<svg viewBox="0 0 680 590" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>任务处理流程图</title>
+<desc>输入 → LLM 意图分类 → 常规/诊断/变更三分支 → 结果展示与推送</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+.nb{fill:#E6F1FB;stroke:#185FA5;stroke-width:.5}
+.nd{fill:#B5D4F4;stroke:#185FA5;stroke-width:.5}
+.nt{fill:#E1F5EE;stroke:#0F6E56;stroke-width:.5}
+.na{fill:#FAEEDA;stroke:#BA7517;stroke-width:.5}
+.nr{fill:#F1EFE8;stroke:#888780;stroke-width:.5}
+.t1{font:500 13px sans-serif;fill:#0C447C}
+.t2{font:500 13px sans-serif;fill:#085041}
+.t3{font:500 13px sans-serif;fill:#633806}
+.t4{font:500 13px sans-serif;fill:#444441}
+.s1{font:400 11px sans-serif;fill:#185FA5}
+.s2{font:400 11px sans-serif;fill:#0F6E56}
+.s3{font:400 11px sans-serif;fill:#BA7517}
+.s4{font:400 11px sans-serif;fill:#5F5E5A}
+.lab{font:400 11px sans-serif;fill:#5F5E5A}
+.edge{stroke:#5F5E5A;stroke-width:1.2;fill:none}
+</style>
+</defs>
+<g><rect class="nb" x="215" y="45" width="250" height="46" rx="8"/><text class="t1" x="340" y="68" text-anchor="middle" dominant-baseline="central">用户输入</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M340 91 L340 121"/>
+<g><rect class="nd" x="215" y="121" width="250" height="46" rx="8"/><text class="t1" x="340" y="137" text-anchor="middle" dominant-baseline="central">LLM 意图分类</text><text class="s1" x="340" y="155" text-anchor="middle" dominant-baseline="central">deepseek · 关键词模式兜底</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M340 167 L340 200"/>
+<g><path class="nd" d="M340 200 L440 235 L340 270 L240 235 Z" stroke-width=".5"/><text class="t1" x="340" y="232" text-anchor="middle" dominant-baseline="central">动作分派</text><text class="s1" x="340" y="250" text-anchor="middle" dominant-baseline="central">5 类任务</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M140 235 L140 320"/>
+<text class="lab" x="150" y="282">常规</text>
+<g><rect class="nb" x="55" y="320" width="170" height="52" rx="8"/><text class="t1" x="140" y="338" text-anchor="middle" dominant-baseline="central">query / inspect / audit</text><text class="s1" x="140" y="356" text-anchor="middle" dominant-baseline="central">工具调用 · MCP/direct</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M340 270 L340 320"/>
+<text class="lab" x="350" y="300">诊断</text>
+<g><rect class="nt" x="255" y="320" width="170" height="52" rx="8"/><text class="t2" x="340" y="338" text-anchor="middle" dominant-baseline="central">diag 深度分析</text><text class="s2" x="340" y="356" text-anchor="middle" dominant-baseline="central">200 条 · Top N · 时间窗</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M340 372 L340 402"/>
+<g><rect class="nt" x="255" y="402" width="170" height="52" rx="8"/><text class="t2" x="340" y="420" text-anchor="middle" dominant-baseline="central">LLM 综合解读</text><text class="s2" x="340" y="438" text-anchor="middle" dominant-baseline="central">根因 · 置信度 · 建议</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M540 235 L540 320"/>
+<text class="lab" x="550" y="282">变更</text>
+<g><rect class="na" x="455" y="320" width="170" height="52" rx="8"/><text class="t3" x="540" y="338" text-anchor="middle" dominant-baseline="central">change 变更计划</text><text class="s3" x="540" y="356" text-anchor="middle" dominant-baseline="central">创建 / 删除 / 封禁</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M540 372 L540 402"/>
+<g><rect class="na" x="455" y="402" width="170" height="52" rx="8"/><text class="t3" x="540" y="420" text-anchor="middle" dominant-baseline="central">审批闭环</text><text class="s3" x="540" y="438" text-anchor="middle" dominant-baseline="central">批准 → candidate → commit</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M140 372 L300 500"/>
+<path class="edge" marker-end="url(#arrow)" d="M340 454 L340 500"/>
+<path class="edge" marker-end="url(#arrow)" d="M540 454 L385 500"/>
+<g><rect class="nr" x="215" y="500" width="250" height="52" rx="8"/><text class="t4" x="340" y="518" text-anchor="middle" dominant-baseline="central">结果展示与推送</text><text class="s4" x="340" y="536" text-anchor="middle" dominant-baseline="central">前端表格 · 飞书回复</text></g>
+<text class="lab" x="52" y="570">注：拒绝审批 → 任务终止；commit 超时 → 提示手动 commit，不阻塞任务</text>
+</svg>

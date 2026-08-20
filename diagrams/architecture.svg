@@ -1,0 +1,62 @@
+<svg viewBox="0 0 680 780" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>PAN-OS 防火墙监控运维数字员工架构图</title>
+<desc>五层架构：用户层、交互层、编排层、工具层、数据层</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+.lb{fill:#F1EFE8;stroke:#B4B2A9;stroke-width:.5;stroke-dasharray:5 4}
+.lt{font:500 11px sans-serif;fill:#5F5E5A;letter-spacing:1.5px}
+.bu{fill:#E6F1FB;stroke:#185FA5;stroke-width:.5}
+.te{fill:#E1F5EE;stroke:#0F6E56;stroke-width:.5}
+.gy{fill:#F1EFE8;stroke:#888780;stroke-width:.5}
+.t1{font:500 13.5px sans-serif;fill:#0C447C}
+.t2{font:500 13.5px sans-serif;fill:#085041}
+.t3{font:500 13.5px sans-serif;fill:#444441}
+.s1{font:400 11.5px sans-serif;fill:#185FA5}
+.s2{font:400 11.5px sans-serif;fill:#0F6E56}
+.s3{font:400 11.5px sans-serif;fill:#5F5E5A}
+.lab{font:400 11px sans-serif;fill:#5F5E5A}
+.edge{stroke:#5F5E5A;stroke-width:1.2;fill:none}
+.edg{stroke:#185FA5;stroke-width:1.2;fill:none}
+</style>
+</defs>
+<rect class="lb" x="40" y="45" width="600" height="95" rx="10"/>
+<text class="lt" x="52" y="60">用户层 · 交互入口</text>
+<g><rect class="bu" x="70" y="72" width="250" height="52" rx="8"/><text class="t1" x="195" y="90" text-anchor="middle" dominant-baseline="central">Web 控制台</text><text class="s1" x="195" y="108" text-anchor="middle" dominant-baseline="central">浏览器 · localhost:8080</text></g>
+<g><rect class="bu" x="360" y="72" width="250" height="52" rx="8"/><text class="t1" x="485" y="90" text-anchor="middle" dominant-baseline="central">飞书群</text><text class="s1" x="485" y="108" text-anchor="middle" dominant-baseline="central">群消息 · 机器人应用</text></g>
+<rect class="lb" x="40" y="180" width="600" height="95" rx="10"/>
+<text class="lt" x="52" y="195">交互层 · 服务入口</text>
+<g><rect class="bu" x="70" y="207" width="250" height="52" rx="8"/><text class="t1" x="195" y="225" text-anchor="middle" dominant-baseline="central">HTTP API 服务</text><text class="s1" x="195" y="243" text-anchor="middle" dominant-baseline="central">server.js · REST :8080</text></g>
+<g><rect class="bu" x="360" y="207" width="250" height="52" rx="8"/><text class="t1" x="485" y="225" text-anchor="middle" dominant-baseline="central">飞书桥接 daemon</text><text class="s1" x="485" y="243" text-anchor="middle" dominant-baseline="central">feishu-bridge.py · 60s 轮询</text></g>
+<rect class="lb" x="40" y="315" width="600" height="110" rx="10"/>
+<text class="lt" x="52" y="330">编排层 · 智能决策</text>
+<g><rect class="te" x="70" y="342" width="270" height="58" rx="8"/><text class="t2" x="205" y="360" text-anchor="middle" dominant-baseline="central">任务引擎</text><text class="s2" x="205" y="378" text-anchor="middle" dominant-baseline="central">query / inspect / diag / audit / change</text></g>
+<g><rect class="te" x="360" y="342" width="250" height="58" rx="8"/><text class="t2" x="485" y="360" text-anchor="middle" dominant-baseline="central">LLM 规划</text><text class="s2" x="485" y="378" text-anchor="middle" dominant-baseline="central">deepseek-v4-flash · qwen · kimi</text></g>
+<rect class="lb" x="40" y="465" width="600" height="105" rx="10"/>
+<text class="lt" x="52" y="480">工具层 · 执行能力</text>
+<g><rect class="te" x="70" y="492" width="170" height="48" rx="8"/><text class="t2" x="155" y="508" text-anchor="middle" dominant-baseline="central">MCP Server</text><text class="s2" x="155" y="525" text-anchor="middle" dominant-baseline="central">117 工具 · 可选</text></g>
+<g><rect class="te" x="255" y="492" width="170" height="48" rx="8"/><text class="t2" x="340" y="508" text-anchor="middle" dominant-baseline="central">Direct 直连</text><text class="s2" x="340" y="525" text-anchor="middle" dominant-baseline="central">op / config / log</text></g>
+<g><rect class="te" x="440" y="492" width="170" height="48" rx="8"/><text class="t2" x="525" y="508" text-anchor="middle" dominant-baseline="central">工具路由</text><text class="s2" x="525" y="525" text-anchor="middle" dominant-baseline="central">tools-config.json</text></g>
+<rect class="lb" x="40" y="610" width="600" height="100" rx="10"/>
+<text class="lt" x="52" y="625">数据层 · 基础设施</text>
+<g><rect class="gy" x="70" y="637" width="180" height="48" rx="8"/><text class="t3" x="160" y="653" text-anchor="middle" dominant-baseline="central">PAN-OS 防火墙</text><text class="s3" x="160" y="670" text-anchor="middle" dominant-baseline="central">PA-440 · 11.2.4</text></g>
+<g><rect class="gy" x="265" y="637" width="180" height="48" rx="8"/><text class="t3" x="355" y="653" text-anchor="middle" dominant-baseline="central">配置文件</text><text class="s3" x="355" y="670" text-anchor="middle" dominant-baseline="central">firewalls · llm-config</text></g>
+<g><rect class="gy" x="460" y="637" width="180" height="48" rx="8"/><text class="t3" x="550" y="653" text-anchor="middle" dominant-baseline="central">LLM API</text><text class="s3" x="550" y="670" text-anchor="middle" dominant-baseline="central">OpenAI 兼容接口</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M195 124 L195 207"/>
+<text class="lab" x="76" y="170">HTTP</text>
+<path class="edge" marker-end="url(#arrow)" d="M485 124 L485 207"/>
+<text class="lab" x="505" y="170">轮询群消息</text>
+<path class="edge" marker-end="url(#arrow)" d="M205 259 L205 342"/>
+<text class="lab" x="80" y="303">POST /api/task</text>
+<path class="edge" marker-end="url(#arrow)" d="M150 400 L150 492"/>
+<text class="lab" x="160" y="450">工具调用</text>
+<path class="edge" marker-end="url(#arrow)" d="M340 400 L340 492"/>
+<path class="edge" marker-end="url(#arrow)" d="M150 540 L150 637"/>
+<path class="edge" marker-end="url(#arrow)" d="M340 540 L340 637"/>
+<text class="lab" x="205" y="592">PAN-OS HTTPS API</text>
+<path class="edg" marker-end="url(#arrow)" d="M485 400 L625 458 L625 637"/>
+<text class="lab" x="505" y="562">OpenAI 兼容</text>
+<text class="lab" x="52" y="740">图例：实线 = 数据流</text>
+<line class="edge" x1="150" y1="737" x2="200" y2="737"/>
+<text class="lab" x="215" y="740">蓝 = 入口/交互 · 青 = 编排/工具 · 灰 = 基础设施</text>
+</svg>

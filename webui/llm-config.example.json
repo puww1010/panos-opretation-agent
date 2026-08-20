@@ -1,0 +1,27 @@
+{
+  "_comment": "复制为 llm-config.json 并填入 API Key，或直接在控制台『模型配置』弹窗填写",
+  "providers": {
+    "deepseek": {
+      "label": "DeepSeek",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-v4-flash",
+      "env": "DEEPSEEK_API_KEY",
+      "key": ""
+    },
+    "qwen": {
+      "label": "通义千问",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.8-max",
+      "env": "QWEN_API_KEY",
+      "key": ""
+    },
+    "kimi": {
+      "label": "Kimi",
+      "base_url": "https://api.moonshot.cn/v1",
+      "model": "kimi-k2.6",
+      "env": "KIMI_API_KEY",
+      "key": ""
+    }
+  },
+  "_default": "deepseek"
+}

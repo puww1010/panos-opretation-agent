@@ -1,0 +1,45 @@
+# ── 敏感信息（绝不入库）────────────────────────────
+# 真实 API Key / 设备凭据：用 *.example.* 模板提交，客户自行填写
+webui/llm-config.json
+standalone/llm-config.json
+cfgs/firewalls.json
+*.api_key
+*.env
+.env
+.env.*
+
+# ── 依赖（体积大，克隆后 npm install / npm ci）──────
+node_modules/
+webui/node_modules/
+mcp/panos-mcp/node_modules/
+package-lock.json
+webui/package-lock.json
+mcp/panos-mcp/package-lock.json
+
+# ── 构建产物 ───────────────────────────────────────
+dist/
+build/
+out/
+*.app/
+*.exe
+*.pkg
+
+# ── 运行时产物 / 日志 ──────────────────────────────
+reports/
+.state/
+__pycache__/
+*.pyc
+*.log
+/tmp/*.log
+*.heartbeat
+
+# ── macOS / 编辑器 ─────────────────────────────────
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+*.iml
+
+# ── 检查点备份（历史修复快照，不入库）──────────────
+webui/*.bak
