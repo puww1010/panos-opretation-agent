@@ -522,6 +522,30 @@ function renderTask(t) {
   if (t.status === "awaiting_approval") {
     h += '<div class="plan">变更计划：' + esc(t.plan) + "</div>";
     h += '<button class="btn" style="background:var(--green);color:#04121a;border:none" onclick="act(' + t.id + ",'approve')\">批准执行</button> <button class='btn' style='background:var(--red);color:#fff;border-color:var(--red)' onclick=\"act(" + t.id + ",'reject')\">拒绝</button>";
+  } else if (t.status === "awaiting_selection") {
+    const r = t.result || {}; const matched = r.matched || [];
+    h += '<div class="plan">' + esc(t.plan) + "</div>";
+    if (matched.length) {
+      h += '<div class="plan" style="color:var(--blue)">匹配到 ' + r.totalMatches + ' 条，勾选要执行的策略（支持多选）：</div>';
+      h += '<div style="margin:8px 0;display:flex;gap:8px;align-items:center">';
+      h += '<button class="btn" style="font-size:12px" onclick="toggleAllCand(' + t.id + ')">全选/取消全选</button>';
+      h += '<button class="btn" id="execMultiBtn' + t.id + '" style="background:var(--green);color:#04121a;border:none" onclick="execMulti(' + t.id + ')" disabled>执行所选 (0)</button>';
+      h += '<span id="selCount' + t.id + '" style="font-size:12px;color:var(--muted)">未选择</span>';
+      h += '</div>';
+      h += '<div id="candList' + t.id + '" style="max-height:320px;overflow-y:auto;margin:8px 0">';
+      for (let i = 0; i < matched.length; i++) {
+        const m = matched[i];
+        const cbId = 'cb_' + t.id + '_' + i;
+        h += '<label style="display:block;padding:6px 10px;margin:3px 0;background:#f8fafc;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:12.5px;transition:background .15s" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'#f8fafc\'">';
+        h += '<input type="checkbox" id="' + cbId + '" value="' + esc(m) + '" onchange="updateSelCount(' + t.id + ')" style="margin-right:8px;cursor:pointer">';
+        h += esc(m);
+        h += '</label>';
+      }
+      h += '</div>';
+    } else {
+      h += '<div class="err">无匹配规则。请换个关键词或直接说"删除 &lt;精确名&gt;"</div>';
+    }
+    h += ' <button class="btn" style="background:var(--red);color:#fff;border-color:var(--red)" onclick="act(' + t.id + ",'cancel')\">取消</button>";
   } else if (t.status === "awaiting_commit") {
     h += '<div class="plan">candidate 已就绪，确认 commit？</div>';
     h += '<button class="btn" style="background:var(--green);color:#04121a;border:none" onclick="act(' + t.id + ",'confirm')\">确认 commit</button> <button class='btn' onclick=\"act(" + t.id + ",'cancel')\">取消</button>";
@@ -573,6 +597,48 @@ function statusText(s) {
 async function act(id, action) {
   try { await fetch("/api/task/" + id + "/" + action, { method: "POST" }); } catch (e) {}
   pollTasks();
+}
+
+// 批量选择执行：从 checkbox 收集已选 name，POST JSON body
+async function execMulti(taskId) {
+  const container = document.getElementById('candList' + taskId);
+  if (!container) return;
+  const checked = container.querySelectorAll('input[type=checkbox]:checked');
+  const names = Array.from(checked).map(c => c.value);
+  if (!names.length) { alert('请先勾选要执行的策略'); return; }
+  if (!confirm('确认批量执行 ' + names.length + ' 个操作？\n' + names.join('\n'))) return;
+  try {
+    await fetch('/api/task/' + taskId + '/select-multi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names })
+    });
+  } catch (e) {}
+  pollTasks();
+}
+
+// 全选/取消全选
+function toggleAllCand(taskId) {
+  const container = document.getElementById('candList' + taskId);
+  if (!container) return;
+  const boxes = container.querySelectorAll('input[type=checkbox]');
+  const allChecked = Array.from(boxes).every(c => c.checked);
+  boxes.forEach(c => { c.checked = !allChecked; });
+  updateSelCount(taskId);
+}
+
+// 更新已选数量显示和执行按钮状态
+function updateSelCount(taskId) {
+  const container = document.getElementById('candList' + taskId);
+  const countEl = document.getElementById('selCount' + taskId);
+  const btn = document.getElementById('execMultiBtn' + taskId);
+  if (!container) return;
+  const n = container.querySelectorAll('input[type=checkbox]:checked').length;
+  if (countEl) countEl.textContent = n ? '已选 ' + n + ' 条' : '未选择';
+  if (btn) {
+    btn.disabled = n === 0;
+    btn.textContent = n ? '执行所选 (' + n + ')' : '执行所选 (0)';
+  }
 }
 
 function renderResult(results) {

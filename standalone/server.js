@@ -1061,6 +1061,72 @@ const server = http.createServer(async (req, res) => {
       const id = Number(parts[3]); const act = parts[4];
       const t = tasks.find((x) => x.id === id);
       if (!t) { send(404, { error: "task not found" }); return; }
+      // 批量选择执行：POST /api/task/:id/select-multi，body: {names: ["name1", "name2", ...]}
+      if (act === "select-multi" && t.status === "awaiting_selection" && t._candidate) {
+        const { names } = JSON.parse(await body());
+        if (!Array.isArray(names) || !names.length) {
+          send(400, { error: "names 必须是非空数组" });
+          return;
+        }
+        t.steps.push(`批量执行 ${names.length} 个策略：${names.join(", ")}`);
+        t.status = "executing";
+        saveTask(t);
+        // 异步批量执行
+        (async () => {
+          const cand = t._candidate;
+          const results = [];
+          // 串行执行每个变更（避免并发冲突）
+          for (const name of names) {
+            const newTask = {
+              id: tasks.length + 1,
+              type: "change",
+              input: `${cand.template} ${name}`,
+              template: cand.template,
+              params: { name },
+              firewall: cand.firewall,
+              status: "pending",
+              steps: [],
+              createdAt: new Date().toISOString(),
+            };
+            tasks.push(newTask);
+            persistTasks();
+            try {
+              await runChangeCandidate(newTask, cand.template, { name }, cand.firewall);
+              results.push({ name, success: true, taskId: newTask.id });
+            } catch (e) {
+              newTask.status = "failed";
+              newTask.error = String(e.message || e);
+              saveTask(newTask);
+              results.push({ name, success: false, error: String(e.message || e), taskId: newTask.id });
+            }
+          }
+          // 所有变更后自动 commit
+          const successfulTasks = results.filter(r => r.success).map(r => tasks.find(t => t.id === r.taskId));
+          if (successfulTasks.length > 0) {
+            t.steps.push(`开始 commit ${successfulTasks.length} 个变更`);
+            for (const st of successfulTasks) {
+              if (st.status === "awaiting_commit") {
+                try {
+                  await runChangeCommit(st, cand.firewall);
+                } catch (e) {
+                  st.status = "failed";
+                  st.error = "commit 失败: " + String(e.message || e);
+                  saveTask(st);
+                }
+              }
+            }
+          }
+          t.status = "done";
+          t.result = { batch: true, total: names.length, results };
+          saveTask(t);
+        })().catch(e => {
+          t.status = "failed";
+          t.error = String(e.message || e);
+          saveTask(t);
+        });
+        send(200, { taskId: t.id, status: "executing", message: `开始批量执行 ${names.length} 个策略` });
+        return;
+      }
       if (act === "cancel") {
         t.cancelled = true; t.status = "cancelled"; t.steps.push("手动取消");
         send(200, { taskId: t.id, status: t.status }); return;

@@ -128,5 +128,49 @@
       "firewall": null
     },
     "llm": "deepseek"
+  },
+  {
+    "id": 18,
+    "type": "change",
+    "input": "删除策略中name包含block的策略",
+    "status": "cancelled",
+    "steps": [
+      "整串匹配 \"block\" 命中 4 条规则：block-1.1.1.1-20260820、block-1.1.1.2-20260820、block-1.2.3.4-20260821、block-2.2.2.2-20260821",
+      "用户从候选选中：block-1.1.1.1-20260820",
+      "原 name \"block-1.1.1.1-20260820\" 不合法，自动生成",
+      "candidate: delete_security_rule obj_x_mt2xv8gd → {\"raw\":\"MCP error -32602: Input validation error: Invalid arguments for tool delete_security_rule: Invalid input: expect",
+      "手动取消"
+    ],
+    "result": {
+      "awaitingSelection": true,
+      "verb": "删除安全策略",
+      "keyword": "block",
+      "matched": [
+        "block-1.1.1.1-20260820",
+        "block-1.1.1.2-20260820",
+        "block-1.2.3.4-20260821",
+        "block-2.2.2.2-20260821"
+      ],
+      "totalMatches": 4,
+      "mode": "整串匹配"
+    },
+    "error": null,
+    "createdAt": "2026/8/21 20:41:51",
+    "template": "delete_security_rule",
+    "templateLabel": "删除安全策略",
+    "params": {
+      "name": "obj_x_mt2xv8gd",
+      "keyword": "block",
+      "type": "ip-netmask"
+    },
+    "firewall": null,
+    "plan": "按关键词\"block\"查找匹配的安全策略并列出（不执行删除）",
+    "_candidate": {
+      "keyword": "block",
+      "template": "delete_security_rule",
+      "firewall": null
+    },
+    "llm": "deepseek",
+    "cancelled": true
   }
 ]
