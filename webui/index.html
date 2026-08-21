@@ -152,6 +152,8 @@
   .tl-dec .tl-dot { background:var(--accent); color:#fff; }
   .err { color:var(--red); font-size:13px; }
   .empty { color:var(--dim); font-size:13px; padding:10px 0; }
+  .reco { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.32); border-left:3px solid var(--green); border-radius:8px; padding:11px 13px; margin:8px 0; font-size:13.5px; color:#0f6e56; line-height:1.7; }
+  .reco b { color:#0f6e56; }
   .grade { font-size:15px; font-weight:700; margin-bottom:8px; }
   .grade.bad { color:var(--red); } .grade.mid { color:var(--amber); } .grade.good { color:var(--green); }
 
@@ -275,7 +277,7 @@
   <!-- 任务中心 -->
   <div class="panel">
     <div class="panel-head">
-      <h2>🎯 任务中心</h2>
+      <h2>🎯 任务实时分析和结果展示 <span style="display:inline-flex;align-items:center;gap:5px;margin-left:10px;font-size:11.5px;font-weight:600;color:var(--accent);background:rgba(22,104,220,.1);padding:3px 10px;border-radius:12px;border:1px solid rgba(22,104,220,.3);vertical-align:middle"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:liveBlink 1.4s infinite"></span>⏱ 实时</span></h2>
       <button class="btn" onclick="cleanAndRefresh()" style="padding:5px 12px">🧹 清除已完成并刷新</button>
     </div>
     <div class="panel-body" id="tasks"><div class="empty">暂无任务</div></div>
@@ -735,13 +737,14 @@ function renderTask(t) {
   } else if (t.status === "done" && t.type === "diag" && t.result) {
     h += '<div class="grade" style="font-size:14px">' + esc(t.result.title || "诊断报告") + "</div>";
     if (t.result.verdict) {
-      h += '<div class="plan"><b>📌 根因：</b>' + esc(t.result.verdict) + "（置信度 " + esc(t.result.confidence || "-") + (t.result.confidenceReason ? " · " + esc(t.result.confidenceReason) : "") + "）</div>";
+      const fallbackTag = t.result.confidence && String(t.result.confidence).includes("fallback") ? ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠️ fallback（LLM 超时）</span>' : "";
+      h += '<div class="plan"><b>📌 根因：</b>' + esc(t.result.verdict) + "（置信度 " + esc(t.result.confidence || "-") + (t.result.confidenceReason ? " · " + esc(t.result.confidenceReason) : "") + "）" + fallbackTag + "</div>";
     }
     if (Array.isArray(t.result.evidence) && t.result.evidence.length) {
       h += '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:13px"><b>🔍 证据链：</b><ol style="margin:6px 0 0;padding-left:22px">' + t.result.evidence.map(function(e){return "<li style='margin:2px 0'>" + esc(e) + "</li>";}).join("") + "</ol></div>";
     }
     if (t.result.recommendation) {
-      h += '<div class="empty"><b>🛠 建议：</b>' + esc(t.result.recommendation) + "</div>";
+      h += '<div class="reco"><b>🛠 建议：</b>' + esc(t.result.recommendation) + "</div>";
     }
     h += "<table><tr><th>排查步骤</th><th>结果</th></tr>" + (t.result.sections || []).map(s => "<tr><td>" + esc(s.step) + "</td><td>" + esc(s.result) + "</td></tr>").join("") + "</table>";
   } else if (t.status === "done" && t.type === "change" && t.result) {

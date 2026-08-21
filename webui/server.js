@@ -622,8 +622,9 @@ async function llmParseAudit(input) {
 
 // LLM 诊断综合解读（基于实际数据给出根因/置信度/建议）
 async function llmSynthesize(input, sections, stats) {
-  const ctx = sections.map((s) => "[" + s.step + "] " + s.result).join("\n");
-  const statCtx = stats ? "\n日志统计(前10):\n" + JSON.stringify(stats).slice(0, 1200) : "";
+  // 精简数据：每段 result 限 200 字符、统计限 600 字符，让 Kimi 等思考型模型能快速响应
+  const ctx = sections.map((s) => "[" + s.step + "] " + String(s.result).slice(0, 200)).join("\n");
+  const statCtx = stats ? "\n日志统计(前6):\n" + JSON.stringify(stats).slice(0, 600) : "";
   const text = await llmClassify("诊断综合",
     `你是 PAN-OS 防火墙诊断专家。**禁止套模板**，必须真正读数据、交叉对照、做证据链推理。
 
@@ -652,7 +653,7 @@ JSON：
 【用户症状】"${input}"
 【数据】
 ${ctx}${statCtx}`,
-    input, 90000);
+    input, 120000);
   if (!text) return null;
   const m = text.match(/\{[\s\S]*?\}/);
   if (!m) return { verdict: text.slice(0, 300), confidence: "?", recommendation: "" };
@@ -1369,6 +1370,21 @@ async function runDiagTask(t, firewall) {
     t.result.verdict = synth.verdict;
     t.result.confidence = synth.confidence;
     t.result.recommendation = synth.recommendation || "";
+  }
+  // Fallback：LLM 综合失败/超时时，verdict 为空 → 用已收集的 sections 自动汇总成 fallback verdict
+  // （避免用户看到空白根因区——这是 Kimi 等慢模型最容易出现的情况）
+  if (!t.result.verdict) {
+    const hits = sections.filter((s) => /\b(为空|空|无|未配置|未启用|不存在|未观测到|没有任何)\b/.test(s.result || ""));
+    const emptyKeys = hits.map((s) => s.step);
+    const sectionsOk = sections.filter((s) => s.result && !emptyKeys.includes(s.step));
+    t.result.verdict = sectionsOk.length
+      ? `（LLM 综合推理超时/失败，以下为已收集的关键事实）\n\n` +
+        `已采集 ${sections.length} 段数据，其中 ${emptyKeys.length} 段为空：${emptyKeys.join("、") || "（无）"}。\n` +
+        `正面事实：\n` + sectionsOk.map((s) => `• ${s.step}：${String(s.result).slice(0, 150)}`).join("\n") +
+        (emptyKeys.length ? `\n\n推断方向：观察到「${emptyKeys.join("、")}」为空，建议先核实关键组件（如 GP 配置、目标主机在线状态、路由配置）后再下定论。` : "")
+      : `LLM 综合推理未产出结论，请查看下方排查步骤表（${sections.length} 段原始数据已采集）。`;
+    t.result.confidence = "低（fallback）";
+    t.result.recommendation = "1) 重跑此任务（可能是临时网络问题）；2) 若反复失败，可缩短时间窗口（minutes=30）减少 prompt 长度；3) 检查下方 sections 数据手动判断。";
   }
   if (stats) t.result.logStats = stats;
   t.status = "done";
