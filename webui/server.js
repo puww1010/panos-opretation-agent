@@ -618,6 +618,9 @@ async function llmSynthesize(input, sections, stats) {
 - **跨子网时 ARP 表空 ≠ 主机不可达**：源主机（不同子网）的 MAC 在网关处处理，不一定进入防火墙 ARP 表。ARP 表空只能说明"防火墙未直接 ARP 过该主机"，结合 traceroute/ping 才能推断。
 - **路由缺失推断要克制**：没默认路由未必是该主机不通，可能防火墙只需 stub 路由。需看源 IP 是否有特定路由 + 是否经转发。
 - **如果用户描述与数据"明显冲突"**（例如用户说"192.168.0.3 不能访问 192.168.1.2"但你看到数据里两个 IP 均未出现），需在 verdict 中明确指出**"用户陈述与防火墙观测一致（防火墙没观测到这两个 IP 的交互），建议先在源主机实测确认前提"**，**不要硬去找"为什么不通"的根因**。
+- **绝对优先级："功能未配置"识别**（这是最常见的误判陷阱）：当用户 query 涉及某个功能/组件（GP 客户端、VPN 隧道、IPSec、DHCP、HA、特定 zone 间路由等），如果相关数据**全部为空**（如 GP 配置空 + GP 用户列表空 + IPSec 隧道 0 + 源 IP 入接口无记录 + ARP 空 + 会话空），结论**应当是"该功能未配置 / 未启用 / 未启动"**，而不是"已配置但失败"。**绝对不要**强行套用"已建立但被拒绝""隧道建了但路由不通"这种模板——证据不支持。
+  - 验证逻辑：先看用户 query 中"关键功能"的配置/启用证据（如 get_globalprotect_config 是否非空）→ 若全部为空 → 直接结论"未配置"
+  - 反例警示：流量里有 ssl 应用 ≠ GP 客户端连接；流量 reset-both ≠ GP 客户端被拒绝（前提是是GP 必须已配置；如配置为空则这条推理完全无效）
 
 【输出格式】
 JSON：
@@ -1252,6 +1255,24 @@ async function runDiagTask(t, firewall) {
         }
       } catch (e) { sections.push({ step: "源 IP 入接口", result: "查询失败: " + String(e.message || e).slice(0, 120) }); }
     }
+    // 7b VPN/GP 状态（关键：让 LLM 看到"功能是否配置"的事实，避免强行套模板）
+    try {
+      const gpRaw = (await callToolRaw("get_globalprotect_config", {}, firewall));
+      const gpCfg = String(gpRaw?.data ?? "");
+      const gpUserRaw = (await callToolRaw("get_globalprotect_users", {}, firewall));
+      const gpUser = String(gpUserRaw?.data ?? "");
+      const ipsecRaw = (await callToolRaw("get_ipsec_tunnels", {}, firewall));
+      const ipsec = ipsecRaw?.data || {};
+      const gpConfigured = gpCfg && gpCfg !== '""' && gpCfg.trim() !== "" && gpCfg !== "{}";
+      const gpUsers = gpUser && gpUser !== '""' && gpUser.trim() !== "" && gpUser !== "{}";
+      let gpResult = "";
+      if (!gpConfigured && !gpUsers) gpResult = "GP 未配置或未启用：get_globalprotect_config 配置为空，get_globalprotect_users 用户列表为空";
+      else gpResult = `GP 配置存在（${gpCfg.length} 字符）；用户列表 ${gpUsers ? "有连接" : "为空"}`;
+      const ipsecCount = parseInt(ipsec.ntun || 0, 10) || 0;
+      const ipsecEntries = ipsec.entries || "";
+      gpResult += `；IPSec 隧道数 ${ipsecCount}${ipsecEntries && ipsecEntries !== '""' ? `（${String(ipsecEntries).slice(0, 200)}）` : ""}`;
+      sections.push({ step: "VPN/GP 状态", result: gpResult });
+    } catch (e) { sections.push({ step: "VPN/GP 状态", result: "VPN 状态查询失败: " + String(e.message || e).slice(0, 120) }); }
     // 8 实时探测（spec：抓包分析 run_op_command——ping/traceroute 探测）
     const probe = params.probe || (ip ? "ping" : null);
     if (probe && ip) {
