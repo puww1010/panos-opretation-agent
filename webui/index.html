@@ -563,10 +563,10 @@ async function showLLMConfig() {
     let html = STYLE +
       '<div style="font-size:13px;color:var(--muted);margin-bottom:12px;line-height:1.7">修改后立即生效（写入 llm-config.json，进程内同步 env）。<br>当前使用：<b style="color:var(--accent);font-size:14px">' + esc(cur) + "</b></div>";
     html += '<table class="llmtb"><colgroup><col style="width:130px"><col style="width:200px"><col style="width:300px"><col style="width:220px"><col style="width:150px"></colgroup>';
-    html += "<thead><tr><th>提供方</th><th>模型</th><th>Base URL</th><th>Key</th><th>操作</th></tr></thead><tbody>";
+    html += "<thead><tr><th>显示名</th><th>模型（API）</th><th>Base URL</th><th>Key</th><th>操作</th></tr></thead><tbody>";
     for (const [k, v] of Object.entries(providers)) {
       html += '<tr id="llmRow_' + k + '">' +
-        '<td><input class="cfg-input" id="cfg_label_' + k + '" value="' + esc(v.label || k) + '"></td>' +
+        '<td><input class="cfg-input" id="cfg_label_' + k + '" value="' + esc(v.label || k) + '" title="人类可读显示名（与模型名区分）"></td>' +
         '<td><input class="cfg-input" id="cfg_model_' + k + '" value="' + esc(v.model) + '"></td>' +
         '<td><input class="cfg-input" id="cfg_base_' + k + '" value="' + esc(v.base_url) + '"></td>' +
         '<td><input class="cfg-input" type="password" id="cfg_key_' + k + '" placeholder="' + (v.configured ? esc(v.key_hint) + "（已配置，留空保留）" : "输入 API Key") + '"></td>' +
@@ -574,8 +574,8 @@ async function showLLMConfig() {
         '</tr>';
     }
     html += "</tbody></table>";
-    html += '<div class="llm-add" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)"><b style="display:block;margin-bottom:10px">➕ 新增提供方</b>' +
-      '<input class="cfg-input" id="cfg_new_id" placeholder="provider id（小写字母数字下划线）"> ' +
+    html += '<div class="llm-add" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)"><b style="display:block;margin-bottom:6px">➕ 新增模型</b><span style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:10px">id 是内部唯一标识（小写字母数字下划线，后续不可改）；label 是显示名；model 是 API 模型名（如 qwen3.8-max / kimi-k2.6）</span>' +
+      '<input class="cfg-input" id="cfg_new_id" placeholder="id（小写字母数字下划线）"> ' +
       '<input class="cfg-input" id="cfg_new_label" placeholder="显示名"> ' +
       '<input class="cfg-input" id="cfg_new_url" placeholder="https://api.example.com/v1"> ' +
       '<input class="cfg-input" id="cfg_new_model" placeholder="model name"> ' +
