@@ -435,3 +435,57 @@ approvals(id, change_id, requester, approver, status, timeout_at)
 - apius-tech/Palo-MCP：https://github.com/apius-tech/Palo-MCP
 - zm1990s/pan-os-mcp（中文巡检示例）：https://github.com/zm1990s/pan-os-mcp
 - PAN-OS XML API 文档：https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-panorama-api
+
+---
+
+## 12. 数据模型（存储演进依据）
+
+> 目标：无论未来切 SQLite 还是 PostgreSQL，都按这套四表模型设计，迁移零重设计。
+> 当前实现为 JSON 文件（`cfgs/tasks.json` + 内存），表结构即 JSON 字段的规范化投影。
+
+### 12.1 四张核心表
+
+```
+tasks（任务）                        audit（审计）
+─────────────────────────────       ─────────────────────────────
+id            INTEGER PK AUTOINC    id            INTEGER PK AUTOINC
+type          TEXT    （query/      task_id       INTEGER  → tasks.id
+                 inspect/diag/      action        TEXT    （approve/select/
+                 audit/change）                   confirm/reject/cancel）
+status        TEXT                  operator      TEXT    （web/feishu）
+input         TEXT                  params_json   TEXT
+plan          TEXT                  result_json   TEXT
+llm           TEXT    （provider）  created_at    DATETIME（索引）
+firewall      TEXT
+steps_json    TEXT
+result_json   TEXT
+created_at    DATETIME（索引）
+
+llm_logs（LLM 决策）                 metrics（指标采样·报表用）
+─────────────────────────────       ─────────────────────────────
+id            INTEGER PK AUTOINC    ts            DATETIME（索引·时序）
+provider      TEXT                  kpi_json      TEXT
+role          TEXT    （classify/     └─ 设备/HA/会话/负载/许可快照
+                 synthesize）       source        TEXT    （console）
+input         TEXT
+output        TEXT
+ms            INTEGER
+created_at    DATETIME（索引）
+```
+
+### 12.2 索引设计
+
+| 表 | 索引 | 支撑查询 |
+|---|---|---|
+| tasks | `(created_at)`、`(status)` | 按时间/状态筛任务 |
+| audit | `(created_at)`、`(task_id)` | 审计追溯、任务→操作链 |
+| llm_logs | `(created_at)` | LLM 决策时间线 |
+| metrics | `(ts)` | 时间范围聚合出趋势图 |
+
+### 12.3 迁移策略（JSON → SQLite → PostgreSQL）
+
+1. **当前**：JSON 文件，`persistTasks/loadTasks` 双写（已加串行写锁）
+2. **切 SQLite**（better-sqlite3）：只改存储层函数，表结构按 12.1 建；SQL 方言与 PG 通用
+3. **切 PostgreSQL**（pg 连接池）：多客户端共享时启用；连接串走环境变量，行级锁天然解决并发
+
+> 关键设计：业务代码不直接碰存储实现，统一走 `persistTasks()/loadTasks()` 与未来 `store.get/set` 抽象层，切换时只换一个文件。

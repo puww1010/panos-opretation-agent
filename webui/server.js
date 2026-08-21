@@ -76,16 +76,26 @@ let client = null;
 const tasks = [];        // 任务列表
 const history = [];      // 查询历史
 const llmLogs = [];      // LLM 决策日志（证明 LLM 规划起作用）
+const metricsBuffer = []; // KPI 指标采样环形缓冲（报表预留，见 spec §12.1 metrics 表）
 const MAX_HISTORY = 20;
 const MAX_LLM_LOGS = 50;
 const MAX_TASKS = 200;   // 任务持久化上限（超出丢弃最旧）
+const MAX_METRICS = 720; // 指标采样上限（10s 一次 ≈ 2 小时滚动窗口）
 let taskSeq = 0;
 
 // ── 任务持久化：重启后保留已完成/已取消任务（内存 + cfgs/tasks.json 双写）──
+// 写锁：所有落盘走串行 Promise 队列。快照在调用时刻生成（JS 单线程，同步段按序），
+// 排队按序 writeFileSync——避免多任务并发 saveTask 时互相覆盖（后写覆盖先写）。
+let _writeQueue = Promise.resolve();
 function persistTasks() {
-  try {
-    fs.writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2));
-  } catch (e) { console.error("[agent] persist tasks failed:", e.message); }
+  let snap = null;
+  try { snap = JSON.stringify(tasks, null, 2); } catch (e) { console.error("[agent] persist serialize failed:", e.message); return; }
+  _writeQueue = _writeQueue
+    .then(() => new Promise((res) => {
+      try { fs.writeFileSync(TASKS_FILE, snap); } catch (e) { console.error("[agent] persist tasks failed:", e.message); }
+      res();
+    }))
+    .catch(() => {});
 }
 function loadTasks() {
   try {
@@ -1103,6 +1113,10 @@ async function getOverview() {
   }
   const out = { ts: Date.now(), kpi, health: kpi.device.hostname ? "ok" : "degraded" };
   overviewCache = out; overviewTs = Date.now();
+  // 指标采样（报表预留）：每次 getOverview 计算完成后把 KPI 快照写入环形缓冲，
+  // 未来切 SQLite/PG 时按 spec 第 12 章 metrics 表落库；现在提供 /api/metrics 供前端可视化。
+  metricsBuffer.push({ ts: out.ts, kpi: JSON.parse(JSON.stringify(kpi)), health: out.health });
+  if (metricsBuffer.length > MAX_METRICS) metricsBuffer.shift();
   return out;
 }
 
@@ -1484,6 +1498,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url === "/api/overview") {
       send(200, await getOverview());
+      return;
+    }
+    // 报表接口预留（spec §12.1 metrics）：返回 KPI 指标采样序列，支持 ?minutes= 过滤
+    if (req.method === "GET" && req.url.startsWith("/api/metrics")) {
+      const u = new URL(req.url, "http://localhost");
+      const mins = Math.max(1, Math.min(1440, parseInt(u.searchParams.get("minutes") || "120", 10) || 120));
+      const since = Date.now() - mins * 60000;
+      const pts = metricsBuffer.filter((m) => m.ts >= since);
+      send(200, { series: pts, count: pts.length, windowMinutes: mins, note: "指标采样缓冲（10s 粒度，滚窗 2h）；切库后由 metrics 表提供" });
       return;
     }
     if (req.method === "GET" && req.url === "/api/history") { send(200, { history }); return; }
