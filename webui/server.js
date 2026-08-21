@@ -59,13 +59,28 @@ function saveLLMConfig() {
   try { fs.chmodSync(LLM_CONFIG_PATH, 0o600); } catch {}
 }
 let currentLLM = "keyword";
+// 用户选择持久化：最后一次 select 写 cfgs/llm-choice.json，重启/刷新都保持，只有手动切换才变。
+// （此前"刷新回默认"导致用户选 Kimi 但页面刷新后任务实际跑 deepseek，造成混淆）
+const LLM_CHOICE_FILE = process.env.LLM_CHOICE_FILE || path.join(__dirname, "..", "cfgs", "llm-choice.json");
+function loadLLMChoice() {
+  try { return JSON.parse(fs.readFileSync(LLM_CHOICE_FILE, "utf-8")).current; } catch { return null; }
+}
+function saveLLMChoice(c) {
+  try { fs.writeFileSync(LLM_CHOICE_FILE, JSON.stringify({ current: c, updatedAt: new Date().toISOString() })); } catch {}
+}
 try {
-  // 默认提供方：llm-config.json 的 _default（固定为 deepseek）> 进程 env > 首个有 key 的提供方
-  const diskDef = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8"))._default;
-  if (diskDef && LLM_PROVIDERS[diskDef] && LLM_PROVIDERS[diskDef].key) currentLLM = diskDef;
-  else currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
+  // 优先：用户上次选择（持久化）> llm-config.json 的 _default > 进程 env > 首个有 key 的提供方
+  const chosen = loadLLMChoice();
+  if (chosen && LLM_PROVIDERS[chosen] && LLM_PROVIDERS[chosen].key) currentLLM = chosen;
+  else {
+    const diskDef = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8"))._default;
+    if (diskDef && LLM_PROVIDERS[diskDef] && LLM_PROVIDERS[diskDef].key) currentLLM = diskDef;
+    else currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
+  }
 } catch {
-  currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
+  const chosen = loadLLMChoice();
+  if (chosen && LLM_PROVIDERS[chosen] && LLM_PROVIDERS[chosen].key) currentLLM = chosen;
+  else currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
 }
 
 // LLM 临时选择：默认读 llm-config.json 的 _default（deepseek），UI 选 qwen 后内存一直保持 qwen。
@@ -526,8 +541,10 @@ async function directForTool(name, args = {}) {
 async function llmClassify(role, system, input, timeoutMs = 20000) {
   const p = LLM_PROVIDERS[currentLLM];
   if (!p || !p.key) return null;
+  // Kimi（k2.6 等思考型模型）响应慢，规划类调用默认 20s 常超时 → 自动放宽到 45s
+  const effectiveTimeout = (currentLLM === "kimi" && timeoutMs <= 20000) ? 45000 : timeoutMs;
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const timer = setTimeout(() => ac.abort(), effectiveTimeout);
   const t0 = Date.now();
   try {
     const r = await fetch(`${p.base_url}/chat/completions`, {
@@ -635,7 +652,7 @@ JSON：
 【用户症状】"${input}"
 【数据】
 ${ctx}${statCtx}`,
-    input, 45000);
+    input, 90000);
   if (!text) return null;
   const m = text.match(/\{[\s\S]*?\}/);
   if (!m) return { verdict: text.slice(0, 300), confidence: "?", recommendation: "" };
@@ -1376,13 +1393,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/llm/reset") {
-      // 语义（18:18 用户明确）：页面加载/强制刷新时回到 _default（deepseek）；
-      // 会话内手动 select 切换后立即生效，不刷新就保持所选；刷新才回默认。
-      try {
-        const def = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8"))._default;
-        if (def && LLM_PROVIDERS[def] && LLM_PROVIDERS[def].key) currentLLM = def;
-      } catch {}
-      send(200, { current: currentLLM, note: "刷新回默认" });
+      // 语义（13:34 更新）：用户选择持久化——刷新/重启都保持上次选择（读 llm-choice.json），
+      // 不再强制回 _default。只有手动 /api/llm/select 切换才改变。
+      send(200, { current: currentLLM, note: "保持用户选择" });
       return;
     }
     if (req.method === "GET" && req.url === "/api/actions") {
@@ -1422,9 +1435,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/api/llm/select") {
       const { provider } = JSON.parse(await body());
-      // 临时选择（不写盘）：仅当前批次任务生效，任务结束后自动回 _default（见顶部 setInterval）
-      if (provider === "keyword") { currentLLM = "keyword"; send(200, { current: currentLLM }); return; }
-      if (LLM_PROVIDERS[provider] && LLM_PROVIDERS[provider].key) { currentLLM = provider; send(200, { current: currentLLM }); return; }
+      // 用户选择持久化：写 cfgs/llm-choice.json，刷新/重启都保持，只有手动切换才变
+      if (provider === "keyword") { currentLLM = "keyword"; saveLLMChoice("keyword"); send(200, { current: currentLLM }); return; }
+      if (LLM_PROVIDERS[provider] && LLM_PROVIDERS[provider].key) { currentLLM = provider; saveLLMChoice(provider); send(200, { current: currentLLM }); return; }
       const v = LLM_PROVIDERS[provider];
       const SIGNUP = { deepseek: "https://platform.deepseek.com", qwen: "https://bailian.console.aliyun.com", kimi: "https://platform.moonshot.cn" };
       send(400, {
