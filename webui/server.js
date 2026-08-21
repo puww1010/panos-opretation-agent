@@ -944,7 +944,7 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
 
 // 规则名解析：精确 name 直接返回 {name}；只有模糊 keyword 时把任务停在 awaiting_selection 并 return null
 async function resolveRuleTarget(t, p, firewall, verb) {
-  if (p.name && /^[a-zA-Z0-9_\-]+$/.test(p.name)) return { name: p.name };
+  if (p.name && /^[a-zA-Z0-9_.\-]+$/.test(p.name)) return { name: p.name };
   await setAwaitingSelection(t, p, firewall, verb, []);
   return null;
 }

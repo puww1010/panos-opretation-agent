@@ -654,6 +654,8 @@ async function pollTasks() {
     const box = document.getElementById("tasks");
     if (!tasks.length) { box.innerHTML = '<div class="empty">暂无任务 · 从上方命令中心下达第一个任务</div>'; }
     else { box.innerHTML = tasks.slice(0, 20).map(renderTask).join(""); }
+    // 重建 DOM 后恢复多选 checkbox 状态
+    tasks.filter(t => t.status === "awaiting_selection" && _selState[t.id]).forEach(t => _restoreSel(t.id));
     hadActive = tasks.some((t) => ["pending", "running", "executing", "committing"].includes(t.status));
     // 实时任务分解：自动滚动到最新一条执行中任务的步骤（不打断用户主动滚动）
     if (hadActive) {
@@ -803,12 +805,28 @@ async function act(id, action, arg) {
   pollTasks();
 }
 
-// 多选批量执行：从 checkbox 收集已选 name，POST JSON body
-async function execMulti(taskId) {
-  const container = document.getElementById('candList' + taskId);
+// 多选状态持久化（防止 pollTasks 重建 DOM 丢失 checkbox 状态）
+var _selState = {}; // { taskId: Set<string> }
+function _saveSel(taskId) {
+  var container = document.getElementById('candList' + taskId);
   if (!container) return;
-  const checked = container.querySelectorAll('input[type=checkbox]:checked');
-  const names = Array.from(checked).map(c => c.value);
+  var s = new Set();
+  container.querySelectorAll('input[type=checkbox]:checked').forEach(c => s.add(c.value));
+  _selState[taskId] = s;
+}
+function _restoreSel(taskId) {
+  var container = document.getElementById('candList' + taskId);
+  if (!container) return;
+  var s = _selState[taskId];
+  if (!s) return;
+  container.querySelectorAll('input[type=checkbox]').forEach(c => { if (s.has(c.value)) c.checked = true; });
+  updateSelCount(taskId);
+}
+
+// 多选批量执行：从持久化状态收集已选 name，POST JSON body
+async function execMulti(taskId) {
+  var names = [];
+  if (_selState[taskId]) { names = Array.from(_selState[taskId]); }
   if (!names.length) { alert('请先勾选要执行的策略'); return; }
   if (!confirm('确认批量执行 ' + names.length + ' 个操作？\n' + names.join('\n'))) return;
   try {
@@ -818,27 +836,31 @@ async function execMulti(taskId) {
       body: JSON.stringify({ names })
     });
   } catch (e) {}
+  delete _selState[taskId];
   pollTasks();
 }
 
 // 全选
 function selectAllCand(taskId) {
-  const container = document.getElementById('candList' + taskId);
+  var container = document.getElementById('candList' + taskId);
   if (!container) return;
   container.querySelectorAll('input[type=checkbox]').forEach(c => { c.checked = true; });
+  _saveSel(taskId);
   updateSelCount(taskId);
 }
 // 取消全选
 function deselectAllCand(taskId) {
-  const container = document.getElementById('candList' + taskId);
+  var container = document.getElementById('candList' + taskId);
   if (!container) return;
   container.querySelectorAll('input[type=checkbox]').forEach(c => { c.checked = false; });
+  _saveSel(taskId);
   updateSelCount(taskId);
 }
 
 // 更新已选数量显示和执行按钮状态
 function updateSelCount(taskId) {
-  const container = document.getElementById('candList' + taskId);
+  _saveSel(taskId);
+  var container = document.getElementById('candList' + taskId);
   const countEl = document.getElementById('selCount' + taskId);
   const btn = document.getElementById('execMultiBtn' + taskId);
   if (!container) return;
