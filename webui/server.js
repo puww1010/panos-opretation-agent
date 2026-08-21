@@ -825,9 +825,11 @@ async function runInspectTask(t, firewall) {
 async function runChangeCandidate(t, tmpl, params, firewall) {
   t.status = "executing";
   const p = { ...params, type: params.type || "ip-netmask" };
-  // name 合法化：仅保留 a-zA-Z0-9_-, 否则自动生成
-  if (p.name && !/^[a-zA-Z0-9_\-]+$/.test(p.name)) {
-    t.steps.push(`原 name "${p.name}" 不合法，自动生成`);
+  // name 合法化：仅对"创建"类操作生效（add_address_object / block_ip / allow_ip）
+  // 删除/移动/禁用/启用必须使用精确的已有规则名，不得"修正"
+  const CREATE_TMPLS = ["add_address_object", "block_ip", "allow_ip"];
+  if (CREATE_TMPLS.includes(tmpl) && p.name && !/^[a-zA-Z0-9_.\-]+$/.test(p.name)) {
+    t.steps.push(`原 name "${p.name}" 含非法字符，自动生成`);
     p.name = `obj_${(p.value || p.ip || "x").replace(/[^a-zA-Z0-9]/g, "_")}_${Date.now().toString(36)}`;
   }
   // 改用 directOp（XML 命令），绕开 MCP v3Schema 故障
