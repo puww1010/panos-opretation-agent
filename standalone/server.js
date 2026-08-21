@@ -449,8 +449,8 @@ async function llmClassify(role, system, input, timeoutMs = 20000) {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
       body: JSON.stringify({ model: p.model, temperature: 0,
         messages: [{ role: "system", content: system }, { role: "user", content: input }],
-        // deepseek / qwen3.8-max 均为思考型模型：禁用 thinking 避免超时（qwen 实测 107s→9.4s）
-        ...(["deepseek", "qwen"].includes(currentLLM) ? { thinking: { type: "disabled" } } : {}) }),
+        // deepseek / qwen3.8-max / kimi-k2.6 均为思考型模型：禁用 thinking 避免超时/正文空
+        ...(["deepseek", "qwen", "kimi"].includes(currentLLM) ? { thinking: { type: "disabled" } } : {}) }),
     });
     if (!r.ok) { console.error("[agent] LLM http", r.status); return null; }
     const d = await r.json();
