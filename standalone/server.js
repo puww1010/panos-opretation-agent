@@ -641,10 +641,19 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     await directOp(`<request><security><rules><entry name="${name}"><from><member>any</member></from><to><member>any</member></to><source><member>${name}</member></source><destination><member>any</member></destination><service><member>any</member></service><application><member>any</member></application><action>deny</action></entry></rules></security></request>`);
     t.steps.push("candidate: address+deny rule (directOp)");
     p._objName = name;
-    // 如果用户要求置顶（position=top），创建后自动移到最顶部
-    if (p.position === "top") {
+    // 3) 默认置顶（block_ip 语义就是"封禁+置顶"，与 plan 描述一致）
+    // 注意：directOp 追加规则在末尾，必须 move 才能置顶
+    try {
       const r = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
-      t.steps.push("candidate: move " + name + " to top → " + JSON.stringify(r).slice(0, 120));
+      const rtxt = JSON.stringify(r);
+      t.steps.push("candidate: move " + name + " to top → " + rtxt.slice(0, 120));
+      if (rtxt.includes("success") || rtxt.includes("command succeeded") || rtxt.includes("moved")) {
+        t.steps.push("✅ move to top 成功，规则已置顶");
+      } else {
+        t.steps.push("️ move to top 响应异常，请检查规则位置：" + rtxt.slice(0, 200));
+      }
+    } catch (e) {
+      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但可能在末尾，请手动置顶）");
     }
   }
   t.params = p;

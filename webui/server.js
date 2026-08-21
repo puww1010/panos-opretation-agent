@@ -620,10 +620,9 @@ allow_ip（放行 IP）：从"放行/允许/白名单/allow"相关输入提取 i
       if (ipMatch) {
         const ip = ipMatch[1];
         const isAllow = /放行|允许|白名单|allow/i.test(input);
-        // 检测置顶意图：LLM params 中的 where=top 或输入本身提到"最顶/置顶/第一"
-        const wantsTop = o.params?.where === "top" || /最顶|置顶|最上|第一/.test(input);
+        // block_ip/allow_ip 现在默认置顶，不再需要传 position 参数
         o.template = isAllow ? "allow_ip" : "block_ip";
-        o.params = { ip, ...(wantsTop ? { position: "top" } : {}) };
+        o.params = { ip };
       } else {
         // 无 IP 也无 name，这个 move 模板无法执行，返回 null 让系统走自由问答
         return null;
@@ -861,10 +860,20 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     );
     t.steps.push("candidate: deny rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
     p._objName = name;
-    // 3) 如果用户要求置顶（position=top），创建后自动移到最顶部
-    if (p.position === "top") {
+    // 3) 创建后自动移到最顶部（block_ip 语义就是"封禁+置顶"，与 plan 描述一致）
+    // 注意：directConfigSet 追加规则在末尾，必须 move 才能置顶
+    try {
       const r3 = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
       t.steps.push("candidate: move " + name + " to top → " + JSON.stringify(r3).slice(0, 120));
+      // 验证 move 是否成功
+      const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
+      if (r3txt.includes("success") && !r3txt.includes("false") || r3txt.includes("command succeeded")) {
+        t.steps.push("✅ move to top 成功");
+      } else if (!r3txt.includes("success") && !r3txt.includes("succeeded")) {
+        t.steps.push("⚠️ move to top 响应异常：" + r3txt.slice(0, 200));
+      }
+    } catch (e) {
+      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但在末尾，需手动置顶）");
     }
   } else if (tmpl === "move_security_rule") {
     // 移动策略：调 MCP 工具。where 取值 top/bottom/before/after；中文"上面/下面"在 LLM 提取阶段已映射。
@@ -912,10 +921,18 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     );
     t.steps.push("candidate: allow rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
     p._objName = name;
-    // 如果用户要求置顶，创建后自动移到最顶部
-    if (p.position === "top") {
+    // 3) 默认置顶（allow_ip 语义也是"放行+置顶"）
+    try {
       const r3 = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
-      t.steps.push("candidate: move " + name + " to top → " + JSON.stringify(r3).slice(0, 120));
+      const r3txt = JSON.stringify(r3);
+      t.steps.push("candidate: move " + name + " to top → " + r3txt.slice(0, 120));
+      if (r3txt.includes("success") || r3txt.includes("command succeeded") || r3txt.includes("moved")) {
+        t.steps.push("✅ move to top 成功，规则已置顶");
+      } else {
+        t.steps.push("️ move to top 响应异常，请检查规则位置：" + r3txt.slice(0, 200));
+      }
+    } catch (e) {
+      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但可能在末尾，请手动置顶）");
     }
   }
   t.params = p;
