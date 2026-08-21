@@ -30,9 +30,8 @@
     padding:12px 24px; background:rgba(255,255,255,.92); backdrop-filter:blur(10px);
     border-bottom:1px solid var(--border); flex-wrap:wrap; }
   .brand { display:flex; align-items:center; gap:12px; }
-  .logo { width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center;
-    background:linear-gradient(135deg,var(--accent),#0ea5e9); font-weight:800; font-size:18px; color:#fff;
-    box-shadow:0 2px 14px rgba(22,104,220,.35); }
+  .logo { width:44px; height:44px; border-radius:12px; object-fit:cover;
+    box-shadow:0 2px 14px rgba(22,104,220,.28); background:transparent; }
   .brand h1 { font-size:17px; font-weight:700; letter-spacing:.3px; }
   .brand .sub { font-size:11px; color:var(--muted); letter-spacing:1.5px; text-transform:uppercase; margin-top:2px; }
   .topbar .spacer { flex:1; }
@@ -198,7 +197,7 @@
 
 <div class="topbar">
   <div class="brand">
-    <div class="logo">PA</div>
+    <img class="logo" src="assets/agent-logo.png" alt="agent logo">
     <div>
       <h1>Palo Alto Networks防火墙监控运维数字员工</h1>
       <div class="sub">PAN-OS Security Operations Console</div>
