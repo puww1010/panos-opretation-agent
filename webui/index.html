@@ -78,8 +78,8 @@
   .cmd-row { display:flex; gap:10px; align-items:stretch; }
   .cmd-box { border:1px solid var(--border2); border-radius:12px; padding:10px 12px 8px; background:#fafbfc; transition:border-color .15s; }
   .cmd-box:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px rgba(22,104,220,.12); }
-  .cmd-box textarea { width:100%; border:none; outline:none; resize:vertical; min-height:46px; max-height:180px;
-    background:transparent; font:inherit; font-size:14px; color:var(--text); line-height:1.55; }
+  .cmd-box textarea { width:100%; border:none; outline:none; resize:vertical; min-height:90px; max-height:260px;
+    background:transparent; font:inherit; font-size:15px; color:var(--text); line-height:1.6; padding:4px 0; }
   .cmd-box-foot { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:6px; }
   .cmd-box-foot .select { font-size:12px; padding:5px 10px; }
   .cmd-box-foot .btn { border-radius:10px; padding:7px 16px; font-size:13px; }
@@ -254,9 +254,9 @@
     <div class="panel-body">
       <div class="cmd">
         <div class="cmd-box">
-          <textarea id="q" rows="2" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 创建地址对象 x=10.0.0.0/24 / 封禁 1.2.3.4 …"
+          <textarea id="q" rows="3" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 创建地址对象 x=10.0.0.0/24 / 封禁 1.2.3.4 …（Shift+Enter 换行）"
             oninput="autoGrow(this)"
-            onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter')submit()"></textarea>
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submit()}"></textarea>
           <div class="cmd-box-foot">
             <select class="select" id="fwSel" style="display:none"></select>
             <select class="select" id="llmSel">

@@ -195,8 +195,9 @@
   <!-- 命令中心 -->
   <div class="cmd">
     <div class="cmd-row">
-      <input id="q" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 创建地址对象 x=10.0.0.0/24 / 封禁 1.2.3.4 …"
-        onkeydown="if(event.key==='Enter')submit()">
+      <textarea id="q" rows="3" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 创建地址对象 x=10.0.0.0/24 / 封禁 1.2.3.4 …（Shift+Enter 换行）"
+        style="flex:1;background:var(--panel-bg);border:1px solid var(--border2);color:var(--text);border-radius:10px;padding:13px 16px;font-size:15px;outline:none;font-family:inherit;resize:vertical;min-height:90px;max-height:260px;line-height:1.6"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submit()}"></textarea>
       <button class="btn primary" id="submitBtn" onclick="submit()">执行任务</button>
       <select class="select" id="fwSel" style="display:none"></select>
     </div>

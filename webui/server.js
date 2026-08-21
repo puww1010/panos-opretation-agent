@@ -583,6 +583,14 @@ async function llmExtractChange(input) {
   const tmplList = Object.entries(CHANGE_TEMPLATES).map(([k, v]) => `${k}: ${v.label}（参数: ${v.params.join(", ")}）`).join("\n");
   const text = await llmClassify("变更参数提取",
     `你是防火墙配置变更解析器。从模板列表选一个 template，并提取参数（ip 为合法 IPv4；name 仅 [a-zA-Z0-9_-]）。
+
+【重要区分规则】
+- block_ip / allow_ip：用于**创建新的**封禁/放行策略（"添加/新建/创建一条封禁/放行/拒绝/允许XX的策略"）。即使提到"置顶/最顶部"，只要是"创建新策略"场景，就用 block_ip / allow_ip。
+- move_security_rule：仅用于**移动已有的**策略（"把XX移到YY"）。必须有明确的已有规则名 name，name 不能为空。
+  - "添加一条封禁XX的策略在最顶部" → block_ip，不是 move_security_rule
+  - "把 block-social 移到 deny-all 上面" → move_security_rule (name=block-social, where=before, destination=deny-all)
+  - "把 A 移到最上面" → move_security_rule (name=A, where=top)
+
 move_security_rule 的 where 取值 top/bottom/before/after 之一：
 - "把 A 移到 B 上面/之前" → where=before, destination=B
 - "把 A 移到 B 下面/之后" → where=after, destination=B
@@ -605,6 +613,22 @@ allow_ip（放行 IP）：从"放行/允许/白名单/allow"相关输入提取 i
     const m = text.match(/\{[\s\S]*\}/);
     const o = JSON.parse(m ? m[0] : "{}");
     if (!o.template || !CHANGE_TEMPLATES[o.template]) return null;
+    // 安全网：LLM 误把"添加封禁/放行策略"归为 move_security_rule（name 为空），自动纠正为 block_ip/allow_ip
+    if (o.template === "move_security_rule" && (!o.params || !o.params.name || String(o.params.name).trim() === "")) {
+      // 从输入中提取 IP，如果有的话说明是封禁/放行场景而非移动策略
+      const ipMatch = input.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
+      if (ipMatch) {
+        const ip = ipMatch[1];
+        const isAllow = /放行|允许|白名单|allow/i.test(input);
+        // 检测置顶意图：LLM params 中的 where=top 或输入本身提到"最顶/置顶/第一"
+        const wantsTop = o.params?.where === "top" || /最顶|置顶|最上|第一/.test(input);
+        o.template = isAllow ? "allow_ip" : "block_ip";
+        o.params = { ip, ...(wantsTop ? { position: "top" } : {}) };
+      } else {
+        // 无 IP 也无 name，这个 move 模板无法执行，返回 null 让系统走自由问答
+        return null;
+      }
+    }
     return o;
   } catch { return null; }
 }
@@ -837,6 +861,11 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     );
     t.steps.push("candidate: deny rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
     p._objName = name;
+    // 3) 如果用户要求置顶（position=top），创建后自动移到最顶部
+    if (p.position === "top") {
+      const r3 = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
+      t.steps.push("candidate: move " + name + " to top → " + JSON.stringify(r3).slice(0, 120));
+    }
   } else if (tmpl === "move_security_rule") {
     // 移动策略：调 MCP 工具。where 取值 top/bottom/before/after；中文"上面/下面"在 LLM 提取阶段已映射。
     if (!p.name || !p.where) throw new Error("move_security_rule 缺少 name 或 where");
@@ -883,6 +912,11 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     );
     t.steps.push("candidate: allow rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
     p._objName = name;
+    // 如果用户要求置顶，创建后自动移到最顶部
+    if (p.position === "top") {
+      const r3 = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
+      t.steps.push("candidate: move " + name + " to top → " + JSON.stringify(r3).slice(0, 120));
+    }
   }
   t.params = p;
   t.status = "awaiting_commit";
@@ -970,16 +1004,16 @@ async function runChangeCommit(t, firewall) {
     saveTask(t);
     return;
   }
-  // 轮询 job（每次 3 秒，最多 60 次 = 3 分钟）
-  for (let i = 0; i < 60; i++) {
-    await new Promise((res) => setTimeout(res, 3000));
+  // 轮询 job（动态间隔：前 30 次每 3 秒，之后每 5 秒，最多 200 次 ≈ 10 分钟）
+  for (let i = 0; i < 200; i++) {
+    await new Promise((res) => setTimeout(res, i < 30 ? 3000 : 5000));
     try {
       const s2 = await directOp(`<show><jobs><id>${job}</id></jobs></show>`);
       const stxt = String(s2);
       const stm = stxt.match(/<status>\s*([^<\s]+)/i);
       const st = stm ? stm[1].toUpperCase() : "";
       const pct = stxt.match(/<progress>\s*(\d+)/i);
-      if (i % 5 === 0) t.steps.push(`commit job=${job} status=${st}${pct ? ` (${pct[1]}%)` : ""}`);
+      if (i % 3 === 0) t.steps.push(`commit job=${job} status=${st}${pct ? ` (${pct[1]}%)` : ""}`);
       if (st === "FIN" || st === "FINOK" || stxt.includes("FIN OK")) {
         t.steps.push("commit 完成 (job=" + job + ")");
         t.status = "done";
@@ -998,6 +1032,10 @@ async function runChangeCommit(t, firewall) {
       // 单次轮询错误不中断，继续
     }
   }
+  t.steps.push("️ commit 超时（10 分钟）：job=" + job + " 可能在防火墙后台仍在执行中。请登录防火墙 Web 界面 → Monitor → Jobs，搜索 job ID " + job + " 查看最终状态，或手动执行 commit");
+  t.status = "done";
+  t.result = Object.assign(t.result || {}, { needsManualCommit: true, timeout: true, job });
+  saveTask(t);
   // 超时：标记需要手动 commit（但提供 job id 供用户去 PAN-OS UI 跟进）
   t.steps.push(`commit 轮询超时（job ${job}）— 可能仍在执行，请到 PAN-OS UI 查看或继续轮询`);
   t.status = "done";
