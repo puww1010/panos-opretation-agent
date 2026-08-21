@@ -566,7 +566,9 @@ async function llmClassify(role, system, input, timeoutMs = 20000) {
 async function llmResolveAction(input) {
   const list = Object.entries(ACTIONS).map(([k, v]) => `${k}: ${v.label}（如"${v.keywords[0]}"）`).join("\n");
   const text = await llmClassify("意图规划",
-    `你是防火墙运维意图分类器。从动作列表选一个 key；若输入与防火墙查询无关输出 {"action":null}；若输入是配置变更请求（创建/删除/封禁/改策略）输出 {"action":"change"}；若输入是故障诊断请求（连不上/不通/访问不了/排查/诊断/健康检查/某IP什么情况/一直扫描）输出 {"action":"diag"}；若输入是审计/配置变更查询（谁改的/审计/变更记录/谁修改/谁删了/配置变更）输出 {"action":"audit"}。只输出 JSON：{"action":"<key>"}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, input);
+    `你是防火墙运维意图分类器。从动作列表选一个 key；若输入与防火墙查询无关输出 {"action":null}；若输入是配置变更请求（创建/删除/封禁/改策略）输出 {"action":"change"}；若输入是故障诊断请求（连不上/不通/访问不了/排查/诊断/健康检查/某IP什么情况/一直扫描/某个具体故障现象）输出 {"action":"diag"}；若输入是审计/配置变更查询（谁改的/审计/变更记录/谁修改/谁删了/配置变更）输出 {"action":"audit"}。
+注意：若输入是**咨询/方案/教学/画图类**请求（如何配置XX、XX是什么、帮我画个拓扑图、最佳实践建议、概念解释等）→ 输出 {"action":null}（系统会用自由问答回答，不要归为 diag）。
+只输出 JSON：{"action":"<key>"}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, input);
   if (!text) return null;
   const m = text.match(/"action"\s*:\s*("?)(\w+|null)\1/);
   if (!m) return null;
@@ -1043,7 +1045,9 @@ async function createTaskFromInput(input, firewall) {
   }
   if (action === "diag") {
     const d = await llmParseDiag(input);
-    if (!d || !d.type) return { error: "无法解析诊断意图（示例：内部连不上外网 / 查一下 1.2.3.4 什么情况 / 全面健康检查）" };
+    // 诊断规划判定为非诊断请求（type:null，如"画个拓扑图"）→ 降级自由问答，
+    // 不再生硬报"无法解析诊断意图"——让 LLM 分析推理回答（16:48 飞书案例根因）
+    if (!d || !d.type) return await createFreeAnswer(input, firewall);
     const t = newTask("diag", input, { firewall, diag: d });
     t.llm = currentLLM;
     t.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
