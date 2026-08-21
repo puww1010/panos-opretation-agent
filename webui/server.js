@@ -704,12 +704,53 @@ async function runQueryTask(t, action, firewall) {
     }
   }
   if (t.status !== "cancelled") {
-    t.result = { label: ACTIONS[action].label, results };
+    // 查询匹配分析：把用户 query + 工具结果摘要给 LLM，做"语义匹配分析"
+    // （例：query"哪些策略放行了 Internet 到 DMZ" → LLM 要把"Internet"映射到源 zone/DAG，
+    //  "DMZ"映射到目标 zone，再从规则列表中筛出真正匹配的放行规则）
+    try {
+      const summary = await summarizeQuery(t.input, action, results);
+      t.result = { label: ACTIONS[action].label, results, summary };
+    } catch (e) {
+      // LLM 失败不影响查询结果本身——只展示工具原始数据
+      t.result = { label: ACTIONS[action].label, results };
+    }
     t.status = "done";
     history.unshift({ ts: new Date().toLocaleString("zh-CN"), input: String(t.input), action, label: ACTIONS[action].label });
     if (history.length > MAX_HISTORY) history.pop();
   }
   saveTask(t);
+}
+
+// 查询任务的语义匹配分析（轻量 LLM 调用，30s 超时）
+async function summarizeQuery(input, action, results) {
+  // 抽取最核心的语义：每个工具结果的"条目摘要"（前 50 行 + 关键字段）
+  const ctx = results.map((r) => {
+    if (r.error) return `[${r.tool}] ERROR: ${r.error}`;
+    const d = r.data || {};
+    if (typeof d === "string") return `[${r.tool}] ${d.slice(0, 1500)}`;
+    const items = Array.isArray(d) ? d
+      : Array.isArray(d.entry) ? d.entry
+      : Array.isArray(d.rules?.entry) ? d.rules.entry
+      : Array.isArray(d.zone?.entry) ? d.zone.entry
+      : null;
+    if (items) {
+      const head = items.slice(0, 50).map((it) => JSON.stringify(it).slice(0, 250)).join("\n");
+      return `[${r.tool}] 共 ${items.length} 条：\n${head}` + (items.length > 50 ? "\n... (省略剩余 " + (items.length - 50) + " 条)" : "");
+    }
+    return `[${r.tool}] ${JSON.stringify(d).slice(0, 1500)}`;
+  }).join("\n\n");
+  const text = await llmClassify("查询匹配",
+    `你是 PAN-OS 防火墙查询结果分析器。用户的问句往往带语义（如"哪些策略放行了 Internet到 DMZ"——"Internet"=源 zone Untrust 或外部，"DMZ"=目标 zone DMZ 或特定对象）。你需要：
+
+1. **语义映射**：把用户 query 中的关键词（"Internet"/"DMZ"/"内部"/"外部"/特定 IP）映射到实际数据中（zone 名/address 对象/any）。
+2. **匹配筛选**：基于映射结果，从上面数据里选出**真正满足用户问题**的条目（按 action 字段区分 allow/deny）。
+3. **明确回答**：直接说出"有/无/几条"匹配；如果没有，**明确说"没有匹配的策略"**（不要强行凑"全放行 Allow all"这种看似匹配但实际不相关的）。
+4. **引用**：用条目 @_name 或关键字段标识匹配项。
+
+输出 1-3 段简洁中文（≤250 字），不要堆 JSON。`,
+    `用户问句：${input}\n\n工具结果：\n${ctx}`,
+    30000);
+  return text || null;
 }
 
 async function runInspectTask(t, firewall) {

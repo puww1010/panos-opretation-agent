@@ -721,6 +721,11 @@ function renderTask(t) {
   }
 
   if (t.status === "done" && t.type === "query" && t.result) {
+    if (t.result.summary) {
+      // LLM 语义匹配分析（绿色高亮"建议"风格，但用蓝色强调"分析结论"）
+      h += '<div style="background:rgba(29,78,216,.06);border:1px solid rgba(29,78,216,.3);border-left:3px solid var(--accent);border-radius:8px;padding:11px 13px;margin:8px 0;font-size:13.5px;color:#1d4ed8;line-height:1.7;white-space:pre-wrap;word-break:break-word"><b>🎯 匹配分析（基于你的问句）：</b>' + esc(t.result.summary) + '</div>';
+    }
+    h += '<div style="font-size:11.5px;color:var(--muted);margin:6px 0 4px">📋 原始数据（工具调用结果）</div>';
     h += renderResult(t.result.results);
   } else if (t.status === "done" && t.type === "inspect" && t.result) {
     h += '<div class="grade ' + (t.result.rate >= 75 ? (t.result.rate >= 90 ? "good" : "mid") : "bad") + '">评级 ' + esc(t.result.grade) + "（" + t.result.rate + "%）</div>";
