@@ -1067,7 +1067,38 @@ async function createTaskFromInput(input, firewall) {
     runQueryTask(t, action, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
     return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
   }
-  return { error: "无法识别意图，试试：设备清单 / 设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4" };
+  // 兜底：意图不匹配任何 action → 自由问答（LLM 分析/推理/思考后回答，不直接拒绝）
+  return await createFreeAnswer(input, firewall);
+}
+
+// 自由问答兜底：用户问题未匹配现有 tools/action 时，让 LLM 结合设备基础信息做分析推理回答
+async function createFreeAnswer(input, firewall) {
+  let fwCtx = "";
+  try {
+    const fw = await callTool("get_firewall_info", {}, firewall).catch(() => null);
+    if (fw && fw.hostname) fwCtx = `设备: ${fw.hostname} ${fw.model} SW${fw["sw-version"]}`;
+  } catch {}
+  const text = await llmClassify("自由问答",
+    `你是 PAN-OS 防火墙运维专家（会思考、分析、推理后再回答）。用户的问题没有匹配到系统的标准动作（设备状态/安全策略/威胁日志/流量日志/完整巡检/诊断/变更审批/审计），请做以下三件事：
+
+1. **分析问题意图**：判断用户到底想干什么（可能问的是网络概念、配置建议、排错思路、最佳实践、命令语法、License 等）。
+2. **推理回答**：结合你的 PAN-OS 知识给出有深度的答案（配置步骤/排查思路/相关命令 show 或 request、注意事项）。
+3. **给出建议**：说明如何用本系统或防火墙 CLI 进一步验证（如"可以用系统里的'完整巡检'跑一遍"、"在防火墙 CLI 执行 show session info"）。
+
+要求：
+- 不要敷衍，不要只说"无法处理"。
+- 如果问题其实是标准动作能解决的（例如用户在绕弯子问设备状态），先指出"这可以用系统 XX 功能直接查看"，再补充答案。
+- 200-400 字，条理清晰，用 markdown 列表。`,
+    `${fwCtx ? fwCtx + "\n" : ""}用户问题：${input}`,
+    60000);
+  const t = newTask("chat", input, { firewall });
+  t.llm = currentLLM;
+  t.decision = `LLM 兜底 → 自由问答（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+  t.steps.push(t.decision);
+  t.result = { answer: text || "抱歉，LLM 未能给出回答。您可以换个说法，或试试：设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4。" };
+  t.status = "done";
+  tasks.push(t); persistTasks();
+  return { taskId: t.id, status: t.status, type: "chat" };
 }
 
 // ── 审计日志任务 ──
