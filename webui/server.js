@@ -107,7 +107,12 @@ function persistTasks() {
   try { snap = JSON.stringify(tasks, null, 2); } catch (e) { console.error("[agent] persist serialize failed:", e.message); return; }
   _writeQueue = _writeQueue
     .then(() => new Promise((res) => {
-      try { fs.writeFileSync(TASKS_FILE, snap); } catch (e) { console.error("[agent] persist tasks failed:", e.message); }
+      try {
+        // 原子替换：先写临时文件再 rename，避免进程被杀打断 writeFileSync 时把任务文件清空
+        const tmp = TASKS_FILE + ".tmp";
+        fs.writeFileSync(tmp, snap);
+        fs.renameSync(tmp, TASKS_FILE);
+      } catch (e) { console.error("[agent] persist tasks failed:", e.message); }
       res();
     }))
     .catch(() => {});
@@ -127,7 +132,11 @@ function loadTasks() {
     }
     while (tasks.length > MAX_TASKS) tasks.shift();
     console.log("[agent] 已从磁盘恢复 %d 个历史任务", tasks.length);
-  } catch { /* 首次启动无文件，忽略 */ }
+  } catch (e) {
+    // 文件损坏：先备份，再静默忽略（绝不能因解析失败就回写空数组覆盖掉数据）
+    try { if (fs.existsSync(TASKS_FILE)) fs.copyFileSync(TASKS_FILE, TASKS_FILE + ".corrupt-" + Date.now()); } catch {}
+    console.warn("[agent] tasks.json 加载失败（已备份损坏文件）:", e.message);
+  }
 }
 loadTasks();
 
@@ -582,7 +591,7 @@ async function llmResolveAction(input) {
 async function llmExtractChange(input) {
   const tmplList = Object.entries(CHANGE_TEMPLATES).map(([k, v]) => `${k}: ${v.label}（参数: ${v.params.join(", ")}）`).join("\n");
   const text = await llmClassify("变更参数提取",
-    `你是防火墙配置变更解析器。从模板列表选一个 template，并提取参数（ip 为合法 IPv4；name 仅 [a-zA-Z0-9_-]）。
+    `你是防火墙配置变更解析器。从模板列表选一个 template，并提取参数（ip 为合法 IPv4；name 允许字母/数字/点/下划线/连字符 [a-zA-Z0-9_.-]，防火墙规则名如 block-1.1.1.1-20260820 是合法的，必须原样保留）。
 
 【重要区分规则】
 - block_ip / allow_ip：用于**创建新的**封禁/放行策略（"添加/新建/创建一条封禁/放行/拒绝/允许XX的策略"）。即使提到"置顶/最顶部"，只要是"创建新策略"场景，就用 block_ip / allow_ip。
@@ -891,19 +900,25 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     // 模糊关键词：先列候选，不删除
     const res = await resolveRuleTarget(t, p, firewall, "删除");
     if (!res) return; // 已转 awaiting_selection，等用户点选
-    const r = await callTool("delete_security_rule", { name: res.name, firewall }, firewall);
+    // 改用 directConfigDelete（type=config delete），绕开 MCP delete_security_rule 的 v3Schema 故障
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='${res.name}']`;
+    const r = await directConfigDelete(xpath);
     t.steps.push("candidate: delete_security_rule " + res.name + " → " + JSON.stringify(r).slice(0, 120));
     p.name = res.name;
   } else if (tmpl === "set_security_rule_disabled") {
     const res = await resolveRuleTarget(t, p, firewall, "禁用");
     if (!res) return;
-    const r = await callTool("set_security_rule_disabled", { name: res.name, disabled: true, firewall }, firewall);
+    // 改用 directConfigSet 写 <disabled>yes</disabled>，绕开 MCP set_security_rule_disabled 的 v3Schema 故障
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='${res.name}']/disabled`;
+    const r = await directConfigSet(xpath, `<disabled>yes</disabled>`);
     t.steps.push("candidate: disable " + res.name + " → " + JSON.stringify(r).slice(0, 120));
     p.name = res.name;
   } else if (tmpl === "set_security_rule_enabled") {
     const res = await resolveRuleTarget(t, p, firewall, "启用");
     if (!res) return;
-    const r = await callTool("set_security_rule_disabled", { name: res.name, disabled: false, firewall }, firewall);
+    // 改用 directConfigSet 写 <disabled>no</disabled>，绕开 MCP set_security_rule_disabled 的 v3Schema 故障
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='${res.name}']/disabled`;
+    const r = await directConfigSet(xpath, `<disabled>no</disabled>`);
     t.steps.push("candidate: enable " + res.name + " → " + JSON.stringify(r).slice(0, 120));
     p.name = res.name;
   } else if (tmpl === "allow_ip") {
@@ -1076,7 +1091,7 @@ async function createTaskFromInput(input, firewall) {
     const tmpl = CHANGE_TEMPLATES[c.template];
     // 规则类模板（delete/disable/enable）若只有模糊 keyword，先预检转 awaiting_selection
     const RULE_TMPL = ["delete_security_rule", "set_security_rule_disabled", "set_security_rule_enabled"];
-    const needPrecheck = RULE_TMPL.includes(c.template) && !(c.params?.name && /^[a-zA-Z0-9_\-]+$/.test(c.params.name));
+    const needPrecheck = RULE_TMPL.includes(c.template) && !(c.params?.name && /^[a-zA-Z0-9_.\-]+$/.test(c.params.name));
     const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
     t.plan = tmpl.plan(c.params || {});
     if (needPrecheck) {

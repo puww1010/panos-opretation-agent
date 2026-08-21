@@ -6,7 +6,7 @@
   python3 panagent-supervisor.py --daemon   # 守护运行（脱离终端，推荐）
 子进程任一崩溃，5 秒内自动拉起。由 launchd (com.panagent.supervisor) 开机自启。
 """
-import os, sys, time, subprocess, shutil
+import os, sys, time, signal, subprocess, shutil, socket
 
 # 项目根：默认取本文件所在目录的上级（独立部署时整个项目目录一起拷贝即可）
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -68,7 +68,77 @@ def daemonize():
     os.dup2(devnull, 2)
 
 
+def port_in_use(port):
+    """端口是否被占用（仅本机回环探测）。"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        s.close()
+
+
+def free_port(port):
+    """spawn 前释放端口：kill 任何仍占用该端口的进程（先 SIGTERM 再 SIGKILL），
+    并等待端口真正空闲。避免旧 node 未释放 8080 导致新进程 EADDRINUSE 后
+    陷入'起不来→重启→又起不来'死循环（旧代码永不退出、新修复永不生效）。"""
+    try:
+        out = subprocess.run(["lsof", "-ti", "tcp:%d" % port],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        out = ""
+    pids = [p for p in out.split() if p.strip().isdigit()] if out else []
+    if not pids:
+        return
+    for pid in pids:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except Exception:
+            pass
+    time.sleep(2)
+    for pid in pids:
+        try:
+            os.kill(int(pid), 0)  # 仍存活？
+            os.kill(int(pid), signal.SIGKILL)
+        except Exception:
+            pass
+    # 等待端口真正空闲（最多 ~5s）
+    for _ in range(10):
+        if not port_in_use(port):
+            break
+        time.sleep(0.5)
+
+
+def cleanup_stale_bridge():
+    """清理上一代 supervisor 残留的 feishu-bridge 孤儿进程。
+    否则每次重启 supervisor 都会堆积一个 bridge（历史曾堆积 13 个），
+    多个 bridge 同时轮询飞书会重复处理消息。"""
+    try:
+        out = subprocess.run(["pgrep", "-f", "feishu-bridge.py"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        for pid in [p for p in out.split() if p.strip().isdigit()]:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except Exception:
+                pass
+        time.sleep(2)
+        for pid in [p for p in out.split() if p.strip().isdigit()]:
+            try:
+                os.kill(int(pid), 0)
+                os.kill(int(pid), signal.SIGKILL)
+            except Exception:
+                pass
+    except Exception as e:
+        print("[supervisor] cleanup_stale_bridge warn:", e, flush=True)
+
+
 def spawn(name, cfg):
+    # console 占 8080：spawn 前先确保端口空闲，避免 EADDRINUSE 竞态
+    if name == "console":
+        free_port(8080)
+    # bridge 单实例：spawn 前清理残留旧 bridge，避免多实例堆积
+    if name == "bridge":
+        cleanup_stale_bridge()
     log = open(cfg["log"], "a")
     env = dict(os.environ)
     env.update(cfg.get("env", {}))
