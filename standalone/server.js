@@ -908,6 +908,26 @@ const server = http.createServer(async (req, res) => {
   const body = () => new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => ok(b)); });
   try {
     if (req.url === "/favicon.ico") { res.writeHead(204); res.end(); return; }
+    // 静态资源：assets/ + 根零散（logo 等），防路径穿越
+    if (req.method === "GET") {
+      const urlPath = decodeURIComponent(req.url.split("?")[0]);
+      const MIME = { ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".svg":"image/svg+xml", ".gif":"image/gif", ".ico":"image/x-icon", ".webp":"image/webp", ".woff2":"font/woff2" };
+      let candidate = null;
+      if (urlPath.startsWith("/assets/")) candidate = path.join(__dirname, urlPath);
+      else if (/^\/[a-zA-Z0-9_.\-]+$/.test(urlPath) && urlPath !== "/" && urlPath !== "/index.html") candidate = path.join(__dirname, urlPath.slice(1));
+      if (candidate && fs.existsSync(candidate)) {
+        const real = fs.realpathSync(candidate);
+        if (real.startsWith(fs.realpathSync(__dirname))) {
+          const ext = path.extname(real).toLowerCase();
+          const mime = MIME[ext];
+          if (mime) {
+            res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=3600" });
+            res.end(fs.readFileSync(real));
+            return;
+          }
+        }
+      }
+    }
     if (req.method === "GET" && (req.url.split("?")[0] === "/" || req.url.split("?")[0] === "/index.html")) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate" });
       let html = fs.readFileSync(path.join(__dirname, "index.html"), "utf-8");
