@@ -45,21 +45,40 @@ def run_cli(args):
     except Exception as e:
         return {}
 
-def list_messages(limit=10):
+def list_messages(limit=30):
     r = run_cli(["im", "+chat-messages-list", "--chat-id", CHAT_ID, "--order", "desc", "--limit", str(limit)])
     if not r.get("ok"):
         return []
     out = []
     for m in r.get("data", {}).get("messages", []):
         c = m.get("content_text") or m.get("content", "")
-        if m.get("msg_type") != "text" or not c:
+        mt = m.get("msg_type", "")
+        if not c:
             continue
         try:
             cj = json.loads(c)
-            c = cj.get("text", c) if isinstance(cj, dict) else c
+            # 富文本 post 类型（移动端常见）：提取所有 text 节点拼接
+            if mt == "post" and isinstance(cj, dict):
+                parts = []
+                def walk(node):
+                    if isinstance(node, dict):
+                        for k, v in node.items():
+                            if k == "text":
+                                parts.append(v)
+                            else:
+                                walk(v)
+                    elif isinstance(node, list):
+                        for it in node:
+                            walk(it)
+                walk(cj.get("content", cj))
+                c = " ".join(p for p in parts if isinstance(p, str))
+            elif isinstance(cj, dict):
+                c = cj.get("text", c) if isinstance(cj.get("text"), str) else c
         except Exception:
             pass
-        out.append({"id": m.get("message_id", ""), "time": m.get("create_time", ""), "text": c})
+        if not c or not c.strip():
+            continue
+        out.append({"id": m.get("message_id", ""), "time": m.get("create_time", ""), "text": c.strip()})
     return out
 
 def send_reply(text):
@@ -147,15 +166,27 @@ def main():
     seen = {s for s in seen if not s.startswith("ts:")}
 
     for m in msgs:
-        if SIGNATURE in m["text"]:
+        # 单条消息独立 try/except：任一条处理失败（如时间格式异常）不阻塞后续消息，
+        # 且失败消息也标记 seen，避免无限重试同一消息导致其他消息永远不执行。
+        try:
+            if SIGNATURE in m["text"]:
+                continue
+            mid = m.get("id", "")
+            try:
+                ts = int(m["time"].replace(" ", "").replace("-", "").replace(":", ""))
+            except Exception:
+                ts = 0  # 时间解析失败：不按时间过滤，仅靠 seen 去重
+            if mid and mid in seen:
+                continue
+            if migrate_ts and ts and ts <= migrate_ts:
+                continue
+            text = m["text"]
+        except Exception as e:
+            print("skip message (parse fail):", e)
+            seen.add(m.get("id", ""))
             continue
-        mid = m.get("id", "")
-        ts = int(m["time"].replace(" ", "").replace("-", "").replace(":", ""))
-        if mid and mid in seen:
-            continue
-        if migrate_ts and ts <= migrate_ts:
-            continue
-        text = m["text"]
+        if mid:
+            seen.add(mid)  # 提前标记已见：即使后续处理中断也不会重复处理
 
         # 1) 变更审批流：批准/确认/拒绝（PENDING 丢失时从控制台兜底查找）
         if any(k in text for k in ("批准", "确认", "拒绝")):
@@ -193,10 +224,13 @@ def main():
                 PENDING.clear()
             else:
                 send_reply("没有待审批的变更任务。可先发送「创建地址对象 xxx 值 1.2.3.4」发起变更\n" + SIGNATURE)
-            break
+            continue
 
-        # 2) 普通任务
-        if not any(k in text for k in TRIGGERS):
+        # 2) 普通任务：不再用 TRIGGERS 硬过滤（移动端消息常不含关键词导致静默丢弃）——
+        #    全部交给后端 LLM 意图分类 + 自由问答兜底，任何消息都有响应。
+        #    仅跳过纯闲聊/表情等明显非运维消息（避免浪费 LLM 调用）。
+        if text.strip() in ("test", "测试", "你好", "hello", "hi", "在吗", "谢谢", "感谢"):
+            send_reply("【PA-440 Agent】你好，发送防火墙相关指令即可（如：设备状态 / 安全策略 / 完整巡检 / 封禁 1.2.3.4）\n" + SIGNATURE)
             continue
         print("trigger:", text[:60])
         res = http_json("/api/task", {"query": text})
@@ -214,7 +248,6 @@ def main():
                 send_reply("【PA-440 Agent】\n" + summarize_task(t) + "\n" + SIGNATURE)
             else:
                 send_reply("【PA-440 Agent】任务超时，请在控制台查看\n" + SIGNATURE)
-        break
 
     _save_state(seen, msgs)
 

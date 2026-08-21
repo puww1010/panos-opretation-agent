@@ -14,6 +14,12 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 PY = os.environ.get("PYTHON_BIN") or shutil.which("python3") or "python3"
 NODE = os.environ.get("NODE_BIN") or shutil.which("node") or "node"
 SYS_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+# lark-cli 与 node 的可执行目录（bridge 必须能找到；默认探测常见路径）
+LARK_CLI = os.environ.get("LARK_CLI") or shutil.which("lark-cli") or ""
+LARK_BIN_DIR = os.path.dirname(LARK_CLI) if LARK_CLI else ""
+NODE_BIN_DIR = os.path.dirname(NODE) if NODE else ""
+# 合并后的 PATH：保证 bridge 能 spawn lark-cli 与 node（SYS_PATH 里没有它们）
+FULL_PATH = ":".join([p for p in [LARK_BIN_DIR, NODE_BIN_DIR, SYS_PATH] if p])
 
 PROCS = {
     "console": {
@@ -23,7 +29,8 @@ PROCS = {
             "PANOS_MCP_DIR": os.path.join(BASE, "mcp", "panos-mcp"),         # MCP server
             "PANOS_FIREWALLS_CONFIG": os.path.join(BASE, "cfgs", "firewalls.json"),  # 防火墙 key
             "PORT": "8080",
-            "PATH": SYS_PATH,
+            "NODE_BIN": NODE,
+            "PATH": FULL_PATH,
             # 清除 WorkBuddy 动态代理（会随会话失效）：本机直连飞书/PAN-OS 即可
             "HTTP_PROXY": "", "HTTPS_PROXY": "", "http_proxy": "", "https_proxy": "",
             "ALL_PROXY": "", "all_proxy": "",
@@ -33,8 +40,10 @@ PROCS = {
     "bridge": {
         "cmd": [PY, os.path.join(BASE, "feishu-bridge.py"), "--daemon"],
         "env": {
-            # lark-cli 路径由 LARK_CLI 环境变量指定（可选，飞书桥非必须）
-            "PATH": SYS_PATH,
+            # lark-cli 与 node 路径必须显式注入，否则 bridge 拉不到消息（静默空转）
+            "LARK_CLI": LARK_CLI,
+            "NODE_BIN": NODE,
+            "PATH": FULL_PATH,
             "HTTP_PROXY": "", "HTTPS_PROXY": "", "http_proxy": "", "https_proxy": "",
             "ALL_PROXY": "", "all_proxy": "",
         },
