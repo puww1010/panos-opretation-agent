@@ -369,7 +369,7 @@ async function submit() {
       out.innerHTML = '<div class="panel"><div class="panel-body"><div class="err">' + esc(d.error) + "</div></div></div>";
       setTimeout(() => { if (out.innerHTML.includes("err")) out.innerHTML = ""; }, 3000);
     } else if (d.status === "awaiting_approval") {
-      out.innerHTML = '<div class="panel"><div class="panel-body"><div class="plan">⏳ 等待审批：' + esc(d.plan) + '</div>请在任务中心点击「批准」或「拒绝」</div></div>';
+      out.innerHTML = '<div class="panel"><div class="panel-body"><div class="plan">⏳ 等待审批：' + esc(d.plan) + '</div><div style="display:flex;align-items:center;gap:5px;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(124,108,168,.25);font-size:11.5px;color:#7a6db8;line-height:1.5;letter-spacing:.2px"><span style="font-size:12px">💡</span>请在<strong style="color:#5b4dbd;font-weight:600">任务实时分析和结果展示</strong>中点击「批准」或「拒绝」</div></div></div>';
     } else {
       out.innerHTML = '<div class="panel"><div class="panel-body"><div class="empty">任务 #' + d.taskId + " 已提交，查看任务中心 ↓</div></div></div>";
       setTimeout(() => { if (out.innerHTML.includes("已提交")) out.innerHTML = ""; }, 1500);
