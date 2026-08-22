@@ -359,10 +359,18 @@ async function fjs(url, opts) { opts = opts || {}; opts.timeout = opts.timeout |
 let BTN_LABELS = {};
 let _lastAutoScrollTaskId = null; // 上次自动滚动的 live 任务 id（只对新任务滚一次，不重复打扰）
 let _lastUserScrollAt = 0;        // 用户最近一次手动滚动时间（wheel/touch），5 秒内不自动滚
+let _outAwaitingTaskId = null;     // 当前 out 区显示的"等待审批"提示对应的任务 id，任务状态变化时自动清除
 
 // 用户主动滚动时记录时间戳：让自动滚动逻辑尊重用户位置（不再持续把页面拉回 live 任务）
 window.addEventListener("wheel", () => { _lastUserScrollAt = Date.now(); }, { passive: true });
 window.addEventListener("touchmove", () => { _lastUserScrollAt = Date.now(); }, { passive: true });
+
+// 用户主动关闭"等待审批"提示框
+function closeOutAwaitingPanel() {
+  const p = document.getElementById("outAwaitingPanel");
+  if (p) p.remove();
+  _outAwaitingTaskId = null;
+}
 
 async function init() {
   pulseLiveBadge("warn");
@@ -520,7 +528,8 @@ async function submit() {
       out.innerHTML = '<div class="panel"><div class="panel-body"><div class="err">' + esc(d.error) + "</div></div></div>";
       setTimeout(() => { if (out.innerHTML.includes("err")) out.innerHTML = ""; }, 3000);
     } else if (d.status === "awaiting_approval") {
-      out.innerHTML = '<div class="panel"><div class="panel-body"><div class="plan">⏳ 等待审批：' + esc(d.plan) + '</div><div style="display:flex;align-items:center;gap:5px;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(124,108,168,.25);font-size:11.5px;color:#7a6db8;line-height:1.5;letter-spacing:.2px"><span style="font-size:12px">💡</span>请在<strong style="color:#5b4dbd;font-weight:600">任务实时分析和结果展示</strong>中点击「批准」或「拒绝」</div></div></div>';
+      out.innerHTML = '<div class="panel" id="outAwaitingPanel" data-task-id="' + d.taskId + '"><div class="panel-body"><div class="plan">⏳ 等待审批：' + esc(d.plan) + '</div><div style="display:flex;align-items:center;gap:5px;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(124,108,168,.25);font-size:11.5px;color:#7a6db8;line-height:1.5;letter-spacing:.2px"><span style="font-size:12px">💡</span>请在<strong style="color:#5b4dbd;font-weight:600">任务实时分析和结果展示</strong>中点击「批准」或「拒绝」<span style="margin-left:auto"><button class="btn" onclick="closeOutAwaitingPanel()" style="padding:2px 8px;font-size:11px;border-radius:6px">✕ 关闭</button></span></div></div></div>';
+      _outAwaitingTaskId = d.taskId; // 记录任务 id，pollTasks 检测到状态变化自动清除
     } else {
       out.innerHTML = '<div class="panel"><div class="panel-body"><div class="empty">任务 #' + d.taskId + " 已提交，查看任务中心 ↓</div></div></div>";
       setTimeout(() => { if (out.innerHTML.includes("已提交")) out.innerHTML = ""; }, 1500);
@@ -666,6 +675,13 @@ async function pollTasks() {
     // 重建 DOM 后恢复多选 checkbox 状态
     tasks.filter(t => t.status === "awaiting_selection" && _selState[t.id]).forEach(t => _restoreSel(t.id));
     hadActive = tasks.some((t) => ["pending", "running", "executing", "committing"].includes(t.status));
+    // 等待审批提示框：关联任务进入非 awaiting_approval 状态时自动清除（修复"任务完成但提示框还挂着"）
+    if (_outAwaitingTaskId != null) {
+      const ref = tasks.find((x) => x.id === _outAwaitingTaskId);
+      if (!ref || ref.status !== "awaiting_approval") {
+        closeOutAwaitingPanel();
+      }
+    }
     // 实时任务分解：只在"新 live 任务出现"时自动滚动一次（避免每 3 秒强制拉回页面，
     // 导致用户无法向上滚动到顶部——旧实现只要有任何 live 任务就持续 scrollIntoView）
     if (hadActive) {
