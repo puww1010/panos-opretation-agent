@@ -131,6 +131,9 @@ def summarize_task(t):
             f"{x['time']} | {x['admin']} | {x['cmd']} | {x['path'][:40]}" for x in (r.get("rows") or [])[:8])[:1200]
     if typ == "change":
         return str(r.get("detail") or r.get("needsManualCommit") or "变更完成")[:400]
+    if typ == "chat":
+        # 自由问答兜底：返回 LLM 完整回答（用户问什么答什么，而不是只回 status）
+        return str(r.get("answer") or r.get("raw") or "（无回答）")[:1800]
     return str(status)
 
 def _load_state():
