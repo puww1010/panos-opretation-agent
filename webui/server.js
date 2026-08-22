@@ -1120,7 +1120,7 @@ async function runChangeCommit(t, firewall) {
 }
 
 // ── 意图 → 任务路由 ──
-async function createTaskFromInput(input, firewall) {
+async function createTaskFromInput(input, firewall, source) {
   let action = null, fromLLM = false;
   for (const [k, v] of Object.entries(ACTIONS)) { if (k === input || v.label === input) action = k; }
   if (!action) {
@@ -1134,7 +1134,7 @@ async function createTaskFromInput(input, firewall) {
     // 规则类模板（delete/disable/enable）若只有模糊 keyword，先预检转 awaiting_selection
     const RULE_TMPL = ["delete_security_rule", "set_security_rule_disabled", "set_security_rule_enabled"];
     const needPrecheck = RULE_TMPL.includes(c.template) && !(c.params?.name && /^[a-zA-Z0-9_.\-]+$/.test(c.params.name));
-    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
+    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, source, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
     t.plan = tmpl.plan(c.params || {});
     if (needPrecheck) {
       // 同步做一次预检（list candidates）→ 任务状态已是 awaiting_selection，前端直接展示候选按钮
@@ -1151,7 +1151,7 @@ async function createTaskFromInput(input, firewall) {
   }
   if (action === "audit") {
     const a = await llmParseAudit(input);
-    const t = newTask("audit", input, { firewall, audit: a });
+    const t = newTask("audit", input, { firewall, source, audit: a });
     t.llm = currentLLM;
     t.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
     t.steps.push(t.decision);
@@ -1164,7 +1164,7 @@ async function createTaskFromInput(input, firewall) {
     // 诊断规划判定为非诊断请求（type:null，如"画个拓扑图"）→ 降级自由问答，
     // 不再生硬报"无法解析诊断意图"——让 LLM 分析推理回答（16:48 飞书案例根因）
     if (!d || !d.type) return await createFreeAnswer(input, firewall);
-    const t = newTask("diag", input, { firewall, diag: d });
+    const t = newTask("diag", input, { firewall, source, diag: d });
     t.llm = currentLLM;
     t.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
     t.steps.push(t.decision);
@@ -1173,13 +1173,13 @@ async function createTaskFromInput(input, firewall) {
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
-    const t = newTask("inspect", input, { firewall });
+    const t = newTask("inspect", input, { firewall, source });
     tasks.push(t); persistTasks();
     runInspectTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
     return { taskId: t.id, status: t.status, type: "inspect" };
   }
   if (action && ACTIONS[action]) {
-    const t = newTask("query", input, { action, firewall });
+    const t = newTask("query", input, { action, firewall, source });
     if (fromLLM) t.llm = currentLLM;
     t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）` : `关键词匹配 → 动作 ${action}`;
     t.steps.push(t.decision);
@@ -1188,11 +1188,11 @@ async function createTaskFromInput(input, firewall) {
     return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
   }
   // 兜底：意图不匹配任何 action → 自由问答（LLM 分析/推理/思考后回答，不直接拒绝）
-  return await createFreeAnswer(input, firewall);
+  return await createFreeAnswer(input, firewall, source);
 }
 
 // 自由问答兜底：用户问题未匹配现有 tools/action 时，让 LLM 结合设备基础信息做分析推理回答
-async function createFreeAnswer(input, firewall) {
+async function createFreeAnswer(input, firewall, source) {
   let fwCtx = "";
   try {
     const fw = await callTool("get_firewall_info", {}, firewall).catch(() => null);
@@ -1211,11 +1211,12 @@ async function createFreeAnswer(input, firewall) {
 - 200-400 字，条理清晰，用 markdown 列表。`,
     `${fwCtx ? fwCtx + "\n" : ""}用户问题：${input}`,
     60000);
-  const t = newTask("chat", input, { firewall });
+  const t = newTask("chat", input, { firewall, source });
   t.llm = currentLLM;
+  if (source) t.source = source;  // 标记任务来源（'feishu'/'web'/'bridge'），用于 WebUI 区分展示
   t.decision = `LLM 兜底 → 自由问答（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
   t.steps.push(t.decision);
-  t.result = { answer: text || "抱歉，LLM 未能给出回答。您可以换个说法，或试试：设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4。" };
+  t.result = { answer: text || "抱歉，LLM 未能给出回答。您可以换个说法，或试试：设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4。", sentTo: source === "feishu" ? "feishu" : "web" };
   t.status = "done";
   tasks.push(t); persistTasks();
   return { taskId: t.id, status: t.status, type: "chat" };
@@ -1700,9 +1701,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/task") {
-      const { query, firewall } = JSON.parse(await body());
+      const { query, firewall, source } = JSON.parse(await body());
       if (!client) await connect();
-      send(200, await createTaskFromInput(query, firewall));
+      // 区分任务来源：'web'（Web 控制台默认）/ 'feishu'（飞书 bridge 提交）
+      // 飞书移动端发来的任务 WebUI 不显示长答案，Web 端正常显示
+      send(200, await createTaskFromInput(query, firewall, source || "web"));
       return;
     }
     if (req.method === "POST" && req.url.startsWith("/api/task/")) {

@@ -236,7 +236,7 @@ def main():
             send_reply("【PA-440 Agent】你好，发送防火墙相关指令即可（如：设备状态 / 安全策略 / 完整巡检 / 封禁 1.2.3.4）\n" + SIGNATURE)
             continue
         print("trigger:", text[:60])
-        res = http_json("/api/task", {"query": text})
+        res = http_json("/api/task", {"query": text, "source": "feishu"})
         if res.get("error"):
             send_reply("【PA-440 Agent】" + str(res["error"])[:400] + "\n" + SIGNATURE)
             continue
