@@ -236,7 +236,7 @@
     </div>
     <div class="panel-body">
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <input class="input" id="feishuMsg" placeholder="输入要发送到飞书群的消息..." style="flex:1">
+        <input class="input" id="feishuMsg" placeholder="输入要发送到飞书群的消息...（回车发送）" style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();feishuSend();}">
         <button class="btn primary" onclick="feishuSend()">发送</button>
         <button class="btn" onclick="feishuPushReport()">推送最新巡检报告</button>
       </div>
@@ -964,7 +964,8 @@ async function loadFeishuStatus() {
 }
 
 async function feishuSend() {
-  const text = document.getElementById("feishuMsg").value.trim();
+  const inp = document.getElementById("feishuMsg");
+  const text = inp.value.trim();
   if (!text) return;
   const out = document.getElementById("feishuResult");
   out.innerHTML = "发送中...";
@@ -972,6 +973,7 @@ async function feishuSend() {
     const r = await fetch("/api/feishu/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
     const d = await r.json();
     out.innerHTML = d.ok ? '<span style="color:var(--green)">✅ 已发送' + (d.data ? " (msg " + esc(d.data) + ")" : "") + "</span>" : '<span class="err">❌ ' + esc(d.error || "发送失败") + "</span>";
+    if (d.ok) inp.value = "";  // 发送成功清空输入框
   } catch (e) { out.innerHTML = '<span class="err">❌ ' + esc(e.message) + "</span>"; }
 }
 
