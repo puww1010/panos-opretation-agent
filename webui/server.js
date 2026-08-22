@@ -773,7 +773,7 @@ async function runQueryTask(t, action, firewall) {
 
 // 查询任务的语义匹配分析（轻量 LLM 调用，30s 超时）
 async function summarizeQuery(input, action, results) {
-  // 抽取最核心的语义：每个工具结果的"条目摘要"（前 50 行 + 关键字段）
+  // 抽取最核心的语义：每个工具结果的"条目摘要"——关键字段放最前，避免长 JSON 截断丢失 action/@_name
   const ctx = results.map((r) => {
     if (r.error) return `[${r.tool}] ERROR: ${r.error}`;
     const d = r.data || {};
@@ -784,7 +784,18 @@ async function summarizeQuery(input, action, results) {
       : Array.isArray(d.zone?.entry) ? d.zone.entry
       : null;
     if (items) {
-      const head = items.slice(0, 50).map((it) => JSON.stringify(it).slice(0, 250)).join("\n");
+      // 关键字段提到最前面（防止 250 字符截断把 action/@_name 砍掉，LLM 误判"数据不完整"）
+      const head = items.slice(0, 50).map((it) => {
+        if (it && typeof it === "object") {
+          const ordered = {};
+          for (const k of ["@_name", "name", "action", "disabled", "from", "to", "source", "destination", "service", "application", "uuid", "@_uuid"]) {
+            if (k in it) ordered[k] = it[k];
+          }
+          for (const k of Object.keys(it)) if (!(k in ordered)) ordered[k] = it[k];
+          return JSON.stringify(ordered).slice(0, 1200);
+        }
+        return String(it).slice(0, 1200);
+      }).join("\n");
       return `[${r.tool}] 共 ${items.length} 条：\n${head}` + (items.length > 50 ? "\n... (省略剩余 " + (items.length - 50) + " 条)" : "");
     }
     return `[${r.tool}] ${JSON.stringify(d).slice(0, 1500)}`;
