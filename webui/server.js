@@ -170,7 +170,10 @@ const WHERE_CN = { before: "前（上面）", after: "后（下面）", top: "�
 const CHANGE_TEMPLATES = {
   add_address_object: { label: "创建地址对象", plan: (p) => `新增地址对象 ${p.name} = ${p.value}（${p.type}），零流量影响（未引用）`, params: ["name", "value"] },
   delete_address_object: { label: "删除地址对象", plan: (p) => `删除地址对象 ${p.name}`, params: ["name"] },
-  block_ip: { label: "封禁 IP", plan: (p) => `封禁 ${p.ip}：建地址对象 + deny 策略置顶${p.expiry ? "，临时至 " + p.expiry : "，永久"}`, params: ["ip"] },
+  block_ip: { label: "封禁 IP", plan: (p) => {
+    const where = p.position === "top" || p.position === "bottom" ? WHERE_CN[p.position] : (p.position === "before" || p.position === "after" ? `${WHERE_CN[p.position] || p.position}（参照 ${p.destination || "?"}）` : "默认末尾（未指定）");
+    return `封禁 ${p.ip}：建地址对象 + deny 策略${p.position ? "移到" + where : "（用户未指定位置，不移动）"}${p.expiry ? "，临时至 " + p.expiry : "，永久"}`;
+  }, params: ["ip", "position", "destination"] },
   move_security_rule: { label: "移动安全策略", plan: (p) => {
     const w = WHERE_CN[p.where] || p.where;
     if (p.where === "top" || p.where === "bottom") return `把策略 ${p.name} 移到${w}（candidate 暂存，需审批后 commit）`;
@@ -185,12 +188,16 @@ const CHANGE_TEMPLATES = {
   set_security_rule_enabled: { label: "启用安全策略", plan: (p) => p.name
     ? `启用安全策略 ${p.name}（需审批后 commit）`
     : `按关键词"${p.keyword}"查找匹配的安全策略并列出（不执行启用）`, params: ["name", "keyword"] },
-  allow_ip: { label: "放行 IP", plan: (p) => `放行 ${p.ip}：建地址对象 + allow 策略置顶${p.expiry ? "，临时至 " + p.expiry : "，永久"}`, params: ["ip"] },
+  allow_ip: { label: "放行 IP", plan: (p) => {
+    const where = p.position === "top" || p.position === "bottom" ? WHERE_CN[p.position] : (p.position === "before" || p.position === "after" ? `${WHERE_CN[p.position] || p.position}（参照 ${p.destination || "?"}）` : "默认末尾（未指定）");
+    return `放行 ${p.ip}：建地址对象 + allow 策略${p.position ? "移到" + where : "（用户未指定位置，不移动）"}${p.expiry ? "，临时至 " + p.expiry : "，永久"}`;
+  }, params: ["ip", "position", "destination"] },
   block_ip_group: { label: "封禁 IP 组", plan: (p) => {
     const ips = (p.ips || []).join(", ");
     const gname = p.group_name || `block-group-${new Date().toISOString().slice(0,10).replace(/-/g,"")}`;
-    return `封禁 ${(p.ips || []).length} 个 IP（${ips}）：建 ${(p.ips || []).length} 个地址对象 → 加入地址组 ${gname} → 策略 source 引用该组置顶`;
-  }, params: ["ips", "group_name"] },
+    const where = p.position === "top" || p.position === "bottom" ? WHERE_CN[p.position] : (p.position === "before" || p.position === "after" ? `${WHERE_CN[p.position] || p.position}（参照 ${p.destination || "?"}）` : "默认末尾（未指定）");
+    return `封禁 ${(p.ips || []).length} 个 IP（${ips}）：建 ${(p.ips || []).length} 个地址对象 → 加入地址组 ${gname} → 策略 source 引用该组${p.position ? "并移到" + where : "（用户未指定位置，不移动）"}`;
+  }, params: ["ips", "group_name", "position", "destination"] },
 };
 
 async function connect() {
@@ -349,9 +356,16 @@ async function directConfigDelete(xpath) {
 }
 async function directConfigMove(xpath, where, destination) {
   // 移动规则到指定位置（top/bottom/before/after）。绕开 MCP move_security_rule 的 v3Schema 故障。
-  // before/after 时 destination 必须是参照规则的 xpath
+  // top/bottom：不需要 dst
+  // before/after：dst=<参照规则的 name 字符串>（不是 xpath）—— PAN-OS API 参数名是 dst 不是 destination
   let url = `https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=move&xpath=${encodeURIComponent(xpath)}&where=${encodeURIComponent(where)}&key=${DIRECT_KEY}`;
-  if (destination) url += `&destination=${encodeURIComponent(destination)}`;
+  if (destination) {
+    // destination 可能是完整 xpath（从 block_ip 模板传入）或 name 字符串——统一提取 name
+    let name = String(destination);
+    const m = name.match(/entry\[@name=['"]([^'"]+)['"]\]\s*$/);
+    if (m) name = m[1];
+    url += `&dst=${encodeURIComponent(name)}`;
+  }
   return await directHttpsPost(url);
 }
 async function directHttpsPost(fullUrl) {
@@ -635,6 +649,12 @@ delete_security_rule：
 set_security_rule_disabled（禁用规则）：用法同 delete_security_rule（精确名填 name，模糊 keyword 取核心子串）
 set_security_rule_enabled（启用规则）：用法同 delete_security_rule
 allow_ip（放行 IP）：从"放行/允许/白名单/allow"相关输入提取 ip（合法 IPv4）
+block_ip / allow_ip / block_ip_group：**可选 params.position 决定创建后位置**（缺省 = 不移动，规则留在末尾）：
+  - 用户说"最顶部/置顶/最上面" → position="top"
+  - 用户说"最底部/置底/最下面" → position="bottom"
+  - 用户说"X 策略的上面/之前" → position="before" + destination="X 的精确名"
+  - 用户说"X 策略的下面/之后" → position="after" + destination="X 的精确名"
+  - 用户**没说位置** → 整个 position 字段省略（不移动）——避免无脑 top 误伤用户原本的规则顺序
 block_ip_group（封禁 IP 组）：用于**多个 IP 封禁 + 放进地址组**场景。识别关键词："封禁这 3 个 IP"/"把多个 IP 放进一个组"/"地址组"/"把 IP 打包封禁"/"在源地址里用组"。
   - 提取所有 IPv4 到 params.ips 数组（如 ["1.1.2.1","1.1.2.2","1.1.2.3"]），不能是字符串
   - 用户给了组名（如"黑名单组/封禁组/internet-block"）→ 填 params.group_name；未给则系统自动生成 "block-group-YYYYMMDD"
@@ -906,22 +926,32 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     );
     t.steps.push("candidate: deny rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
     p._objName = name;
-    // 3) 创建后自动移到最顶部（block_ip 语义就是"封禁+置顶"，与 plan 描述一致）
-    // 注意：directConfigSet 追加规则在末尾，必须 move 才能置顶
-    try {
-      // 改用 directConfigMove（type=config&action=move），绕开 MCP move_security_rule 的 v3Schema 故障
-      const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`;
-      const r3 = await directConfigMove(moveXpath, "top");
-      t.steps.push("candidate: move " + name + " to top → " + JSON.stringify(r3).slice(0, 120));
-      // 验证 move 是否成功
-      const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
-      if (r3txt.includes("success") && !r3txt.includes("false") || r3txt.includes("command succeeded")) {
-        t.steps.push("✅ move to top 成功");
-      } else if (!r3txt.includes("success") && !r3txt.includes("succeeded")) {
-        t.steps.push("⚠️ move to top 响应异常：" + r3txt.slice(0, 200));
+    // 3) 可选 move：仅在用户明确指定位置时执行（position=top/bottom/before/after）
+    //    未指定 → 不移动，规则留在默认末尾（避免无脑 top 误伤用户原本的规则顺序）
+    if (p.position && ["top", "bottom", "before", "after"].includes(p.position)) {
+      if ((p.position === "before" || p.position === "after") && !p.destination) {
+        t.steps.push("⚠️ " + p.position + " 需要 destination 参照规则名，跳过 move，规则留在末尾");
+      } else {
+        try {
+          const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`;
+          const moveDest = (p.position === "before" || p.position === "after")
+            ? `${XPATH_BASE}/rulebase/security/rules/entry[@name='${p.destination}']`
+            : null;
+          const r3 = await directConfigMove(moveXpath, p.position, moveDest);
+          const destTxt = moveDest ? " (参照 " + p.destination + ")" : "";
+          t.steps.push("candidate: move " + name + " " + WHERE_CN[p.position] + destTxt + " → " + JSON.stringify(r3).slice(0, 120));
+          const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
+          if (r3txt.includes("success") && !r3txt.includes("false") || r3txt.includes("command succeeded")) {
+            t.steps.push("✅ move " + WHERE_CN[p.position] + " 成功");
+          } else if (!r3txt.includes("success") && !r3txt.includes("succeeded")) {
+            t.steps.push("⚠️ move 响应异常：" + r3txt.slice(0, 200));
+          }
+        } catch (e) {
+          t.steps.push("⚠️ move 失败：" + e.message.slice(0, 120));
+        }
       }
-    } catch (e) {
-      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但在末尾，需手动置顶）");
+    } else {
+      t.steps.push("ℹ️ 用户未指定位置，规则留在末尾（不移动）");
     }
   } else if (tmpl === "block_ip_group") {
     // 封禁 IP 组：多 IP → 各自地址对象 → 1 个地址组 → deny 规则 source 引用组 → 置顶
@@ -962,19 +992,31 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     p._objName = ruleName;
     p._groupName = groupName;
     p._memberCount = objNames.length;
-    // 4) 置顶
-    try {
-      const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${ruleName}']`;
-      const r4 = await directConfigMove(moveXpath, "top");
-      t.steps.push("candidate: move " + ruleName + " to top → " + JSON.stringify(r4).slice(0, 120));
-      const r4txt = typeof r4 === "string" ? r4 : JSON.stringify(r4);
-      if (r4txt.includes("success") && !r4txt.includes("false") || r4txt.includes("command succeeded")) {
-        t.steps.push("✅ move to top 成功");
-      } else if (!r4txt.includes("success") && !r4txt.includes("succeeded")) {
-        t.steps.push("⚠️ move to top 响应异常：" + r4txt.slice(0, 200));
+    // 4) 可选 move：仅在用户明确指定位置时执行；未指定 → 规则留在末尾（不移动）
+    if (p.position && ["top", "bottom", "before", "after"].includes(p.position)) {
+      if ((p.position === "before" || p.position === "after") && !p.destination) {
+        t.steps.push("⚠️ " + p.position + " 需要 destination 参照规则名，跳过 move，规则留在末尾");
+      } else {
+        try {
+          const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${ruleName}']`;
+          const moveDest = (p.position === "before" || p.position === "after")
+            ? `${XPATH_BASE}/rulebase/security/rules/entry[@name='${p.destination}']`
+            : null;
+          const r4 = await directConfigMove(moveXpath, p.position, moveDest);
+          const destTxt = moveDest ? " (参照 " + p.destination + ")" : "";
+          t.steps.push("candidate: move " + ruleName + " " + WHERE_CN[p.position] + destTxt + " → " + JSON.stringify(r4).slice(0, 120));
+          const r4txt = typeof r4 === "string" ? r4 : JSON.stringify(r4);
+          if (r4txt.includes("success") && !r4txt.includes("false") || r4txt.includes("command succeeded")) {
+            t.steps.push("✅ move " + WHERE_CN[p.position] + " 成功");
+          } else if (!r4txt.includes("success") && !r4txt.includes("succeeded")) {
+            t.steps.push("⚠️ move 响应异常：" + r4txt.slice(0, 200));
+          }
+        } catch (e) {
+          t.steps.push("⚠️ move 失败：" + e.message.slice(0, 120));
+        }
       }
-    } catch (e) {
-      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但在末尾）");
+    } else {
+      t.steps.push("ℹ️ 用户未指定位置，规则留在末尾（不移动）");
     }
   } else if (tmpl === "move_security_rule") {
     // 移动策略：改用 directConfigMove，绕开 MCP move_security_rule 的 v3Schema 故障
@@ -1031,20 +1073,31 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     );
     t.steps.push("candidate: allow rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
     p._objName = name;
-    // 3) 默认置顶（allow_ip 语义也是"放行+置顶"）
-    try {
-      // 改用 directConfigMove，绕开 MCP move_security_rule 的 v3Schema 故障
-      const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`;
-      const r3 = await directConfigMove(moveXpath, "top");
-      const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
-      t.steps.push("candidate: move " + name + " to top → " + r3txt.slice(0, 120));
-      if (r3txt.includes("success") || r3txt.includes("command succeeded") || r3txt.includes("moved")) {
-        t.steps.push("✅ move to top 成功，规则已置顶");
+    // 3) 可选 move：仅在用户明确指定位置时执行；未指定 → 规则留在末尾（不移动）
+    if (p.position && ["top", "bottom", "before", "after"].includes(p.position)) {
+      if ((p.position === "before" || p.position === "after") && !p.destination) {
+        t.steps.push("⚠️ " + p.position + " 需要 destination 参照规则名，跳过 move，规则留在末尾");
       } else {
-        t.steps.push("️ move to top 响应异常，请检查规则位置：" + r3txt.slice(0, 200));
+        try {
+          const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`;
+          const moveDest = (p.position === "before" || p.position === "after")
+            ? `${XPATH_BASE}/rulebase/security/rules/entry[@name='${p.destination}']`
+            : null;
+          const r3 = await directConfigMove(moveXpath, p.position, moveDest);
+          const destTxt = moveDest ? " (参照 " + p.destination + ")" : "";
+          const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
+          t.steps.push("candidate: move " + name + " " + WHERE_CN[p.position] + destTxt + " → " + r3txt.slice(0, 120));
+          if (r3txt.includes("success") || r3txt.includes("command succeeded") || r3txt.includes("moved")) {
+            t.steps.push("✅ move " + WHERE_CN[p.position] + " 成功");
+          } else {
+            t.steps.push("⚠️ move 响应异常：" + r3txt.slice(0, 200));
+          }
+        } catch (e) {
+          t.steps.push("⚠️ move 失败：" + e.message.slice(0, 120));
+        }
       }
-    } catch (e) {
-      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但可能在末尾，请手动置顶）");
+    } else {
+      t.steps.push("ℹ️ 用户未指定位置，规则留在末尾（不移动）");
     }
   }
   t.params = p;
