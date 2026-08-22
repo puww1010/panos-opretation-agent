@@ -320,6 +320,9 @@ function xmlEntries(xml) {
   const blocks = xml.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || [];
   return blocks.map((blk) => {
     const e = {};
+    // 提取 <entry name="X"> 的 name 属性（PAN-OS 用属性而非 <name> 元素），存为 @_name 以兼容 MCP 格式
+    const nm = blk.match(/<entry[^>]*\bname="([^"]+)"/);
+    if (nm) e["@_name"] = nm[1];
     const tag = /<(\w+)>([^<]*)<\/\1>/g;
     let tm;
     while ((tm = tag.exec(blk)) !== null) if (!(tm[1] in e)) e[tm[1]] = tm[2];

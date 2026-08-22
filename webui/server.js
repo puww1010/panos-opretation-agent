@@ -332,6 +332,10 @@ async function directCommit(desc) {
 async function directConfig(xpath) {
   return await httpsGet(`/api/?type=config&action=get&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
 }
+async function directConfigShow(xpath) {
+  // 读 running config（已 commit 的实际生效配置），区别于 directConfig（candidate/待 commit）
+  return await httpsGet(`/api/?type=config&action=show&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
+}
 async function directConfigSet(xpath, element) {
   return await directHttpsPost(`https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=set&xpath=${encodeURIComponent(xpath)}&element=${encodeURIComponent(element)}&key=${DIRECT_KEY}`);
 }
@@ -378,6 +382,9 @@ function xmlEntries(xml) {
   const blocks = xml.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || [];
   return blocks.map((blk) => {
     const e = {};
+    // 提取 <entry name="X"> 的 name 属性（PAN-OS 用属性而非 <name> 元素），存为 @_name 以兼容 MCP 格式
+    const nm = blk.match(/<entry[^>]*\bname="([^"]+)"/);
+    if (nm) e["@_name"] = nm[1];
     const tag = /<(\w+)>([^<]*)<\/\1>/g;
     let tm;
     while ((tm = tag.exec(blk)) !== null) if (!(tm[1] in e)) e[tm[1]] = tm[2];
@@ -982,8 +989,20 @@ async function resolveRuleTarget(t, p, firewall, verb) {
 async function setAwaitingSelection(t, p, firewall, verb, _extraSteps) {
   const kw = (p.keyword || "").trim();
   if (!kw) throw new Error(`该操作需要精确规则名或模糊 keyword 之一`);
-  const data = await callTool("get_security_rules", {}, firewall);
-  const all = data?.rules?.entry || [];
+  // 绕开 MCP get_security_rules（它读 candidate config，不含 running rules），
+  // 直接用 directConfigShow 读 running config（已 commit 的实际生效规则）
+  const SECURITY_RULES_XPATH = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules`;
+  const txt = await directConfigShow(SECURITY_RULES_XPATH);
+  const blocks = (txt.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || []);
+  const all = blocks.map((blk) => {
+    const e = {};
+    const nm = blk.match(/<entry[^>]*\bname="([^"]+)"/);
+    if (nm) e["@_name"] = nm[1];
+    const tag = /<(\w+)>([^<]*)<\/\1>/g;
+    let tm;
+    while ((tm = tag.exec(blk)) !== null) if (!(tm[1] in e)) e[tm[1]] = tm[2];
+    return e;
+  });
   // 1) 先按整串子串匹配（保持原行为）
   let matches = all.filter((r) => r["@_name"]?.toLowerCase().includes(kw.toLowerCase()));
   let mode = "整串匹配";
@@ -1731,24 +1750,41 @@ const server = http.createServer(async (req, res) => {
               results.push({ name, success: false, error: String(e.message || e), taskId: newTask.id });
             }
           }
-          // 所有变更后自动 commit
+          // 所有变更后做一次统一 commit（而非每个子任务独立 commit，节省时间+减少 commit job）
           const successfulTasks = results.filter(r => r.success).map(r => tasks.find(t => t.id === r.taskId));
           if (successfulTasks.length > 0) {
-            t.steps.push(`开始 commit ${successfulTasks.length} 个变更`);
-            for (const st of successfulTasks) {
-              if (st.status === "awaiting_commit") {
-                try {
-                  await runChangeCommit(st, cand.firewall);
-                } catch (e) {
+            t.steps.push(`统一 commit ${successfulTasks.length} 个变更（合并为单次 commit）`);
+            try {
+              await runChangeCommit(t, cand.firewall);
+              // runChangeCommit 不抛异常，通过 t.result.{commitFailed,needsManualCommit} 判断结果
+              if (t.result?.commitFailed || t.result?.needsManualCommit) {
+                const errMsg = t.result.commitFailed ? "commit 失败" : "commit 超时/需手动";
+                for (const st of successfulTasks) {
                   st.status = "failed";
-                  st.error = "commit 失败: " + String(e.message || e);
+                  st.error = errMsg + " (job=" + (t.result.job || "?") + ")";
+                  saveTask(st);
+                }
+              } else {
+                for (const st of successfulTasks) {
+                  st.status = "done";
+                  st.result = Object.assign(st.result || {}, { mergedCommit: true, commitJob: t.result.job });
                   saveTask(st);
                 }
               }
+            } catch (e) {
+              for (const st of successfulTasks) {
+                st.status = "failed";
+                st.error = "commit 失败: " + String(e.message || e);
+                saveTask(st);
+              }
+              t.steps.push("commit 异常: " + String(e.message || e).slice(0, 120));
             }
+          } else {
+            t.steps.push("无可 commit 的变更");
           }
           t.status = "done";
-          t.result = { batch: true, total: names.length, results };
+          // 合并 commit job 信息（runChangeCommit 已设 t.result.job），不要覆盖
+          t.result = Object.assign(t.result || {}, { batch: true, total: names.length, results });
           saveTask(t);
         })().catch(e => {
           t.status = "failed";
