@@ -805,7 +805,8 @@ function renderTask(t) {
     const headStyle = "display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:5px 8px;border-radius:6px;background:rgba(22,104,220,.05);border:1px solid rgba(22,104,220,.18);user-select:none;font-size:12px;color:#3b4a66;font-weight:600;transition:background .15s";
     const progressLabel = runningIdx >= 0 ? (runningIdx + 1) + "/" + total + " 进行中" : (isLive ? "执行中 · " + total + " 步" : total + " 步已完成");
     h += '<div class="tl-block" id="tl-' + t.id + '">';
-    h += '<div class="tl-head" onclick="var b=document.getElementById(\\'' + tlId + '\\');var c=b.style.display;var s=this.querySelector(\\'span.tl-toggle\\');if(c===\\'none\\'){b.style.display=\\'\\';s.textContent=\\'▾\\';}else{b.style.display=\\'none\\';s.textContent=\\'▸\\';}" style="' + headStyle + '" onmouseover="this.style.background=\\'rgba(22,104,220,.1)\\'" onmouseout="this.style.background=\\'rgba(22,104,220,.05)\\'">';
+    // 用 this.nextElementSibling 引用兄弟节点，避免把带 ' 的 ID 嵌入 HTML 属性（解析歧义导致 JS 全面中断）
+    h += '<div class="tl-head" onclick="toggleTLBlock(this)" style="' + headStyle + '" onmouseover="this.style.background=\'rgba(22,104,220,.1)\'" onmouseout="this.style.background=\'rgba(22,104,220,.05)\'">';
     h += '<span>🔧 实时任务分解 · <span style="color:' + (isLive ? '#1d4ed8' : '#6b7280') + '">' + progressLabel + '</span></span>';
     h += '<span class="tl-toggle" style="color:#9ca3af;font-weight:400;margin-left:8px">' + (expandByDefault ? '▾' : '▸') + '</span>';
     h += '</div>';
@@ -813,6 +814,22 @@ function renderTask(t) {
     h += "</div>";
   }
   return h + "</div></div>";
+}
+
+// 实时任务分解时间线折叠/展开：用 nextElementSibling 避免把字符串嵌入 HTML 属性（解析歧义）
+function toggleTLBlock(head) {
+  try {
+    const body = head.nextElementSibling;
+    const toggle = head.querySelector(".tl-toggle");
+    if (!body) return;
+    if (body.style.display === "none") {
+      body.style.display = "";
+      if (toggle) toggle.textContent = "▾";
+    } else {
+      body.style.display = "none";
+      if (toggle) toggle.textContent = "▸";
+    }
+  } catch (e) { /* 折叠异常不影响其他功能 */ }
 }
 
 function statusText(s) {
