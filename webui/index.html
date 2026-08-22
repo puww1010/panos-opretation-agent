@@ -357,6 +357,12 @@ async function fjs(url, opts) { opts = opts || {}; opts.timeout = opts.timeout |
 }
 
 let BTN_LABELS = {};
+let _lastAutoScrollTaskId = null; // 上次自动滚动的 live 任务 id（只对新任务滚一次，不重复打扰）
+let _lastUserScrollAt = 0;        // 用户最近一次手动滚动时间（wheel/touch），5 秒内不自动滚
+
+// 用户主动滚动时记录时间戳：让自动滚动逻辑尊重用户位置（不再持续把页面拉回 live 任务）
+window.addEventListener("wheel", () => { _lastUserScrollAt = Date.now(); }, { passive: true });
+window.addEventListener("touchmove", () => { _lastUserScrollAt = Date.now(); }, { passive: true });
 
 async function init() {
   pulseLiveBadge("warn");
@@ -660,13 +666,21 @@ async function pollTasks() {
     // 重建 DOM 后恢复多选 checkbox 状态
     tasks.filter(t => t.status === "awaiting_selection" && _selState[t.id]).forEach(t => _restoreSel(t.id));
     hadActive = tasks.some((t) => ["pending", "running", "executing", "committing"].includes(t.status));
-    // 实时任务分解：自动滚动到最新一条执行中任务的步骤（不打断用户主动滚动）
+    // 实时任务分解：只在"新 live 任务出现"时自动滚动一次（避免每 3 秒强制拉回页面，
+    // 导致用户无法向上滚动到顶部——旧实现只要有任何 live 任务就持续 scrollIntoView）
     if (hadActive) {
       const cur = tasks.find((t) => ["pending", "running", "executing", "committing"].includes(t.status));
       if (cur) {
-        const el = document.getElementById("tl-" + cur.id);
-        if (el && el.scrollIntoView && !document.body.dataset.paused) {
-          el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        // 用户手动滚动过（wheel/touch），5 秒内不再自动滚，尊重用户位置
+        const now = Date.now();
+        if (now - (_lastUserScrollAt || 0) < 5000) {
+          // 用户正在浏览，跳过自动滚动
+        } else if (_lastAutoScrollTaskId !== cur.id) {
+          const el = document.getElementById("tl-" + cur.id);
+          if (el && el.scrollIntoView) {
+            el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            _lastAutoScrollTaskId = cur.id; // 只对"新出现的 live 任务"滚一次，不重复打扰
+          }
         }
       }
     }
