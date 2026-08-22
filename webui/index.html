@@ -801,12 +801,18 @@ function renderTask(t) {
     }).join("");
     const tlId = "tl-body-" + t.id;
     // 默认折叠（非 live 任务或步数<=3 时直接展开，否则折叠以节省视觉空间）
-    const expandByDefault = t.steps.length <= 3 || !isLive;
+    // 但用户手动 toggle 过的优先级最高（持久化到 localStorage，否则 pollTasks 重建 DOM 会被冲掉）
+    let expandByDefault = t.steps.length <= 3 || !isLive;
+    try {
+      const pref = localStorage.getItem("tlPref_" + t.id);
+      if (pref === "open") expandByDefault = true;
+      else if (pref === "closed") expandByDefault = false;
+    } catch (e) { /* localStorage 不可用时降级用默认规则 */ }
     const headStyle = "display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:5px 8px;border-radius:6px;background:rgba(22,104,220,.05);border:1px solid rgba(22,104,220,.18);user-select:none;font-size:12px;color:#3b4a66;font-weight:600;transition:background .15s";
     const progressLabel = runningIdx >= 0 ? (runningIdx + 1) + "/" + total + " 进行中" : (isLive ? "执行中 · " + total + " 步" : total + " 步已完成");
     h += '<div class="tl-block" id="tl-' + t.id + '">';
     // 用 this.nextElementSibling 引用兄弟节点，避免把带 ' 的 ID 嵌入 HTML 属性（解析歧义导致 JS 全面中断）
-    h += '<div class="tl-head" onclick="toggleTLBlock(this)" style="' + headStyle + '" onmouseover="this.style.background=\'rgba(22,104,220,.1)\'" onmouseout="this.style.background=\'rgba(22,104,220,.05)\'">';
+    h += '<div class="tl-head" data-task-id="' + t.id + '" onclick="toggleTLBlock(this)" style="' + headStyle + '" onmouseover="this.style.background=\'rgba(22,104,220,.1)\'" onmouseout="this.style.background=\'rgba(22,104,220,.05)\'">';
     h += '<span>🔧 实时任务分解 · <span style="color:' + (isLive ? '#1d4ed8' : '#6b7280') + '">' + progressLabel + '</span></span>';
     h += '<span class="tl-toggle" style="color:#9ca3af;font-weight:400;margin-left:8px">' + (expandByDefault ? '▾' : '▸') + '</span>';
     h += '</div>';
@@ -817,17 +823,19 @@ function renderTask(t) {
 }
 
 // 实时任务分解时间线折叠/展开：用 nextElementSibling 避免把字符串嵌入 HTML 属性（解析歧义）
+// 同时把用户偏好持久化到 localStorage，否则 pollTasks 重建 DOM 会被冲掉（"点开就闪掉"）
 function toggleTLBlock(head) {
   try {
     const body = head.nextElementSibling;
     const toggle = head.querySelector(".tl-toggle");
     if (!body) return;
-    if (body.style.display === "none") {
-      body.style.display = "";
-      if (toggle) toggle.textContent = "▾";
-    } else {
-      body.style.display = "none";
-      if (toggle) toggle.textContent = "▸";
+    const willOpen = body.style.display === "none";
+    body.style.display = willOpen ? "" : "none";
+    if (toggle) toggle.textContent = willOpen ? "▾" : "▸";
+    // 持久化用户偏好：读 head 上 data-task-id 知道是哪个任务
+    const tid = head.getAttribute("data-task-id");
+    if (tid) {
+      try { localStorage.setItem("tlPref_" + tid, willOpen ? "open" : "closed"); } catch (e) { /* localStorage 不可用不影响 UI */ }
     }
   } catch (e) { /* 折叠异常不影响其他功能 */ }
 }
