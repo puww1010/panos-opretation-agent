@@ -128,3 +128,7 @@ cd webui && npm install && ./start.sh
 ### License
 
 MIT
+
+###  引用
+
+https://github.com/apius-tech/Palo-MCP
