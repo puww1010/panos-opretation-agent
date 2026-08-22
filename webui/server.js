@@ -186,6 +186,11 @@ const CHANGE_TEMPLATES = {
     ? `启用安全策略 ${p.name}（需审批后 commit）`
     : `按关键词"${p.keyword}"查找匹配的安全策略并列出（不执行启用）`, params: ["name", "keyword"] },
   allow_ip: { label: "放行 IP", plan: (p) => `放行 ${p.ip}：建地址对象 + allow 策略置顶${p.expiry ? "，临时至 " + p.expiry : "，永久"}`, params: ["ip"] },
+  block_ip_group: { label: "封禁 IP 组", plan: (p) => {
+    const ips = (p.ips || []).join(", ");
+    const gname = p.group_name || `block-group-${new Date().toISOString().slice(0,10).replace(/-/g,"")}`;
+    return `封禁 ${(p.ips || []).length} 个 IP（${ips}）：建 ${(p.ips || []).length} 个地址对象 → 加入地址组 ${gname} → 策略 source 引用该组置顶`;
+  }, params: ["ips", "group_name"] },
 };
 
 async function connect() {
@@ -630,6 +635,10 @@ delete_security_rule：
 set_security_rule_disabled（禁用规则）：用法同 delete_security_rule（精确名填 name，模糊 keyword 取核心子串）
 set_security_rule_enabled（启用规则）：用法同 delete_security_rule
 allow_ip（放行 IP）：从"放行/允许/白名单/allow"相关输入提取 ip（合法 IPv4）
+block_ip_group（封禁 IP 组）：用于**多个 IP 封禁 + 放进地址组**场景。识别关键词："封禁这 3 个 IP"/"把多个 IP 放进一个组"/"地址组"/"把 IP 打包封禁"/"在源地址里用组"。
+  - 提取所有 IPv4 到 params.ips 数组（如 ["1.1.2.1","1.1.2.2","1.1.2.3"]），不能是字符串
+  - 用户给了组名（如"黑名单组/封禁组/internet-block"）→ 填 params.group_name；未给则系统自动生成 "block-group-YYYYMMDD"
+  - **绝不能**把多个 IP 用逗号拼成一个名字（PAN-OS 不接受逗号），绝不能用 block_ip 单 IP 模板
 若无法匹配模板输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${tmplList}`, input);
   if (!text) return null;
   try {
@@ -913,6 +922,59 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
       }
     } catch (e) {
       t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但在末尾，需手动置顶）");
+    }
+  } else if (tmpl === "block_ip_group") {
+    // 封禁 IP 组：多 IP → 各自地址对象 → 1 个地址组 → deny 规则 source 引用组 → 置顶
+    const ips = Array.isArray(p.ips) ? p.ips.filter((x) => x && /^\d+\.\d+\.\d+\.\d+$/.test(String(x).trim())) : [];
+    if (ips.length === 0) throw new Error("block_ip_group: 至少需要一个有效 IPv4");
+    const ts = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const XPATH_BASE = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']`;
+    // group_name 校验：仅 [a-zA-Z0-9_.-]，缺失自动生成
+    const groupName = (p.group_name && /^[a-zA-Z0-9_.\-]+$/.test(p.group_name))
+      ? p.group_name
+      : `block-group-${ts}`;
+    // 1) 为每个 IP 建一个 address 对象
+    const objNames = [];
+    for (const ip of ips) {
+      const n = `block-${ip}-${ts}`;
+      const r1 = await directConfigSet(
+        `${XPATH_BASE}/address/entry[@name='${n}']`,
+        `<ip-netmask>${ip}/32</ip-netmask>`
+      );
+      t.steps.push("candidate: address " + n + " → " + JSON.stringify(r1).slice(0, 80));
+      objNames.push(n);
+    }
+    // 2) 建地址组（成员 = 上面建的 address 对象）
+    const staticXml = "<static>" + objNames.map((n) => `<member>${n}</member>`).join("") + "</static><description>WebUI block group by Agent</description>";
+    const r2 = await directConfigSet(
+      `${XPATH_BASE}/address-group/entry[@name='${groupName}']`,
+      staticXml
+    );
+    t.steps.push("candidate: address-group " + groupName + " (" + objNames.length + " 成员) → " + JSON.stringify(r2).slice(0, 80));
+    // 3) deny 规则 source 引用 group
+    const ruleName = groupName;
+    const ruleXml = `<from><member>any</member></from><to><member>any</member></to><source><member>${groupName}</member></source><destination><member>any</member></destination><service><member>any</member></service><application><member>any</member></application><action>deny</action><description>WebUI block group by Agent (${ips.length} IPs)</description>`;
+    const r3 = await directConfigSet(
+      `${XPATH_BASE}/rulebase/security/rules/entry[@name='${ruleName}']`,
+      ruleXml
+    );
+    t.steps.push("candidate: deny rule (source=group) " + ruleName + " → " + JSON.stringify(r3).slice(0, 80));
+    p._objName = ruleName;
+    p._groupName = groupName;
+    p._memberCount = objNames.length;
+    // 4) 置顶
+    try {
+      const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${ruleName}']`;
+      const r4 = await directConfigMove(moveXpath, "top");
+      t.steps.push("candidate: move " + ruleName + " to top → " + JSON.stringify(r4).slice(0, 120));
+      const r4txt = typeof r4 === "string" ? r4 : JSON.stringify(r4);
+      if (r4txt.includes("success") && !r4txt.includes("false") || r4txt.includes("command succeeded")) {
+        t.steps.push("✅ move to top 成功");
+      } else if (!r4txt.includes("success") && !r4txt.includes("succeeded")) {
+        t.steps.push("⚠️ move to top 响应异常：" + r4txt.slice(0, 200));
+      }
+    } catch (e) {
+      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但在末尾）");
     }
   } else if (tmpl === "move_security_rule") {
     // 移动策略：改用 directConfigMove，绕开 MCP move_security_rule 的 v3Schema 故障
