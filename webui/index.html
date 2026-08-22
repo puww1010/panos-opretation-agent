@@ -762,13 +762,26 @@ function renderTask(t) {
       h += '<div id="' + rawId + '" style="' + (rawOpen ? '' : 'display:none') + ';margin-top:6px">' + renderResult(t.result.results) + "</div>";
     }
   } else if (t.status === "done" && t.type === "chat" && t.result) {
-    // 自由问答兜底：飞书端发起的任务只显示简短标记（LLM 长答案已回传飞书，不在 WebUI 重复显示）
+    // 自由问答兜底：飞书端发起的任务默认折叠展示（完整答案已回传飞书，点击展开可查看）
     // Web 端发起的任务正常显示 AI 回答（用户需要看到结果）
+    const answerText = t.result.answer || "";
     if (t.source === "feishu") {
-      h += '<div style="background:rgba(14,165,233,.06);border:1px solid rgba(14,165,233,.28);border-left:3px solid #0ea5e9;border-radius:8px;padding:10px 13px;margin:8px 0;font-size:13px;color:#0c4a6e;line-height:1.6">💬 自由问答 · <b>AI 回答已回传飞书</b>（' + esc((t.result.answer || '').length) + ' 字）<br><span style="color:#64748b;font-size:12px">如需在 Web 端查看完整回答，请切换到 Web 端发起同类问题</span></div>';
+      // 折叠条：点击展开完整答案（与原始数据表格同款交互，localStorage 持久化）
+      let chatOpen = false;
+      try {
+        const pref = localStorage.getItem("chatPref_" + t.id);
+        if (pref === "open") chatOpen = true;
+      } catch (e) { /* localStorage 不可用时默认折叠 */ }
+      const chatId = "chat-body-" + t.id;
+      h += '<div style="background:rgba(14,165,233,.06);border:1px solid rgba(14,165,233,.28);border-left:3px solid #0ea5e9;border-radius:8px;padding:10px 13px;margin:8px 0;font-size:13px;color:#0c4a6e;line-height:1.6">💬 自由问答 · <b>AI 回答已回传飞书</b>（' + esc(String(answerText).length) + ' 字）</div>';
+      h += '<div data-task-id="' + t.id + '" onclick="toggleChatBlock(this)" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:6px 10px;border-radius:8px;background:rgba(14,165,233,.05);border:1px solid rgba(14,165,233,.22);user-select:none;font-size:12px;color:#0369a1;transition:background .15s" onmouseover="this.style.background=\'rgba(14,165,233,.1)\'" onmouseout="this.style.background=\'rgba(14,165,233,.05)\'">';
+      h += '<span>🔍 点击展开完整回答</span>';
+      h += '<span class="chat-toggle" style="color:#9ca3af;font-weight:400">' + (chatOpen ? '▾' : '▸') + '</span>';
+      h += '</div>';
+      h += '<div id="' + chatId + '" style="' + (chatOpen ? '' : 'display:none') + ';margin-top:6px;background:rgba(109,40,217,.05);border:1px solid rgba(109,40,217,.28);border-left:3px solid #6d28d9;border-radius:8px;padding:12px 14px;font-size:13.5px;color:#3c3489;line-height:1.75;white-space:pre-wrap;word-break:break-word">' + esc(answerText) + '</div>';
     } else {
       // Web 端发起：显示紫色 AI 思考框
-      h += '<div style="background:rgba(109,40,217,.05);border:1px solid rgba(109,40,217,.28);border-left:3px solid #6d28d9;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:13.5px;color:#3c3489;line-height:1.75;white-space:pre-wrap;word-break:break-word">' + esc(t.result.answer || "") + '</div>';
+      h += '<div style="background:rgba(109,40,217,.05);border:1px solid rgba(109,40,217,.28);border-left:3px solid #6d28d9;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:13.5px;color:#3c3489;line-height:1.75;white-space:pre-wrap;word-break:break-word">' + esc(answerText) + '</div>';
     }
   } else if (t.status === "done" && t.type === "inspect" && t.result) {
     h += '<div class="grade ' + (t.result.rate >= 75 ? (t.result.rate >= 90 ? "good" : "mid") : "bad") + '">评级 ' + esc(t.result.grade) + "（" + t.result.rate + "%）</div>";
@@ -871,6 +884,22 @@ function toggleRawBlock(head) {
     const tid = head.getAttribute("data-task-id");
     if (tid) {
       try { localStorage.setItem("rawPref_" + tid, willOpen ? "open" : "closed"); } catch (e) { /* localStorage 不可用不影响 UI */ }
+    }
+  } catch (e) { /* 折叠异常不影响其他功能 */ }
+}
+
+// 飞书端自由问答完整回答折叠/展开：默认折叠（AI 回答已回传飞书），点击可查看完整答案
+function toggleChatBlock(head) {
+  try {
+    const body = head.nextElementSibling;
+    const toggle = head.querySelector(".chat-toggle");
+    if (!body) return;
+    const willOpen = body.style.display === "none";
+    body.style.display = willOpen ? "" : "none";
+    if (toggle) toggle.textContent = willOpen ? "▾" : "▸";
+    const tid = head.getAttribute("data-task-id");
+    if (tid) {
+      try { localStorage.setItem("chatPref_" + tid, willOpen ? "open" : "closed"); } catch (e) { /* localStorage 不可用不影响 UI */ }
     }
   } catch (e) { /* 折叠异常不影响其他功能 */ }
 }
