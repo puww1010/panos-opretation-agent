@@ -1073,6 +1073,15 @@ async function runChangeCommit(t, firewall) {
   }
   // 轮询 job（动态间隔：前 30 次每 3 秒，之后每 5 秒，最多 200 次 ≈ 10 分钟）
   for (let i = 0; i < 200; i++) {
+    // 用户取消：停止轮询，但 commit 可能已在防火墙执行，明确提示
+    if (t.cancelled) {
+      t.steps.push("已取消任务，停止 commit 轮询");
+      t.steps.push("⚠️ commit job=" + job + " 可能已在防火墙执行，请到 Monitor → Jobs 确认最终状态；如需回退变更请手动处理");
+      t.status = "cancelled";
+      t.result = Object.assign(t.result || {}, { cancelledWhileCommitting: true, job });
+      saveTask(t);
+      return;
+    }
     await new Promise((res) => setTimeout(res, i < 30 ? 3000 : 5000));
     try {
       const s2 = await directOp(`<show><jobs><id>${job}</id></jobs></show>`);
