@@ -1801,6 +1801,22 @@ const server = http.createServer(async (req, res) => {
         send(ok ? 200 : 401, ok ? { ok: true, username: authData.username } : { error: "未认证" });
         return;
       }
+      // 修改密码：需已认证 + 校验旧密码；成功后清空所有会话（含当前），强制重新登录
+      if (req.method === "POST" && urlPath0 === "/api/auth/change-password") {
+        if (!authCheck(req)) { send(401, { error: "未认证或登录已过期，请重新登录" }); return; }
+        let cred = {};
+        try { cred = JSON.parse(await body()); } catch (e) { cred = {}; }
+        const oldPw = String(cred.old_password || "");
+        const newPw = String(cred.new_password || "");
+        if (sha256(oldPw) !== authData.password_hash) { send(400, { error: "旧密码不正确" }); return; }
+        if (newPw.length < 8) { send(400, { error: "新密码至少 8 位" }); return; }
+        if (newPw === oldPw) { send(400, { error: "新密码不能与旧密码相同" }); return; }
+        authData.password_hash = sha256(newPw);
+        authData.sessions = {}; // 清空全部会话，强制重新登录
+        fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2));
+        send(200, { ok: true, message: "密码已修改，请重新登录" });
+        return;
+      }
       // 其余 API：统一认证拦截（401 让前端显示登录页）
       if (!authCheck(req)) {
         send(401, { error: "未认证或登录已过期，请重新登录" });

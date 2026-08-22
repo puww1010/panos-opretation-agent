@@ -217,6 +217,7 @@
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="location.reload(true)">🔄 强刷</button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="testBackend()">🩺 测网络</button>
     </span>
+    <button class="btn" onclick="showChangePwd()" title="修改登录密码（首次登录建议立即修改）" style="padding:3px 10px;font-size:12px">🔑 改密</button>
     <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px">🔒 退出</button>
   </div>
 </div>
@@ -426,6 +427,42 @@ function doLogout() {
   location.reload();
 }
 function onLoginKey(e) { if (e.key === "Enter") doLogin(); }
+
+// ── 修改密码（首次登录建议立即修改；成功后强制重新登录）──
+function showChangePwd() {
+  const m = document.createElement("div");
+  m.className = "modal-mask";
+  m.innerHTML = '<div class="modal-box" style="max-width:420px"><h2>🔑 修改登录密码</h2>' +
+    '<div style="font-size:12.5px;color:var(--muted);margin-bottom:14px;line-height:1.7">修改后所有会话失效，需重新登录。初始随机密码建议立即修改。</div>' +
+    '<input id="cpOld" type="password" placeholder="旧密码" style="width:100%;box-sizing:border-box;padding:10px 13px;border:1px solid var(--border2);border-radius:8px;font-size:13.5px;margin-bottom:9px;outline:none">' +
+    '<input id="cpNew" type="password" placeholder="新密码（至少 8 位）" style="width:100%;box-sizing:border-box;padding:10px 13px;border:1px solid var(--border2);border-radius:8px;font-size:13.5px;margin-bottom:9px;outline:none">' +
+    '<input id="cpNew2" type="password" placeholder="确认新密码" style="width:100%;box-sizing:border-box;padding:10px 13px;border:1px solid var(--border2);border-radius:8px;font-size:13.5px;margin-bottom:6px;outline:none" onkeydown="if(event.key===\'Enter\')doChangePwd()">' +
+    '<div id="cpErr" style="color:var(--red);font-size:12.5px;min-height:18px;margin-bottom:6px"></div>' +
+    '<div style="text-align:right"><button class="btn" onclick="this.closest(\'.modal-mask\').remove()" style="margin-right:8px">取消</button>' +
+    '<button class="btn primary" onclick="doChangePwd()">确认修改</button></div></div>';
+  document.body.appendChild(m);
+}
+async function doChangePwd() {
+  const oldPw = document.getElementById("cpOld").value;
+  const newPw = document.getElementById("cpNew").value;
+  const newPw2 = document.getElementById("cpNew2").value;
+  const err = document.getElementById("cpErr");
+  if (!oldPw || !newPw) { err.textContent = "请填写旧密码和新密码"; return; }
+  if (newPw.length < 8) { err.textContent = "新密码至少 8 位"; return; }
+  if (newPw !== newPw2) { err.textContent = "两次输入的新密码不一致"; return; }
+  try {
+    const r = await fetch("/api/auth/change-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ old_password: oldPw, new_password: newPw }) });
+    const d = await r.json();
+    if (d.ok) {
+      document.querySelectorAll(".modal-mask").forEach((x) => x.remove());
+      alert("✅ 密码已修改，请用新密码重新登录");
+      localStorage.removeItem("panos_web_token");
+      location.reload();
+    } else {
+      err.textContent = d.error || "修改失败";
+    }
+  } catch (e) { err.textContent = "修改失败：" + (e.message || e); }
+}
 
 async function init() {
   pulseLiveBadge("warn");
