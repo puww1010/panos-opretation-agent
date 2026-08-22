@@ -182,7 +182,7 @@ const DIRECT_KEY = DIRECT_FW.api_key || "";
 const DIRECT_HOST = (() => { const h = DIRECT_FW.host || ""; return h.startsWith("http") ? h.replace(/^https?:\/\//, "").replace(/\/$/, "").replace(/:\d+$/, "") : h.replace(/\/$/, ""); })();
 const DIRECT_PORT = 443;
 
-function httpsGet(path) {
+function httpsGet(path, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -274,6 +274,10 @@ async function directCommit(desc) {
 }
 async function directConfig(xpath) {
   return await httpsGet(`/api/?type=config&action=get&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
+}
+async function directConfigShow(xpath) {
+  // 读 running config（已 commit 的实际生效配置），区别于 directConfig（candidate/待 commit）
+  return await httpsGet(`/api/?type=config&action=show&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
 }
 async function directConfigSet(xpath, element) {
   return await directHttpsPost(`https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=set&xpath=${encodeURIComponent(xpath)}&element=${encodeURIComponent(element)}&key=${DIRECT_KEY}`);
@@ -668,9 +672,144 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     } catch (e) {
       t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但可能在末尾，请手动置顶）");
     }
+  } else if (tmpl === "delete_security_rule") {
+    // 模糊关键词：先列候选，不删除
+    const res = await resolveRuleTarget(t, p, firewall, "删除");
+    if (!res) return; // 已转 awaiting_selection，等用户点选
+    // 改用 directConfigDelete（type=config delete），绕开 MCP delete_security_rule 的 v3Schema 故障
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='${res.name}']`;
+    const r = await directConfigDelete(xpath);
+    t.steps.push("candidate: delete_security_rule " + res.name + " → " + JSON.stringify(r).slice(0, 120));
+    p.name = res.name;
+  } else if (tmpl === "set_security_rule_disabled") {
+    const res = await resolveRuleTarget(t, p, firewall, "禁用");
+    if (!res) return;
+    // 改用 directConfigSet 写 <disabled>yes</disabled>，绕开 MCP set_security_rule_disabled 的 v3Schema 故障
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='${res.name}']/disabled`;
+    const r = await directConfigSet(xpath, `<disabled>yes</disabled>`);
+    t.steps.push("candidate: disable " + res.name + " → " + JSON.stringify(r).slice(0, 120));
+    p.name = res.name;
+  } else if (tmpl === "set_security_rule_enabled") {
+    const res = await resolveRuleTarget(t, p, firewall, "启用");
+    if (!res) return;
+    // 改用 directConfigSet 写 <disabled>no</disabled>，绕开 MCP set_security_rule_disabled 的 v3Schema 故障
+    const xpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='${res.name}']/disabled`;
+    const r = await directConfigSet(xpath, `<disabled>no</disabled>`);
+    t.steps.push("candidate: enable " + res.name + " → " + JSON.stringify(r).slice(0, 120));
+    p.name = res.name;
+  } else if (tmpl === "move_security_rule") {
+    // 移动策略：改用 directConfigMove，绕开 MCP move_security_rule 的 v3Schema 故障
+    if (!p.name || !p.where) throw new Error("move_security_rule 缺少 name 或 where");
+    if ((p.where === "before" || p.where === "after") && !p.destination) {
+      throw new Error("move_security_rule 在 before/after 时必须提供 destination（参照规则名）");
+    }
+    const XPATH_BASE = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']`;
+    const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${p.name}']`;
+    const moveDest = (p.where === "before" || p.where === "after")
+      ? `${XPATH_BASE}/rulebase/security/rules/entry[@name='${p.destination}']`
+      : null;
+    const r = await directConfigMove(moveXpath, p.where, moveDest);
+    t.steps.push("candidate: move_security_rule " + p.name + " " + p.where + (moveDest ? " " + p.destination : "") + " → " + JSON.stringify(r).slice(0, 120));
+  } else if (tmpl === "allow_ip") {
+    // 放行 IP：对称 block_ip，写 address 对象 + allow 规则（默认置顶）
+    const ts = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const name = `allow-${p.ip}-${ts}`;
+    const XPATH_BASE = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']`;
+    // 1) 地址对象
+    const r1 = await directConfigSet(
+      `${XPATH_BASE}/address/entry[@name='${name}']`,
+      `<ip-netmask>${p.ip}/32</ip-netmask>`
+    );
+    t.steps.push("candidate: address " + name + " → " + JSON.stringify(r1).slice(0, 80));
+    // 2) 安全规则（允许 any → this src）
+    const ruleXml = `<from><member>any</member></from><to><member>any</member></to><source><member>${name}</member></source><destination><member>any</member></destination><service><member>any</member></service><application><member>any</member></application><action>allow</action><description>WebUI allow by Agent</description>`;
+    const r2 = await directConfigSet(
+      `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`,
+      ruleXml
+    );
+    t.steps.push("candidate: allow rule " + name + " → " + JSON.stringify(r2).slice(0, 80));
+    p._objName = name;
+    // 3) 默认置顶（allow_ip 语义也是"放行+置顶"）
+    try {
+      const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`;
+      const r3 = await directConfigMove(moveXpath, "top");
+      const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
+      t.steps.push("candidate: move " + name + " to top → " + r3txt.slice(0, 120));
+      if (r3txt.includes("success") || r3txt.includes("command succeeded") || r3txt.includes("moved")) {
+        t.steps.push("✅ move to top 成功，规则已置顶");
+      } else {
+        t.steps.push("️ move to top 响应异常，请检查规则位置：" + r3txt.slice(0, 200));
+      }
+    } catch (e) {
+      t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但可能在末尾，请手动置顶）");
+    }
   }
   t.params = p;
   t.status = "awaiting_commit";
+}
+
+// 规则名解析：精确 name 直接返回 {name}；只有模糊 keyword 时把任务停在 awaiting_selection 并 return null
+async function resolveRuleTarget(t, p, firewall, verb) {
+  if (p.name && /^[a-zA-Z0-9_.\-]+$/.test(p.name)) return { name: p.name };
+  await setAwaitingSelection(t, p, firewall, verb, []);
+  return null;
+}
+
+// 模糊路径专用：读 running config 过滤匹配，转 awaiting_selection 状态
+async function setAwaitingSelection(t, p, firewall, verb, _extraSteps) {
+  const kw = (p.keyword || "").trim();
+  if (!kw) throw new Error(`该操作需要精确规则名或模糊 keyword 之一`);
+  // 绕开 MCP get_security_rules（它读 candidate config，不含 running rules），
+  // 直接用 directConfigShow 读 running config（已 commit 的实际生效规则）
+  const SECURITY_RULES_XPATH = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules`;
+  const txt = await directConfigShow(SECURITY_RULES_XPATH);
+  const blocks = (txt.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || []);
+  const all = blocks.map((blk) => {
+    const e = {};
+    const nm = blk.match(/<entry[^>]*\bname="([^"]+)"/);
+    if (nm) e["@_name"] = nm[1];
+    const tag = /<(\w+)>([^<]*)<\/\1>/g;
+    let tm;
+    while ((tm = tag.exec(blk)) !== null) if (!(tm[1] in e)) e[tm[1]] = tm[2];
+    return e;
+  });
+  // 1) 先按整串子串匹配（保持原行为）
+  let matches = all.filter((r) => r["@_name"]?.toLowerCase().includes(kw.toLowerCase()));
+  let mode = "整串匹配";
+  // 2) 0 命中时 fallback 拆词 OR 匹配（处理 LLM 把"name带有block"整段当 keyword 的情况）
+  if (matches.length === 0) {
+    const tokens = tokenizeForMatch(kw);
+    if (tokens.length > 0) {
+      const seen = new Set();
+      matches = all.filter((r) => {
+        const name = (r["@_name"] || "").toLowerCase();
+        const hit = tokens.some((tk) => name.includes(tk.toLowerCase()));
+        if (hit && !seen.has(r["@_name"])) { seen.add(r["@_name"]); return true; }
+        return false;
+      });
+      if (matches.length) mode = `拆词 OR 匹配 [${tokens.join(", ")}]`;
+    }
+  }
+  const top = matches.slice(0, 10).map((r) => r["@_name"]);
+  t.steps.push(`${mode} "${kw}" 命中 ${matches.length} 条规则` + (top.length ? `：${top.join("、")}` : ""));
+  t.status = "awaiting_selection";
+  t.result = { awaitingSelection: true, verb, keyword: kw, matched: top, totalMatches: matches.length, mode };
+  t._candidate = { name: p.name, keyword: kw, template: t.template, firewall };
+  saveTask(t);
+}
+
+// 把模糊描述拆成可独立匹配的核心 token（中文/英文连续段 + 过滤常见停用词）
+function tokenizeForMatch(text) {
+  const STOP = new Set([
+    "的", "在", "和", "与", "或", "带", "有", "含", "按", "上", "里", "下", "中", "为", "是",
+    "规则", "名字", "名称", "rule", "policy", "删除", "封禁", "放行", "禁用", "启用",
+    "请", "把", "我", "你", "他", "的", "把", "来", "下", "起", "到",
+    "this", "that", "the", "with", "and", "or", "rule", "policy"
+  ]);
+  const tokens = text.match(/[\u4e00-\u9fa5]+|[A-Za-z][A-Za-z0-9_-]*/g) || [];
+  return tokens
+    .map((t) => t.trim())
+    .filter((t) => t && t.length >= 2 && !STOP.has(t.toLowerCase()) && !STOP.has(t));
 }
 
 async function runChangeCommit(t, firewall) {
@@ -690,6 +829,15 @@ async function runChangeCommit(t, firewall) {
   }
   // 轮询 job（动态间隔：前 30 次每 3 秒，之后每 5 秒，最多 200 次 ≈ 10 分钟）
   for (let i = 0; i < 200; i++) {
+    // 用户取消：停止轮询，但 commit 可能已在防火墙执行，明确提示
+    if (t.cancelled) {
+      t.steps.push("已取消任务，停止 commit 轮询");
+      t.steps.push("⚠️ commit job=" + job + " 可能已在防火墙执行，请到 Monitor → Jobs 确认最终状态；如需回退变更请手动处理");
+      t.status = "cancelled";
+      t.result = Object.assign(t.result || {}, { cancelledWhileCommitting: true, job });
+      saveTask(t);
+      return;
+    }
     await new Promise((res) => setTimeout(res, i < 30 ? 3000 : 5000));
     try {
       const s2 = await directOp(`<show><jobs><id>${job}</id></jobs></show>`);
@@ -720,7 +868,7 @@ async function runChangeCommit(t, firewall) {
 }
 
 // ── 意图 → 任务路由 ──
-async function createTaskFromInput(input, firewall) {
+async function createTaskFromInput(input, firewall, source) {
   let action = null, fromLLM = false;
   for (const [k, v] of Object.entries(ACTIONS)) { if (k === input || v.label === input) action = k; }
   if (!action) {
@@ -731,7 +879,7 @@ async function createTaskFromInput(input, firewall) {
     const c = await llmExtractChange(input);
     if (!c) return { error: "无法解析变更意图（支持：创建/删除地址对象、封禁 IP）" };
     const tmpl = CHANGE_TEMPLATES[c.template];
-    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, status: "awaiting_approval" });
+    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, source, status: "awaiting_approval" });
     t.plan = tmpl.plan(c.params || {});
     t.steps.push("变更计划已生成，等待审批");
     tasks.push(t);
@@ -739,7 +887,7 @@ async function createTaskFromInput(input, firewall) {
   }
   if (action === "audit") {
     const a = await llmParseAudit(input);
-    const t = newTask("audit", input, { firewall, audit: a });
+    const t = newTask("audit", input, { firewall, source, audit: a });
     t.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）`;
     t.steps.push(t.decision);
     tasks.push(t);
@@ -749,7 +897,7 @@ async function createTaskFromInput(input, firewall) {
   if (action === "diag") {
     const d = await llmParseDiag(input);
     if (!d || !d.type) return { error: "无法解析诊断意图（示例：内部连不上外网 / 查一下 1.2.3.4 什么情况 / 全面健康检查）" };
-    const t = newTask("diag", input, { firewall, diag: d });
+    const t = newTask("diag", input, { firewall, source, diag: d });
     t.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label}）`;
     t.steps.push(t.decision);
     tasks.push(t);
@@ -757,13 +905,13 @@ async function createTaskFromInput(input, firewall) {
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
-    const t = newTask("inspect", input, { firewall });
+    const t = newTask("inspect", input, { firewall, source });
     tasks.push(t);
     runInspectTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); });
     return { taskId: t.id, status: t.status, type: "inspect" };
   }
   if (action && ACTIONS[action]) {
-    const t = newTask("query", input, { action, firewall });
+    const t = newTask("query", input, { action, firewall, source });
     t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label}）` : `关键词匹配 → 动作 ${action}`;
     t.steps.push(t.decision);
     tasks.push(t);
@@ -1062,9 +1210,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks }); return; }
     if (req.method === "POST" && req.url === "/api/task") {
-      const { query, firewall } = JSON.parse(await body());
+      const { query, firewall, source } = JSON.parse(await body());
       if (!client && MCP_ENABLED) { try { await connect(); } catch {} }
-      send(200, await createTaskFromInput(query, firewall));
+      // 区分任务来源：'web'（Web 控制台默认）/ 'feishu'（飞书 bridge 提交）
+      send(200, await createTaskFromInput(query, firewall, source || "web"));
       return;
     }
     if (req.method === "POST" && req.url.startsWith("/api/task/")) {
@@ -1111,24 +1260,41 @@ const server = http.createServer(async (req, res) => {
               results.push({ name, success: false, error: String(e.message || e), taskId: newTask.id });
             }
           }
-          // 所有变更后自动 commit
+          // 所有变更后做一次统一 commit（而非每个子任务独立 commit，节省时间+减少 commit job）
           const successfulTasks = results.filter(r => r.success).map(r => tasks.find(t => t.id === r.taskId));
           if (successfulTasks.length > 0) {
-            t.steps.push(`开始 commit ${successfulTasks.length} 个变更`);
-            for (const st of successfulTasks) {
-              if (st.status === "awaiting_commit") {
-                try {
-                  await runChangeCommit(st, cand.firewall);
-                } catch (e) {
+            t.steps.push(`统一 commit ${successfulTasks.length} 个变更（合并为单次 commit）`);
+            try {
+              await runChangeCommit(t, cand.firewall);
+              // runChangeCommit 不抛异常，通过 t.result.{commitFailed,needsManualCommit} 判断结果
+              if (t.result?.commitFailed || t.result?.needsManualCommit) {
+                const errMsg = t.result.commitFailed ? "commit 失败" : "commit 超时/需手动";
+                for (const st of successfulTasks) {
                   st.status = "failed";
-                  st.error = "commit 失败: " + String(e.message || e);
+                  st.error = errMsg + " (job=" + (t.result.job || "?") + ")";
+                  saveTask(st);
+                }
+              } else {
+                for (const st of successfulTasks) {
+                  st.status = "done";
+                  st.result = Object.assign(st.result || {}, { mergedCommit: true, commitJob: t.result.job });
                   saveTask(st);
                 }
               }
+            } catch (e) {
+              for (const st of successfulTasks) {
+                st.status = "failed";
+                st.error = "commit 失败: " + String(e.message || e);
+                saveTask(st);
+              }
+              t.steps.push("commit 异常: " + String(e.message || e).slice(0, 120));
             }
+          } else {
+            t.steps.push("无可 commit 的变更");
           }
           t.status = "done";
-          t.result = { batch: true, total: names.length, results };
+          // 合并 commit job 信息（runChangeCommit 已设 t.result.job），不要覆盖
+          t.result = Object.assign(t.result || {}, { batch: true, total: names.length, results });
           saveTask(t);
         })().catch(e => {
           t.status = "failed";

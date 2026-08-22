@@ -215,7 +215,7 @@
     </div>
     <div class="panel-body">
       <div class="cmd-row">
-        <input id="feishuMsg" placeholder="输入要发送到飞书群的消息..." style="flex:1">
+        <input id="feishuMsg" placeholder="输入要发送到飞书群的消息...（回车发送）" style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();feishuSend();}">
         <button class="btn" onclick="feishuSend()">发送</button>
         <button class="btn" onclick="feishuPushReport()">推送最新巡检报告</button>
       </div>
@@ -518,7 +518,9 @@ async function pollTasks() {
 }
 
 function renderTask(t) {
-  let h = '<div class="task"><div class="task-head"><span class="t-id">#' + t.id + '</span><span class="st ' + t.status + '">' + statusText(t.status) + '</span><span class="t-input">' + esc(t.input) + '</span><span class="t-time">' + esc(t.createdAt || "") + "</span></div>";
+  // 来源徽章：飞书端发的任务在 WebUI 上明确标识，方便 Web 用户区分任务来源
+  const sourceTag = t.source === "feishu" ? '<span title="此任务由飞书移动端发起，AI 回答已回传飞书" style="display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:11px;font-size:10.5px;font-weight:600;background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc">📱 飞书端</span>' : (t.source === "web" ? '<span title="此任务由 Web 控制台发起" style="display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:11px;font-size:10.5px;font-weight:600;background:#f1f5f9;color:#475569;border:1px solid #cbd5e1">🌐 Web 端</span>' : "");
+  let h = '<div class="task"><div class="task-head"><span class="t-id">#' + t.id + '</span><span class="st ' + t.status + '">' + statusText(t.status) + '</span><span class="t-input">' + esc(t.input) + '</span>' + sourceTag + '<span class="t-time">' + esc(t.createdAt || "") + "</span></div>";
   h += '<div class="task-body">';
 
   if (t.status === "awaiting_approval") {
@@ -576,6 +578,14 @@ function renderTask(t) {
     h += "<table><tr><th>排查步骤</th><th>结果</th></tr>" + (t.result.sections || []).map(s => "<tr><td>" + esc(s.step) + "</td><td>" + esc(s.result) + "</td></tr>").join("") + "</table>";
   } else if (t.status === "done" && t.type === "change" && t.result) {
     h += '<div class="steps ok">✅ ' + esc(t.result.detail || "变更完成") + "</div>";
+  } else if (t.status === "done" && t.type === "chat" && t.result) {
+    // 自由问答兜底：飞书端发起的任务只显示简短标记（LLM 长答案已回传飞书，不在 WebUI 重复显示）
+    // Web 端发起的任务正常显示 AI 回答（用户需要看到结果）
+    if (t.source === "feishu") {
+      h += '<div style="background:rgba(14,165,233,.06);border:1px solid rgba(14,165,233,.28);border-left:3px solid #0ea5e9;border-radius:8px;padding:10px 13px;margin:8px 0;font-size:13px;color:#0c4a6e;line-height:1.6">💬 自由问答 · <b>AI 回答已回传飞书</b>（' + esc((t.result.answer || '').length) + ' 字）<br><span style="color:#64748b;font-size:12px">如需在 Web 端查看完整回答，请切换到 Web 端发起同类问题</span></div>';
+    } else {
+      h += '<div style="background:rgba(109,40,217,.05);border:1px solid rgba(109,40,217,.28);border-left:3px solid #6d28d9;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:13.5px;color:#3c3489;line-height:1.75;white-space:pre-wrap;word-break:break-word">' + esc(t.result.answer || "") + '</div>';
+    }
   } else if (t.status === "failed") {
     h += '<div class="err">' + esc(t.error || "失败") + "</div>";
   }
@@ -756,7 +766,8 @@ async function loadFeishuStatus() {
 }
 
 async function feishuSend() {
-  const text = document.getElementById("feishuMsg").value.trim();
+  const inp = document.getElementById("feishuMsg");
+  const text = inp.value.trim();
   if (!text) return;
   const out = document.getElementById("feishuResult");
   out.innerHTML = "发送中...";
@@ -764,6 +775,7 @@ async function feishuSend() {
     const r = await fetch("/api/feishu/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
     const d = await r.json();
     out.innerHTML = d.ok ? '<span style="color:var(--green)">✅ 已发送' + (d.data ? " (msg " + esc(d.data) + ")" : "") + "</span>" : '<span class="err">❌ ' + esc(d.error || "发送失败") + "</span>";
+    if (d.ok) inp.value = "";  // 发送成功清空输入框
   } catch (e) { out.innerHTML = '<span class="err">❌ ' + esc(e.message) + "</span>"; }
 }
 
