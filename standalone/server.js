@@ -281,6 +281,12 @@ async function directConfigSet(xpath, element) {
 async function directConfigDelete(xpath) {
   return await directHttpsPost(`https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=delete&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
 }
+async function directConfigMove(xpath, where, destination) {
+  // 移动规则到指定位置（top/bottom/before/after）。绕开 MCP move_security_rule 的 v3Schema 故障。
+  let url = `https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=move&xpath=${encodeURIComponent(xpath)}&where=${encodeURIComponent(where)}&key=${DIRECT_KEY}`;
+  if (destination) url += `&destination=${encodeURIComponent(destination)}`;
+  return await directHttpsPost(url);
+}
 async function directHttpsPost(fullUrl) {
   // 从 fullUrl 提取 host/path（避免 new URL 解析问题）
   const m = fullUrl.match(/^https:\/\/([^\/:]+)(?::(\d+))?(\/.+)$/);
@@ -646,8 +652,10 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     // 3) 默认置顶（block_ip 语义就是"封禁+置顶"，与 plan 描述一致）
     // 注意：directOp 追加规则在末尾，必须 move 才能置顶
     try {
-      const r = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
-      const rtxt = JSON.stringify(r);
+      // 改用 directConfigMove，绕开 MCP move_security_rule 的 v3Schema 故障
+      const moveXpath = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='${name}']`;
+      const r = await directConfigMove(moveXpath, "top");
+      const rtxt = typeof r === "string" ? r : JSON.stringify(r);
       t.steps.push("candidate: move " + name + " to top → " + rtxt.slice(0, 120));
       if (rtxt.includes("success") || rtxt.includes("command succeeded") || rtxt.includes("moved")) {
         t.steps.push("✅ move to top 成功，规则已置顶");

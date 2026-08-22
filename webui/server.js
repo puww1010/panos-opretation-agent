@@ -338,6 +338,13 @@ async function directConfigSet(xpath, element) {
 async function directConfigDelete(xpath) {
   return await directHttpsPost(`https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=delete&xpath=${encodeURIComponent(xpath)}&key=${DIRECT_KEY}`);
 }
+async function directConfigMove(xpath, where, destination) {
+  // 移动规则到指定位置（top/bottom/before/after）。绕开 MCP move_security_rule 的 v3Schema 故障。
+  // before/after 时 destination 必须是参照规则的 xpath
+  let url = `https://${DIRECT_HOST}:${DIRECT_PORT}/api/?type=config&action=move&xpath=${encodeURIComponent(xpath)}&where=${encodeURIComponent(where)}&key=${DIRECT_KEY}`;
+  if (destination) url += `&destination=${encodeURIComponent(destination)}`;
+  return await directHttpsPost(url);
+}
 async function directHttpsPost(fullUrl) {
   // 从 fullUrl 提取 host/path（避免 new URL 解析问题）
   const m = fullUrl.match(/^https:\/\/([^\/:]+)(?::(\d+))?(\/.+)$/);
@@ -874,7 +881,9 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     // 3) 创建后自动移到最顶部（block_ip 语义就是"封禁+置顶"，与 plan 描述一致）
     // 注意：directConfigSet 追加规则在末尾，必须 move 才能置顶
     try {
-      const r3 = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
+      // 改用 directConfigMove（type=config&action=move），绕开 MCP move_security_rule 的 v3Schema 故障
+      const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`;
+      const r3 = await directConfigMove(moveXpath, "top");
       t.steps.push("candidate: move " + name + " to top → " + JSON.stringify(r3).slice(0, 120));
       // 验证 move 是否成功
       const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
@@ -887,15 +896,18 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
       t.steps.push("⚠️ move to top 失败：" + e.message.slice(0, 120) + "（规则已创建但在末尾，需手动置顶）");
     }
   } else if (tmpl === "move_security_rule") {
-    // 移动策略：调 MCP 工具。where 取值 top/bottom/before/after；中文"上面/下面"在 LLM 提取阶段已映射。
+    // 移动策略：改用 directConfigMove，绕开 MCP move_security_rule 的 v3Schema 故障
     if (!p.name || !p.where) throw new Error("move_security_rule 缺少 name 或 where");
     if ((p.where === "before" || p.where === "after") && !p.destination) {
       throw new Error("move_security_rule 在 before/after 时必须提供 destination（参照规则名）");
     }
-    const r = await callTool("move_security_rule", {
-      name: p.name, where: p.where, destination: p.destination, firewall,
-    }, firewall);
-    t.steps.push("candidate: move_security_rule " + JSON.stringify(r).slice(0, 120));
+    const XPATH_BASE = `/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']`;
+    const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${p.name}']`;
+    const moveDest = (p.where === "before" || p.where === "after")
+      ? `${XPATH_BASE}/rulebase/security/rules/entry[@name='${p.destination}']`
+      : null;
+    const r = await directConfigMove(moveXpath, p.where, moveDest);
+    t.steps.push("candidate: move_security_rule " + p.name + " " + p.where + (moveDest ? " " + p.destination : "") + " → " + JSON.stringify(r).slice(0, 120));
   } else if (tmpl === "delete_security_rule") {
     // 模糊关键词：先列候选，不删除
     const res = await resolveRuleTarget(t, p, firewall, "删除");
@@ -940,8 +952,10 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     p._objName = name;
     // 3) 默认置顶（allow_ip 语义也是"放行+置顶"）
     try {
-      const r3 = await callTool("move_security_rule", { name, where: "top", firewall }, firewall);
-      const r3txt = JSON.stringify(r3);
+      // 改用 directConfigMove，绕开 MCP move_security_rule 的 v3Schema 故障
+      const moveXpath = `${XPATH_BASE}/rulebase/security/rules/entry[@name='${name}']`;
+      const r3 = await directConfigMove(moveXpath, "top");
+      const r3txt = typeof r3 === "string" ? r3 : JSON.stringify(r3);
       t.steps.push("candidate: move " + name + " to top → " + r3txt.slice(0, 120));
       if (r3txt.includes("success") || r3txt.includes("command succeeded") || r3txt.includes("moved")) {
         t.steps.push("✅ move to top 成功，规则已置顶");
