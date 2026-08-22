@@ -217,6 +217,20 @@
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="location.reload(true)">🔄 强刷</button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="testBackend()">🩺 测网络</button>
     </span>
+    <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px">🔒 退出</button>
+  </div>
+</div>
+
+<!-- 登录覆盖层：未认证时阻止整个控制台操作（保护防火墙管理入口） -->
+<div id="loginMask" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.55);backdrop-filter:blur(6px);align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;padding:32px 36px;width:360px;max-width:92vw;box-shadow:0 24px 80px rgba(15,23,42,.3);text-align:center">
+    <div style="font-size:34px;margin-bottom:8px">🔐</div>
+    <h2 style="margin:0 0 4px;font-size:17px;color:var(--text)">防火墙 Agent 控制台</h2>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:20px">登录后使用（所有操作需认证）</div>
+    <input id="loginUser" placeholder="用户名" autocomplete="username" style="width:100%;box-sizing:border-box;padding:11px 14px;border:1px solid var(--border2);border-radius:9px;font-size:14px;margin-bottom:10px;outline:none" onkeydown="onLoginKey(event)">
+    <input id="loginPass" type="password" placeholder="密码" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:11px 14px;border:1px solid var(--border2);border-radius:9px;font-size:14px;margin-bottom:8px;outline:none" onkeydown="onLoginKey(event)">
+    <div id="loginErr" style="color:var(--red);font-size:12.5px;min-height:18px;margin-bottom:6px"></div>
+    <button class="btn primary" onclick="doLogin()" style="width:100%;padding:12px;font-size:14.5px">登 录</button>
   </div>
 </div>
 
@@ -351,6 +365,15 @@ setInterval(() => {
 }, 3000);
 
 // fetch 加强：5 秒超时（避免某一个 endpoint 卡死让整个 init 僵掉）
+// 统一携带登录 token（localStorage）——WebUI 认证开启后所有 API 需要 Authorization
+const _origFetch = window.fetch;
+window.fetch = function (url, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers);
+  const t = localStorage.getItem("panos_web_token");
+  if (t) opts.headers["Authorization"] = "Bearer " + t;
+  return _origFetch(url, opts);
+};
 async function fjs(url, opts) { opts = opts || {}; opts.timeout = opts.timeout || 5000;
   const ac = new AbortController(); const tm = setTimeout(() => ac.abort(), opts.timeout);
   try { const r = await fetch(url, Object.assign({}, opts, { signal: ac.signal, cache: "no-store" })); if (!r.ok) throw new Error(url + " HTTP " + r.status); beat(); return await r.json(); }
@@ -373,9 +396,45 @@ function closeOutAwaitingPanel() {
   _outAwaitingTaskId = null;
 }
 
+// ── WebUI 登录（发布公网后所有 API 需要认证；登录成功 token 存 localStorage）──
+function showLogin(msg) {
+  const m = document.getElementById("loginMask");
+  if (m) m.style.display = "flex";
+  const err = document.getElementById("loginErr");
+  if (err && msg) err.textContent = msg;
+}
+async function doLogin() {
+  const u = (document.getElementById("loginUser") || {}).value || "";
+  const p = (document.getElementById("loginPass") || {}).value || "";
+  const err = document.getElementById("loginErr");
+  if (!u || !p) { err.textContent = "请输入用户名和密码"; return; }
+  try {
+    const r = await _origFetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u, password: p }) });
+    const d = await r.json();
+    if (d.ok && d.token) {
+      localStorage.setItem("panos_web_token", d.token);
+      document.getElementById("loginMask").style.display = "none";
+      location.reload(); // 重新初始化加载主界面
+    } else {
+      err.textContent = d.error || "用户名或密码错误";
+    }
+  } catch (e) { err.textContent = "登录失败：" + (e.message || e); }
+}
+function doLogout() {
+  fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+  localStorage.removeItem("panos_web_token");
+  location.reload();
+}
+function onLoginKey(e) { if (e.key === "Enter") doLogin(); }
+
 async function init() {
   pulseLiveBadge("warn");
   document.getElementById("liveTxt").textContent = "数据流: 初始化中…";
+  // ── 认证检查：未登录/会话过期 → 显示登录覆盖层，阻止其余初始化（保护防火墙管理入口）──
+  try {
+    const chk = await fetch("/api/auth/check", { cache: "no-store" });
+    if (!chk.ok) { showLogin(); return; }
+  } catch (e) { /* 后端不可达时继续初始化，让其他请求的 401/错误自然展示 */ }
   // 容错三件套：每个 fetch 独立 try/catch，单个挂掉不影响整体渲染
   // 页面加载/刷新时先回到默认 LLM（llm-config.json 的 _default=deepseek），再读取当前状态显示。
   // 会话内手动切换（selectLLM）立即生效且不写盘；只有刷新/重新加载页面才回默认。

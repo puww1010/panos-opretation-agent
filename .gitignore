@@ -43,3 +43,8 @@ __pycache__/
 
 # ── 检查点备份（历史修复快照，不入库）──────────────
 webui/*.bak
+# 运行时凭据与状态（认证 token / 任务数据 / LLM 选择），不得入库
+cfgs/auth.json
+cfgs/tasks.json
+cfgs/llm-choice.json
+cfgs/tasks.json.*

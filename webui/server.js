@@ -16,6 +16,52 @@ const CFG = process.env.PANOS_FIREWALLS_CONFIG || path.join(__dirname, "..", "cf
 const PORT = process.env.PORT || 8080;
 const REPORTS_DIR = path.join(__dirname, "..", "reports");
 const TASKS_FILE = process.env.TASKS_FILE || path.join(__dirname, "..", "cfgs", "tasks.json");
+const AUTH_FILE = path.join(__dirname, "..", "cfgs", "auth.json");
+
+// ── WebUI 认证（发布公网前必须启用；所有 /api/* 需 token，飞书 bridge 用 internal_token）──
+const crypto = require("crypto");
+const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
+const AUTH_SESSION_DAYS = 7;               // 登录会话有效期
+let authData = null;                        // { username, password_hash, sessions:{}, internal_token }
+function loadAuth() {
+  try {
+    if (fs.existsSync(AUTH_FILE)) {
+      authData = JSON.parse(fs.readFileSync(AUTH_FILE, "utf-8"));
+    }
+  } catch (e) { console.error("[auth] auth.json 解析失败，重建:", String(e.message || e)); }
+  if (!authData || typeof authData !== "object") authData = { username: "admin", password_hash: "", sessions: {}, internal_token: "" };
+  authData.sessions = authData.sessions || {};
+  // 首次初始化：随机密码 + 内部令牌
+  if (!authData.password_hash) {
+    const pw = process.env.PANOS_WEB_PASSWORD || crypto.randomBytes(6).toString("base64").replace(/[^a-zA-Z0-9]/g, "").slice(0, 10);
+    authData.password_hash = sha256(pw);
+    console.log("[auth] ⚠️ 首次启动：WebUI 登录账号 = " + authData.username + " / 密码 = " + pw + "（写入 " + AUTH_FILE + "，请立即修改）");
+  }
+  if (!authData.internal_token) {
+    authData.internal_token = process.env.PANOS_WEB_INTERNAL_TOKEN || crypto.randomBytes(24).toString("hex");
+  }
+  fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2));
+}
+function authValid(token) {
+  if (!token || !authData.sessions[token]) return false;
+  if (Date.now() > authData.sessions[token]) { delete authData.sessions[token]; fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2)); return false; }
+  return true;
+}
+function authIssueToken() {
+  const token = crypto.randomBytes(32).toString("hex");
+  authData.sessions[token] = Date.now() + AUTH_SESSION_DAYS * 864e5;
+  fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2));
+  return token;
+}
+function authCheck(req) {
+  // 从 Authorization: Bearer <t> 或 ?token=<t> 读取；internal_token 同样有效（飞书 bridge 用）
+  const h = req.headers["authorization"] || "";
+  let t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+  if (!t && req.url.includes("token=")) t = decodeURIComponent((req.url.match(/[?&]token=([^&]*)/) || [])[1] || "");
+  if (!t) return false;
+  return t === authData.internal_token || authValid(t);
+}
+loadAuth();
 
 // ── LLM 提供方（llm-config.json 驱动，可运行时编辑）──
 const LLM_SEED = {
@@ -1727,6 +1773,40 @@ const server = http.createServer(async (req, res) => {
   const body = () => new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => ok(b)); });
   try {
     if (req.url === "/favicon.ico") { res.writeHead(204); res.end(); return; }
+    // ── 认证：登录接口放行；其余 /api/* 必须携带有效 token（用户会话或 internal_token）──
+    // 静态资源（/、/index.html、/assets/*、图片）免认证——不含敏感数据，前端 JS 会检测 401 展示登录页
+    const urlPath0 = req.url.split("?")[0];
+    const isStatic = req.method === "GET" && (urlPath0 === "/" || urlPath0 === "/index.html" || urlPath0.startsWith("/assets/") || /^\/[a-zA-Z0-9_.\-]+\.(png|jpg|jpeg|svg|gif|ico|webp|woff2)$/.test(urlPath0));
+    if (urlPath0.startsWith("/api/") && !isStatic) {
+      if (req.method === "POST" && urlPath0 === "/api/auth/login") {
+        // 登录：校验用户名密码，签发会话 token
+        let cred = {};
+        try { cred = JSON.parse(await body()); } catch (e) { cred = {}; }
+        if (cred.username === authData.username && sha256(cred.password || "") === authData.password_hash) {
+          send(200, { ok: true, token: authIssueToken(), username: authData.username, expiresIn: AUTH_SESSION_DAYS * 86400 });
+        } else {
+          send(401, { error: "用户名或密码错误" });
+        }
+        return;
+      }
+      if (req.method === "POST" && urlPath0 === "/api/auth/logout") {
+        const h = req.headers["authorization"] || "";
+        const t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+        if (t && authData.sessions[t]) { delete authData.sessions[t]; fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2)); }
+        send(200, { ok: true });
+        return;
+      }
+      if (req.method === "GET" && urlPath0 === "/api/auth/check") {
+        const ok = authCheck(req);
+        send(ok ? 200 : 401, ok ? { ok: true, username: authData.username } : { error: "未认证" });
+        return;
+      }
+      // 其余 API：统一认证拦截（401 让前端显示登录页）
+      if (!authCheck(req)) {
+        send(401, { error: "未认证或登录已过期，请重新登录" });
+        return;
+      }
+    }
     // 静态资源：assets/ 目录 + webui/ 根的零散文件（logo 等），防路径穿越
     if (req.method === "GET") {
       const urlPath = decodeURIComponent(req.url.split("?")[0]);

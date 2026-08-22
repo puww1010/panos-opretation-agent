@@ -17,12 +17,23 @@ TRIGGERS = ["防火墙", "巡检", "查", "PA-440", "PA440", "威胁", "策略",
             "批准", "确认", "拒绝", "取消"]
 
 def http_json(path, data=None):
+    # 携带 internal_token（环境变量优先，否则读 cfgs/auth.json）——WebUI 开启认证后 bridge 才能调用 API
+    token = os.environ.get("PANOS_WEB_INTERNAL_TOKEN", "")
+    if not token:
+        try:
+            auth = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cfgs", "auth.json")))
+            token = auth.get("internal_token", "")
+        except Exception:
+            token = ""
+    headers = {}
+    if token:
+        headers["Authorization"] = "Bearer " + token
     try:
         if data is None:
-            req = urllib.request.Request(BASE + path)
+            req = urllib.request.Request(BASE + path, headers=headers)
         else:
-            req = urllib.request.Request(BASE + path, data=json.dumps(data).encode(),
-                                         headers={"Content-Type": "application/json"})
+            headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(BASE + path, data=json.dumps(data).encode(), headers=headers)
         with urllib.request.urlopen(req, timeout=90) as r:
             return json.loads(r.read().decode())
     except Exception as e:
