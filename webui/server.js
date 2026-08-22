@@ -806,9 +806,10 @@ async function summarizeQuery(input, action, results) {
 1. **语义映射**：把用户 query 中的关键词（"Internet"/"DMZ"/"内部"/"外部"/特定 IP）映射到实际数据中（zone 名/address 对象/any）。
 2. **匹配筛选**：基于映射结果，从上面数据里选出**真正满足用户问题**的条目（按 action 字段区分 allow/deny）。
 3. **明确回答**：直接说出"有/无/几条"匹配；如果没有，**明确说"没有匹配的策略"**（不要强行凑"全放行 Allow all"这种看似匹配但实际不相关的）。
-4. **引用**：用条目 @_name 或关键字段标识匹配项。
+4. **完整汇报元数据**：当工具返回 Dashboard General Information 风格的元数据（get_firewall_info）时，**主动列出关键模块版本和状态**——GP/AV/Threat/WildFire/URL 各模块版本号、Advanced Routing、Duplicate IP、Plugin DLP、Device Certificate Status、Uptime 等。问"设备清单/资产"时这些是关键信息，不能漏。
+5. **引用**：用条目 @_name 或关键字段标识匹配项。
 
-输出 1-3 段简洁中文（≤250 字），不要堆 JSON。`,
+输出 1-3 段简洁中文（≤350 字，比一般查询多 100 字用于展示元数据），不要堆 JSON。`,
     `用户问句：${input}\n\n工具结果：\n${ctx}`,
     30000);
   return text || null;
