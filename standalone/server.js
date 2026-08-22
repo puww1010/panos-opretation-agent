@@ -828,6 +828,7 @@ async function runChangeCommit(t, firewall) {
     return;
   }
   // 轮询 job（动态间隔：前 30 次每 3 秒，之后每 5 秒，最多 200 次 ≈ 10 分钟）
+  let lastJobSig = ""; // 用于节流 commit 轮询步骤记录（状态/进度变化时才记录）
   for (let i = 0; i < 200; i++) {
     // 用户取消：停止轮询，但 commit 可能已在防火墙执行，明确提示
     if (t.cancelled) {
@@ -845,7 +846,12 @@ async function runChangeCommit(t, firewall) {
       const stm = stxt.match(/<status>\s*([^<\s]+)/i);
       const st = stm ? stm[1].toUpperCase() : "";
       const pct = stxt.match(/<progress>\s*(\d+)/i);
-      if (i % 3 === 0) t.steps.push(`commit job=${job} status=${st}${pct ? ` (${pct[1]}%)` : ""}`);
+      const pctVal = pct ? pct[1] : "";
+      const sig = st + "|" + pctVal;
+      if (sig !== lastJobSig || i % 15 === 0) {
+        t.steps.push(`commit job=${job} status=${st}${pctVal ? ` (${pctVal}%)` : ""}`);
+        lastJobSig = sig;
+      }
       if (st === "FIN" || st === "FINOK" || stxt.includes("FIN OK")) {
         t.steps.push("commit 完成 (job=" + job + ")");
         t.status = "done";
