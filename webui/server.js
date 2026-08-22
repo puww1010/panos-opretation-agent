@@ -1302,6 +1302,8 @@ async function runChangeCommit(t, firewall) {
 
 // ── 意图 → 任务路由 ──
 async function createTaskFromInput(input, firewall, source) {
+  // 重复任务去重：先扫描 active 任务，发现与 input normalize 后完全相同则取消旧任务
+  const dup = dedupeActiveTask(input);
   let action = null, fromLLM = false;
   for (const [k, v] of Object.entries(ACTIONS)) { if (k === input || v.label === input) action = k; }
   if (!action) {
@@ -1401,6 +1403,53 @@ async function createFreeAnswer(input, firewall, source) {
   t.status = "done";
   tasks.push(t); persistTasks();
   return { taskId: t.id, status: t.status, type: "chat" };
+}
+
+// ── 重复任务去重：用户短时间内（30 秒）反复提交完全相同的 query 时，保留最新一个，
+//    自动取消之前的活跃任务（committing 除外——commit 已发到防火墙，强制取消会误导）
+//    防止误触 Enter 或漏标点造成重复任务浪费资源（query）/ 重复规则（change）──
+const ACTIVE_FOR_DEDUPE = ["pending", "running", "executing", "awaiting_approval", "awaiting_selection", "awaiting_commit"];
+function normalizeInput(s) {
+  // 去所有标点/空白 + 去末尾中文语气词("的是呢啊呀")，便于"问号/句号/无标点+尾字"的相似 query 也算重复
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[\s？?。.！!，,~～`'"、;；:：]+/g, "")
+    .replace(/(的|了|呢|啊|呀|嘛|哦|哈)+$/g, "")
+    .trim();
+}
+// Levenshtein 距离（编辑距离）——小差异容忍
+function lev(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (!m || !n) return Math.max(m, n);
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]) + 1;
+    }
+  }
+  return dp[m][n];
+}
+function dedupeActiveTask(input) {
+  const norm = normalizeInput(input);
+  if (!norm) return null;
+  const dup = tasks.find((x) => {
+    if (!x.input || !ACTIVE_FOR_DEDUPE.includes(x.status)) return false;
+    const xn = normalizeInput(x.input);
+    if (!xn) return false;
+    // 完全相等 或 编辑距离 ≤ 3（容忍几字符差异，如末尾"的吗/？"）
+    return xn === norm || lev(xn, norm) <= 3;
+  });
+  if (!dup) return null;
+  // 自动取消旧任务（保留本次提交的，作为最新意图）
+  dup.status = "cancelled";
+  dup.steps.push("🔁 与新提交任务完全一致，被新任务自动取消");
+  saveTask(dup);
+  return dup;
 }
 
 // ── 审计日志任务 ──
