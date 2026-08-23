@@ -662,26 +662,36 @@ async function llmClassify(role, system, input, timeoutMs = 20000) {
   if (!p || !p.key) return null;
   // Kimi（k2.6 等思考型模型）响应慢，规划类调用默认 20s 常超时 → 自动放宽到 45s
   const effectiveTimeout = (currentLLM === "kimi" && timeoutMs <= 20000) ? 45000 : timeoutMs;
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), effectiveTimeout);
-  const t0 = Date.now();
-  try {
-    const r = await fetch(`${p.base_url}/chat/completions`, {
-      method: "POST", signal: ac.signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
-      body: JSON.stringify({ model: p.model, ...(currentLLM === "kimi" ? {} : { temperature: 0 }),
-        messages: [{ role: "system", content: system }, { role: "user", content: input }],
-        // deepseek / qwen3.8-max / kimi-k2.6 均为思考型模型：禁用 thinking 避免花大量时间生成内部推理
-        // （实测 qwen3.8-max 不禁用→107s，禁用→9.4s；kimi-k2.6 不禁用→正文空（token 全被 thinking 吃掉），禁用→993字符）
-        ...(["deepseek", "qwen", "kimi"].includes(currentLLM) ? { thinking: { type: "disabled" } } : {}) }),
-    });
-    if (!r.ok) { console.error("[agent] LLM http", r.status); return null; }
-    const d = await r.json();
-    const text = d.choices?.[0]?.message?.content || "";
-    recordLLM(role, input, text, Date.now() - t0);
-    return text;
-  } catch (e) { console.error("[agent] LLM error:", e.message); recordLLM(role, input, "ERROR: " + e.message, Date.now() - t0); return null; }
-  finally { clearTimeout(timer); }
+  // 429 自动重试：Moonshot/Kimi 限流频繁，单次 429 等 3s 通常可恢复（kimi 1 个任务多次调用易撞 rpm 限制）
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), effectiveTimeout);
+    const t0 = Date.now();
+    try {
+      const r = await fetch(`${p.base_url}/chat/completions`, {
+        method: "POST", signal: ac.signal,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
+        body: JSON.stringify({ model: p.model, ...(currentLLM === "kimi" ? {} : { temperature: 0 }),
+          messages: [{ role: "system", content: system }, { role: "user", content: input }],
+          // deepseek / qwen3.8-max / kimi-k2.6 均为思考型模型：禁用 thinking 避免花大量时间生成内部推理
+          // （实测 qwen3.8-max 不禁用→107s，禁用→9.4s；kimi-k2.6 不禁用→正文空（token 全被 thinking 吃掉），禁用→993字符）
+          ...(["deepseek", "qwen", "kimi"].includes(currentLLM) ? { thinking: { type: "disabled" } } : {}) }),
+      });
+      if (r.status === 429 && attempt === 0) {
+        // 限流：等 3s 重试一次
+        console.warn(`[agent] LLM ${currentLLM} 429 限流，3s 后重试`);
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+      if (!r.ok) { console.error("[agent] LLM http", r.status); return null; }
+      const d = await r.json();
+      const text = d.choices?.[0]?.message?.content || "";
+      recordLLM(role, input, text, Date.now() - t0);
+      return text;
+    } catch (e) { console.error("[agent] LLM error:", e.message); recordLLM(role, input, "ERROR: " + e.message, Date.now() - t0); return null; }
+    finally { clearTimeout(timer); }
+  }
+  return null;
 }
 
 async function llmResolveAction(input) {
