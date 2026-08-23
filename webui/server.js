@@ -1666,9 +1666,16 @@ async function runDiagTask(t, firewall) {
       const addrs = (addrRaw && (addrRaw.entry || addrRaw.address?.entry)) || [];
       const matchAddr = (testIp) => {
         const hits = addrs.filter((a) => {
-          const v = a["ip-range"] || a["fqdn"] || a["ip-netmask"] || "";
-          return testIp && v.includes(testIp);
-        }).map((a) => a["@_name"]);
+          // 防御性归一化：地址对象字段可能是字符串/数组/对象（PAN-OS 多值/嵌套），统一为字符串数组
+          const vs = [];
+          for (const f of [a["ip-range"], a["fqdn"], a["ip-netmask"]]) {
+            if (f == null) continue;
+            if (Array.isArray(f)) { for (const x of f) if (x != null) vs.push(String(x)); }
+            else if (typeof f === "object") vs.push(JSON.stringify(f));
+            else vs.push(String(f));
+          }
+          return testIp && vs.some((v) => v.includes(testIp));
+        }).map((a) => String(a["@_name"] || ""));
         return hits;
       };
       const list = zones.map((z) => {
