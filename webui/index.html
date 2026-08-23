@@ -386,6 +386,68 @@ let _lastAutoScrollTaskId = null; // 上次自动滚动的 live 任务 id（只�
 let _lastUserScrollAt = 0;        // 用户最近一次手动滚动时间（wheel/touch），5 秒内不自动滚
 let _outAwaitingTaskId = null;     // 当前 out 区显示的"等待审批"提示对应的任务 id，任务状态变化时自动清除
 
+// ── 空闲超时（方案A：N 分钟无操作 → 60 秒警告 → 自动退出回登录页）──
+let _idleMinutes = 15;              // 后端下发（登录/check 接口返回），默认 15
+let _lastUserActiveAt = Date.now(); // 用户最近一次主动操作时间
+let _idleWarningShown = false;      // 警告弹窗是否已显示（避免重复弹）
+let _idleWarnTimer = null;          // 警告弹窗倒计时 timer
+// 用户主动操作监听（节流 5 秒更新一次；pollTasks 自动轮询不算活动——挂机不续命）
+function _bumpUserActive() {
+  const now = Date.now();
+  if (now - _lastUserActiveAt > 5000) _lastUserActiveAt = now;
+}
+["mousemove", "mousedown", "keydown", "touchstart", "wheel"].forEach((ev) =>
+  window.addEventListener(ev, _bumpUserActive, { passive: true })
+);
+// 空闲监控：每 15 秒检查一次；剩余 ≤60s 弹警告，剩余 ≤0 自动退出
+function _checkIdle() {
+  const lm = document.getElementById("loginMask");
+  if (!lm || lm.style.display !== "none") return; // 未登录不监控
+  const remain = _idleMinutes * 60000 - (Date.now() - _lastUserActiveAt);
+  if (remain <= 0) {
+    _idleForceLogout();
+  } else if (remain <= 60000 && !_idleWarningShown) {
+    _idleWarningShown = true;
+    _showIdleWarning(Math.max(1, Math.ceil(remain / 1000)));
+  }
+}
+setInterval(_checkIdle, 15000);
+// 警告弹窗：60 秒倒计时，点"保持登录"续期，倒计时结束自动退出
+function _showIdleWarning(secs) {
+  let left = Math.max(1, secs);
+  const mask = document.createElement("div");
+  mask.id = "idleMask";
+  mask.className = "modal-mask";
+  mask.innerHTML = '<div class="modal-box" style="max-width:420px;text-align:center">' +
+    '<div style="font-size:30px;margin-bottom:6px">⏳</div>' +
+    '<h2 style="margin:0 0 8px">长时间未操作</h2>' +
+    '<div style="font-size:13px;color:var(--muted);margin-bottom:14px">将在 <b id="idleCount" style="color:var(--red);font-size:16px">' + left + '</b> 秒后自动退出登录<br><span style="font-size:12px">（登录态受空闲超时保护，' + _idleMinutes + ' 分钟无操作即退出）</span></div>' +
+    '<button class="btn primary" onclick="idleKeepAlive()" style="width:100%;padding:11px;font-size:14px">保持登录</button></div>';
+  document.body.appendChild(mask);
+  _idleWarnTimer = setInterval(() => {
+    left--;
+    const el = document.getElementById("idleCount");
+    if (el) el.textContent = left;
+    if (left <= 0) { clearInterval(_idleWarnTimer); _idleWarnTimer = null; _idleForceLogout(); }
+  }, 1000);
+}
+function idleKeepAlive() {
+  fetch("/api/auth/keepalive", { method: "POST" }).catch(() => {});
+  _lastUserActiveAt = Date.now();
+  _idleWarningShown = false;
+  if (_idleWarnTimer) { clearInterval(_idleWarnTimer); _idleWarnTimer = null; }
+  const m = document.getElementById("idleMask");
+  if (m) m.remove();
+}
+function _idleForceLogout() {
+  if (_idleWarnTimer) { clearInterval(_idleWarnTimer); _idleWarnTimer = null; }
+  const m = document.getElementById("idleMask");
+  if (m) m.remove();
+  fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+  localStorage.removeItem("panos_web_token");
+  showLogin("已自动退出（长时间未操作，登录态已过期）");
+}
+
 // 用户主动滚动时记录时间戳：让自动滚动逻辑尊重用户位置（不再持续把页面拉回 live 任务）
 window.addEventListener("wheel", () => { _lastUserScrollAt = Date.now(); }, { passive: true });
 window.addEventListener("touchmove", () => { _lastUserScrollAt = Date.now(); }, { passive: true });
@@ -414,6 +476,9 @@ async function doLogin() {
     const d = await r.json();
     if (d.ok && d.token) {
       localStorage.setItem("panos_web_token", d.token);
+      if (d.idleMinutes) _idleMinutes = d.idleMinutes; // 用后端下发的空闲超时配置
+      _lastUserActiveAt = Date.now();
+      _idleWarningShown = false;
       document.getElementById("loginMask").style.display = "none";
       location.reload(); // 重新初始化加载主界面
     } else {

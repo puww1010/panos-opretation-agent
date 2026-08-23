@@ -21,8 +21,10 @@ const AUTH_FILE = path.join(__dirname, "..", "cfgs", "auth.json");
 // ── WebUI 认证（发布公网前必须启用；所有 /api/* 需 token，飞书 bridge 用 internal_token）──
 const crypto = require("crypto");
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
-const AUTH_SESSION_DAYS = 7;               // 登录会话有效期
-let authData = null;                        // { username, password_hash, sessions:{}, internal_token }
+const AUTH_SESSION_DAYS = 7;               // 登录会话绝对有效期
+const IDLE_MINUTES = Math.max(1, parseInt(process.env.PANOS_WEB_IDLE_MINUTES || "15", 10)); // 空闲超时（分钟），方案A=15
+const IDLE_MS = IDLE_MINUTES * 60 * 1000;
+let authData = null;                        // { username, password_hash, sessions:{token:{exp,lastSeen}}, internal_token }
 function loadAuth() {
   try {
     if (fs.existsSync(AUTH_FILE)) {
@@ -31,6 +33,10 @@ function loadAuth() {
   } catch (e) { console.error("[auth] auth.json 解析失败，重建:", String(e.message || e)); }
   if (!authData || typeof authData !== "object") authData = { username: "admin", password_hash: "", sessions: {}, internal_token: "" };
   authData.sessions = authData.sessions || {};
+  // 兼容旧格式：sessions[token] 是纯数字（expiry）→ 转对象 {exp, lastSeen}
+  for (const k of Object.keys(authData.sessions)) {
+    if (typeof authData.sessions[k] === "number") authData.sessions[k] = { exp: authData.sessions[k], lastSeen: Date.now() };
+  }
   // 首次初始化：随机密码 + 内部令牌
   if (!authData.password_hash) {
     const pw = process.env.PANOS_WEB_PASSWORD || crypto.randomBytes(6).toString("base64").replace(/[^a-zA-Z0-9]/g, "").slice(0, 10);
@@ -42,24 +48,49 @@ function loadAuth() {
   }
   fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2));
 }
+function saveAuth() { fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2)); }
 function authValid(token) {
   if (!token || !authData.sessions[token]) return false;
-  if (Date.now() > authData.sessions[token]) { delete authData.sessions[token]; fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2)); return false; }
+  const s = authData.sessions[token];
+  // 绝对过期（7 天）或 空闲超时（N 分钟无用户主动操作）→ 会话失效
+  if (Date.now() > s.exp || Date.now() - s.lastSeen > IDLE_MS) {
+    delete authData.sessions[token]; saveAuth();
+    return false;
+  }
   return true;
 }
 function authIssueToken() {
   const token = crypto.randomBytes(32).toString("hex");
-  authData.sessions[token] = Date.now() + AUTH_SESSION_DAYS * 864e5;
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2));
+  authData.sessions[token] = { exp: Date.now() + AUTH_SESSION_DAYS * 864e5, lastSeen: Date.now() };
+  saveAuth();
   return token;
 }
+let _lastAuthWrite = 0;
+function authTouch(token) {
+  // 用户主动操作时刷新 lastSeen（节流写盘：≥60s 才写一次，避免高频写 auth.json）
+  const s = authData.sessions[token];
+  if (!s) return;
+  s.lastSeen = Date.now();
+  if (Date.now() - _lastAuthWrite > 60000) { _lastAuthWrite = Date.now(); saveAuth(); }
+}
 function authCheck(req) {
-  // 从 Authorization: Bearer <t> 或 ?token=<t> 读取；internal_token 同样有效（飞书 bridge 用）
+  // 从 Authorization: Bearer <t> 或 ?token=<t> 读取；internal_token 同样有效（飞书 bridge 用，不受空闲超时影响）
   const h = req.headers["authorization"] || "";
   let t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   if (!t && req.url.includes("token=")) t = decodeURIComponent((req.url.match(/[?&]token=([^&]*)/) || [])[1] || "");
   if (!t) return false;
-  return t === authData.internal_token || authValid(t);
+  if (t === authData.internal_token) return true; // 内部令牌不走用户会话空闲超时
+  return authValid(t);
+}
+// 用户主动操作类接口：通过认证后刷新 lastSeen（轮询类 GET 不在此列——挂机不续命）
+function authTouchIfUserAction(req, token) {
+  if (!token || token === authData.internal_token) return;
+  const p = req.url.split("?")[0];
+  if (/^\/api\/task\//.test(p) || p === "/api/llm/select" || p === "/api/llm/save" || p === "/api/llm/del"
+    || p === "/api/auth/change-password" || p === "/api/feishu/send" || p === "/api/feishu/push-report"
+    || p === "/api/tasks/clean" || p === "/api/auth/keepalive") {
+    authTouch(token);
+  }
 }
 loadAuth();
 
@@ -1828,11 +1859,11 @@ const server = http.createServer(async (req, res) => {
     const isStatic = req.method === "GET" && (urlPath0 === "/" || urlPath0 === "/index.html" || urlPath0.startsWith("/assets/") || /^\/[a-zA-Z0-9_.\-]+\.(png|jpg|jpeg|svg|gif|ico|webp|woff2)$/.test(urlPath0));
     if (urlPath0.startsWith("/api/") && !isStatic) {
       if (req.method === "POST" && urlPath0 === "/api/auth/login") {
-        // 登录：校验用户名密码，签发会话 token
+        // 登录：校验用户名密码，签发会话 token（带空闲超时配置）
         let cred = {};
         try { cred = JSON.parse(await body()); } catch (e) { cred = {}; }
         if (cred.username === authData.username && sha256(cred.password || "") === authData.password_hash) {
-          send(200, { ok: true, token: authIssueToken(), username: authData.username, expiresIn: AUTH_SESSION_DAYS * 86400 });
+          send(200, { ok: true, token: authIssueToken(), username: authData.username, expiresIn: AUTH_SESSION_DAYS * 86400, idleMinutes: IDLE_MINUTES });
         } else {
           send(401, { error: "用户名或密码错误" });
         }
@@ -1841,13 +1872,22 @@ const server = http.createServer(async (req, res) => {
       if (req.method === "POST" && urlPath0 === "/api/auth/logout") {
         const h = req.headers["authorization"] || "";
         const t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-        if (t && authData.sessions[t]) { delete authData.sessions[t]; fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2)); }
+        if (t && authData.sessions[t]) { delete authData.sessions[t]; saveAuth(); }
         send(200, { ok: true });
         return;
       }
       if (req.method === "GET" && urlPath0 === "/api/auth/check") {
         const ok = authCheck(req);
-        send(ok ? 200 : 401, ok ? { ok: true, username: authData.username } : { error: "未认证" });
+        send(ok ? 200 : 401, ok ? { ok: true, username: authData.username, idleMinutes: IDLE_MINUTES } : { error: "未认证" });
+        return;
+      }
+      // 保持登录（空闲警告弹窗点击"保持登录"时调用，刷新 lastSeen）
+      if (req.method === "POST" && urlPath0 === "/api/auth/keepalive") {
+        if (!authCheck(req)) { send(401, { error: "未认证或登录已过期" }); return; }
+        const h = req.headers["authorization"] || "";
+        const t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+        if (t && t !== authData.internal_token) authTouch(t);
+        send(200, { ok: true, idleMinutes: IDLE_MINUTES });
         return;
       }
       // 修改密码：需已认证 + 校验旧密码；成功后清空所有会话（含当前），强制重新登录
@@ -1866,11 +1906,14 @@ const server = http.createServer(async (req, res) => {
         send(200, { ok: true, message: "密码已修改，请重新登录" });
         return;
       }
-      // 其余 API：统一认证拦截（401 让前端显示登录页）
+      // 其余 API：统一认证拦截（401 让前端显示登录页）；用户主动操作类接口通过后刷新 lastSeen
       if (!authCheck(req)) {
         send(401, { error: "未认证或登录已过期，请重新登录" });
         return;
       }
+      const hdr = req.headers["authorization"] || "";
+      const tok = hdr.startsWith("Bearer ") ? hdr.slice(7).trim() : "";
+      authTouchIfUserAction(req, tok);
     }
     // 静态资源：assets/ 目录 + webui/ 根的零散文件（logo 等），防路径穿越
     if (req.method === "GET") {
