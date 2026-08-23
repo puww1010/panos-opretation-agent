@@ -1002,16 +1002,21 @@ function renderTask(t) {
     }
   } else if (t.status === "done" && t.type === "diag" && t.result) {
     h += '<div class="grade" style="font-size:14px">' + esc(t.result.title || "诊断报告") + "</div>";
+    // LLM 参与标识：正常综合 = 🤖 LLM 推理；fallback = ⚠️ 程序模板（LLM 未参与/超时）
+    const isFallback = t.result.confidence && String(t.result.confidence).includes("fallback");
     if (t.result.verdict) {
-      const fallbackTag = t.result.confidence && String(t.result.confidence).includes("fallback") ? ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠️ fallback（LLM 超时）</span>' : "";
-      h += '<div class="plan"><b>📌 根因：</b>' + esc(t.result.verdict) + "（置信度 " + esc(t.result.confidence || "-") + (t.result.confidenceReason ? " · " + esc(t.result.confidenceReason) : "") + "）" + fallbackTag + "</div>";
+      const llmTag = isFallback
+        ? ' <span style="background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">⚠️ fallback（LLM 未参与，程序模板）</span>'
+        : ' <span style="background:#f3e8ff;color:#6b21a8;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">🤖 LLM 推理</span>';
+      h += '<div class="plan"><b>📌 根因：</b>' + esc(t.result.verdict) + "（置信度 " + esc(t.result.confidence || "-") + (t.result.confidenceReason ? " · " + esc(t.result.confidenceReason) : "") + "）" + llmTag + "</div>";
     }
     if (Array.isArray(t.result.evidence) && t.result.evidence.length) {
       h += '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:13px"><b>🔍 证据链：</b><ol style="margin:6px 0 0;padding-left:22px">' + t.result.evidence.map(function(e){return "<li style='margin:2px 0'>" + esc(e) + "</li>";}).join("") + "</ol></div>";
     }
     if (t.result.recommendation) {
-      h += '<div class="reco"><b>🛠 建议：</b>' + esc(t.result.recommendation) + "</div>";
+      h += '<div class="reco"><b>🛠 建议：</b>' + esc(t.result.recommendation) + (isFallback ? ' <span style="background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">⚠️ 模板建议</span>' : ' <span style="background:#f3e8ff;color:#6b21a8;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">🤖 LLM</span>') + "</div>";
     }
+    h += '<div style="font-size:12px;color:var(--muted);margin:10px 0 4px"><span style="background:#f1f5f9;color:#475569;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">🔬 数据采集（程序，非 LLM）</span> 以下为工具实际返回的原始数据</div>';
     h += "<table><tr><th>排查步骤</th><th>结果</th></tr>" + (t.result.sections || []).map(s => "<tr><td>" + esc(s.step) + "</td><td>" + esc(s.result) + "</td></tr>").join("") + "</table>";
   } else if (t.status === "done" && t.type === "change" && t.result) {
     h += '<div class="steps ok">✅ ' + esc(t.result.detail || "变更完成") + "</div>";
