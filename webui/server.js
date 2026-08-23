@@ -587,6 +587,16 @@ try { TOOL_ROUTES = JSON.parse(fs.readFileSync(TOOLS_CONFIG_PATH, "utf-8")); }
 catch (e) { console.warn("[agent] tools-config.json 未找到或无效，全部 auto 模式:", TOOLS_CONFIG_PATH); }
 function toolRoute(name) { const r = (TOOL_ROUTES.routes && TOOL_ROUTES.routes[name]) || TOOL_ROUTES._default || "auto"; return r; }
 
+// 日志条数估算：指定时间窗口时按"每分钟约 4 条"估算条数，让返回数据覆盖用户要求的时间跨度
+// （默认 20 条只覆盖最近几秒；过去 4 小时→约 960 条，上限 1000；保证窗口内数据充分采样）
+function logNlogs(args, baseDefault = 20) {
+  if (args.nlogs) return args.nlogs;
+  if (args.minutes) {
+    const est = Math.round(args.minutes * 4);
+    return Math.max(200, Math.min(1000, est));
+  }
+  return baseDefault;
+}
 async function callToolImpl(name, args = {}, firewall) {
   const route = toolRoute(name);
   if (route === "direct") return await directForTool(name, args);
@@ -602,7 +612,7 @@ async function callToolImpl(name, args = {}, firewall) {
   // 日志类工具直接走直连（跳过 MCP：MCP server 的日志工具存在 v3Schema 故障，且等待 30s 超时太慢）
   if (["get_traffic_logs", "get_threat_logs", "get_system_logs", "get_url_filter_logs", "get_config_logs"].includes(name)) {
     const typeMap = { get_traffic_logs: "traffic", get_threat_logs: "threat", get_system_logs: "system", get_url_filter_logs: "url", get_config_logs: "config" };
-    const nlogs = args.nlogs || 20;
+    const nlogs = logNlogs(args);
     // minutes 支持（改进）：用户说"过去N小时/分钟" → 生成 receive_time 窗口过滤，避免只拉最新 N 条
     let query = args.query || "";
     if (args.minutes) {
@@ -669,7 +679,7 @@ async function directForTool(name, args = {}) {
       query = query ? `(${query}) and ${win}` : win;
       console.log(`[agent] ${name} minutes=${args.minutes} → 日志窗口 ${from} ~ ${to}`);
     }
-    return await directLog(typeMap[name], args.nlogs || 20, query);
+    return await directLog(typeMap[name], logNlogs(args), query);
   }
   if (name === "get_system_environmentals") return await directRunOp("<show><system><environmentals></environmentals></system></show>");
   if (["get_firewall_info", "get_system_resources", "get_active_sessions", "get_ha_status", "get_licenses", "get_interfaces"].includes(name)) {
