@@ -18,6 +18,27 @@
 
 > ✅ 结论：客户环境只需 **Node 22+（或随包内嵌）**；飞书/Python 均为可选能力。
 
+### 1.1 MCP 通道架构（脱离 WorkBuddy 如何工作）
+
+控制台自包含一套完整的 MCP 实现（**MCP Client + 内置 MCP Server**），与 WorkBuddy 的 MCP 连接器完全无关，独立部署后照常工作：
+
+```
+浏览器 WebUI
+   │  HTTP / JS
+   ▼
+Node 后端 webui/server.js ──────────────┬───────────────────────────────┐
+   │  MCP Client（官方 @modelcontextprotocol/sdk）   │  直连层 direct*() 函数          │
+   │  stdio 进程通信                    │  HTTPS（Node https 模块）       │
+   ▼                                    ▼                               ▼
+mcp/panos-mcp 子进程（项目自带）    ──HTTPS──▶   PAN-OS 防火墙 XML API
+```
+
+- **MCP Client**：`webui/server.js` 用官方 npm 包 `@modelcontextprotocol/sdk`，`connect()` 通过 `StdioClientTransport` 拉起项目自带的 `mcp/panos-mcp/src/index.ts` 子进程（`NODE --experimental-strip-types`）。两边用 **stdio 管道**通信——纯本地进程间通信，不注册任何外部平台。
+- **MCP Server**：`mcp/panos-mcp` 是项目源码，读 `cfgs/firewalls.json` 的 API Key，调用 PAN-OS XML API。
+- **直连层**：`directOp()` / `directConfigSet()` / `directConfigDelete()` / `directConfigMove()` / `directLog()` 等函数用 Node `https` 模块**直接**调 PAN-OS，不经过 MCP。原因：MCP 部分工具（如 `move_security_rule`）v3Schema 校验存在故障，故封禁/删除/移动/禁用等变更操作默认走直连，MCP 仅作查询兜底。
+- **路由规则**：`webui/tools-config.json` 可对每个工具指定 `mcp` / `direct` / `auto`（默认 auto：direct 优先，失败回退 MCP）。
+- **结论**：脱离 WorkBuddy 后唯一外部对象是被管理的 **PAN-OS 防火墙本身**；MCP 只是"本地两个进程之间的消息协议"，不是外部依赖。
+
 ---
 
 ## 2. 安全脱敏（打包强制步骤）
@@ -127,6 +148,15 @@ journalctl -u panos-agent -f
 
 ## 4. 客户首次初始化（配置向导方案）
 
+### 4.0 WebUI 登录认证（发布公网 / 客户交付必读）
+
+- 首次启动自动生成 `cfgs/auth.json`：账号 `admin` + **随机密码**（打印在控制台日志，如 `[auth] ⚠️ 首次启动：WebUI 登录账号 = admin / 密码 = xxxxxxxx`）。
+- **所有 `/api/*` 接口需 `Authorization: Bearer <token>`**（用户登录会话或 `internal_token`）；未认证返回 401，前端显示登录覆盖层。
+- 登录：`POST /api/auth/login`（会话 7 天）；修改密码：右上角「🔑 改密」（校验旧密码 + 新密码 ≥8 位，成功后清空全部会话强制重登）。
+- 飞书 bridge 通过 `cfgs/auth.json` 的 `internal_token` 自动调用 API（或环境变量 `PANOS_WEB_INTERNAL_TOKEN`），无需人工登录。
+- 忘记密码：删除 `cfgs/auth.json` 重启，即重新生成随机密码。
+- **发布公网三阶段**：① 本认证 → ② 网络方案（云服务器 Nginx 反代 / 内网穿透 / 家庭公网 IP）→ ③ HTTPS 证书 + 安全组规则。无回环豁免（Nginx 反代也必须认证）。
+
 ### 4.1 现状：手动填两个文件
 
 1. **防火墙连接**：编辑 `cfgs/firewalls.json`
@@ -186,6 +216,8 @@ journalctl -u panos-agent -f
 | 检查项 | 命令 / 方法 | 通过标准 |
 |---|---|---|
 | 敏感信息脱敏 | `grep -r "sk-" <安装包> --include="*.json"` | 输出 0 |
+| 认证生效 | 未带 token 访问 `/api/overview` | HTTP 401 |
+| 登录可用 | `POST /api/auth/login`（admin + 日志随机密码） | 返回 `{ok:true,token}` |
 | 语法完整性 | 内嵌 node `--check webui/server.js` | 无报错 |
 | 依赖完整性 | 检查包内 `webui/node_modules`、`mcp/panos-mcp/node_modules` | 存在 |
 | 干净环境启动 | 在无 Node 的虚拟机双击 .app | 8080 可访问 |
@@ -219,6 +251,7 @@ cd dist && zip -r "PANOS-Agent-4.2.0-macOS.zip" "PAN-OS Agent.app"
 | `webui/` | 控制台前端 + 后端 server.js | ✅（脱敏后） |
 | `mcp/panos-mcp/` | MCP 增强层 | ✅（含 node_modules） |
 | `cfgs/` | 防火墙连接配置 | ✅（脱敏后） |
+| `cfgs/auth.json` | WebUI 登录凭据（密码 sha256 + 会话 + internal_token） | ⚠️ **不随包**（客户首启自动生成） |
 | `reports/` | 合规巡检报告产物 | ⚠️ 客户运行期生成，不随包 |
 | `docs/` | 本文档及规格 | 可选 |
 | `.state/` | 飞书游标状态 | 打包时保留占位即可 |
