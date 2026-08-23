@@ -603,7 +603,16 @@ async function callToolImpl(name, args = {}, firewall) {
   if (["get_traffic_logs", "get_threat_logs", "get_system_logs", "get_url_filter_logs", "get_config_logs"].includes(name)) {
     const typeMap = { get_traffic_logs: "traffic", get_threat_logs: "threat", get_system_logs: "system", get_url_filter_logs: "url", get_config_logs: "config" };
     const nlogs = args.nlogs || 20;
-    return await directLog(typeMap[name], nlogs, args.query || "");
+    // minutes 支持（改进）：用户说"过去N小时/分钟" → 生成 receive_time 窗口过滤，避免只拉最新 N 条
+    let query = args.query || "";
+    if (args.minutes) {
+      const from = fmtLogTime(new Date(Date.now() - args.minutes * 60000));
+      const to = fmtLogTime(new Date());
+      const win = `(receive_time geq '${from}' and receive_time leq '${to}')`;
+      query = query ? `(${query}) and ${win}` : win;
+      console.log(`[agent] ${name} minutes=${args.minutes} → 日志窗口 ${from} ~ ${to}`);
+    }
+    return await directLog(typeMap[name], nlogs, query);
   }
   // 核心查询工具直连优先（更快 + 输出已策展可读；失败回退 MCP）
   if (["get_firewall_info", "get_system_resources", "get_active_sessions", "get_ha_status", "get_licenses", "get_interfaces"].includes(name)) {
@@ -650,7 +659,18 @@ async function callToolImpl(name, args = {}, firewall) {
 // direct 路由：强制走直连路径（日志 directLog / 核心 directCurated / 查询 directRunOp）
 async function directForTool(name, args = {}) {
   const typeMap = { get_traffic_logs: "traffic", get_threat_logs: "threat", get_system_logs: "system", get_url_filter_logs: "url", get_config_logs: "config" };
-  if (typeMap[name]) return await directLog(typeMap[name], args.nlogs || 20, args.query || "");
+  if (typeMap[name]) {
+    // minutes 支持：用户说"过去N小时/分钟" → 生成 receive_time 窗口过滤（与 callToolImpl 日志分支一致）
+    let query = args.query || "";
+    if (args.minutes) {
+      const from = fmtLogTime(new Date(Date.now() - args.minutes * 60000));
+      const to = fmtLogTime(new Date());
+      const win = `(receive_time geq '${from}' and receive_time leq '${to}')`;
+      query = query ? `(${query}) and ${win}` : win;
+      console.log(`[agent] ${name} minutes=${args.minutes} → 日志窗口 ${from} ~ ${to}`);
+    }
+    return await directLog(typeMap[name], args.nlogs || 20, query);
+  }
   if (name === "get_system_environmentals") return await directRunOp("<show><system><environmentals></environmentals></system></show>");
   if (["get_firewall_info", "get_system_resources", "get_active_sessions", "get_ha_status", "get_licenses", "get_interfaces"].includes(name)) {
     return await directCurated(name);
@@ -733,12 +753,16 @@ async function llmResolveAction(input) {
   - 追问上轮结果的具体含义/细节/为什么 → {"action":null}（自由问答会结合上下文回答）
   - 追问"把那条删掉/禁用/封禁"等（指代上下文中的具体条目）→ {"action":"change"}（系统会结合上下文解析出具体条目）
   - 追问"那条对应的流量/策略分析"（指代上轮结果做进一步诊断）→ {"action":"diag"}
-只输出 JSON：{"action":"<key>"}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, withCtx(input));
+【时间窗口 minutes】当动作是日志类查询（traffic 流量日志 / threat 威胁日志 / url 过滤日志等）且用户指定了时间范围时，提取为分钟数：如"过去4小时/4个小时/最近4小时"=240、"过去1小时/最近一小时"=60、"最近30分钟/半小时"=30、"最近10分钟"=10、"今天/最近1天"=1440、"过去2小时"=120、"过去6小时"=360。用户没提时间 → minutes=null。**如果用户提到时间但动作不是日志查询，minutes 仍为 null**。
+只输出 JSON：{"action":"<key>","minutes":<数字或null>}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, withCtx(input));
   if (!text) return null;
   const m = text.match(/"action"\s*:\s*("?)(\w+|null)\1/);
   if (!m) return null;
   const key = m[2];
-  return key === "null" ? null : key;
+  if (key === "null") return { action: null, minutes: null };
+  const mM = text.match(/"minutes"\s*:\s*(\d+)/);
+  const minutes = mM ? Math.max(1, Math.min(1440, parseInt(mM[1], 10))) : null;
+  return { action: key, minutes };
 }
 
 // 变更参数提取（模板化，LLM 只填参数）
@@ -910,7 +934,7 @@ async function runQueryTask(t, action, firewall) {
     const step = { tool, status: "running", startMs: Date.now() };
     t.steps.push(step);
     try {
-      const r = await callTool(tool, {}, firewall);
+      const r = await callTool(tool, t.minutes ? { minutes: t.minutes } : {}, firewall);
       step.status = "ok"; step.ms = Date.now() - step.startMs;
       results.push({ tool, data: r });
     } catch (e) {
@@ -961,10 +985,17 @@ async function summarizeQuery(input, action, results) {
         }
         return String(it).slice(0, 1200);
       }).join("\n");
-      return `[${r.tool}] 共 ${items.length} 条：\n${head}` + (items.length > 50 ? "\n... (省略剩余 " + (items.length - 50) + " 条)" : "");
+      // 时间范围标注：日志类结果（entry 带 receive_time）→ 告知 LLM 真实数据时间，防止"过去N小时"幻觉
+      const times = items.map((it) => (it && it.receive_time) || "").filter(Boolean).sort();
+      const timeNote = times.length ? `（数据时间范围：${times[0]} → ${times[times.length - 1]}，共 ${items.length} 条）` : "";
+      return `[${r.tool}] 共 ${items.length} 条${timeNote}：\n${head}` + (items.length > 50 ? "\n... (省略剩余 " + (items.length - 50) + " 条)" : "");
     }
     return `[${r.tool}] ${JSON.stringify(d).slice(0, 1500)}`;
   }).join("\n\n");
+  // 改进：若用户 query 提到时间窗口而数据时间与之不符，提示 LLM 明确说明
+  const timeHint = /过去|最近|小时内|分钟|今天|昨天|小时前/.test(input)
+    ? "\n【注意】用户要求了时间窗口。请在回答中**明确说明返回数据的实际时间范围**（最早→最晚），若实际数据时间与用户要求不符，要明确指出（如\"实际返回最近 5 分钟数据，未覆盖您要求的 4 小时\"），不要假装\"我筛选了 N 小时\"。"
+    : "";
   const text = await llmClassify("查询匹配",
     `你是 PAN-OS 防火墙查询结果分析器。用户的问句往往带语义（如"哪些策略放行了 Internet到 DMZ"——"Internet"=源 zone Untrust 或外部，"DMZ"=目标 zone DMZ 或特定对象）。你需要：
 
@@ -976,7 +1007,7 @@ async function summarizeQuery(input, action, results) {
 6. **多轮追问**：若用户问题引用了前文（如"那条/上面那条/它"），优先结合【最近对话上下文】中的条目名和结果回答，不要重复全量查询。
 
 输出 1-3 段简洁中文（≤350 字，比一般查询多 100 字用于展示元数据），不要堆 JSON。`,
-    `用户问句：${input}\n\n工具结果：\n${ctx}${buildConversationContext() ? "\n\n" + buildConversationContext() : ""}`,
+    `用户问句：${input}${timeHint}\n\n工具结果：\n${ctx}${buildConversationContext() ? "\n\n" + buildConversationContext() : ""}`,
     30000);
   return text || null;
 }
@@ -1434,11 +1465,11 @@ function withCtx(userInput) {
 async function createTaskFromInput(input, firewall, source) {
   // 重复任务去重：先扫描 active 任务，发现与 input normalize 后完全相同则取消旧任务
   const dup = dedupeActiveTask(input);
-  let action = null, fromLLM = false;
+  let action = null, fromLLM = false, minutes = null;
   for (const [k, v] of Object.entries(ACTIONS)) { if (k === input || v.label === input) action = k; }
   if (!action) {
-    action = await llmResolveAction(input);
-    if (action) fromLLM = true;
+    const resolved = await llmResolveAction(input);
+    if (resolved) { action = resolved.action; minutes = resolved.minutes; if (action) fromLLM = true; }
   }
   if (action === "change") {
     const c = await llmExtractChange(input);
@@ -1492,9 +1523,9 @@ async function createTaskFromInput(input, firewall, source) {
     return { taskId: t.id, status: t.status, type: "inspect" };
   }
   if (action && ACTIONS[action]) {
-    const t = newTask("query", input, { action, firewall, source });
+    const t = newTask("query", input, { action, firewall, source, minutes });
     if (fromLLM) t.llm = currentLLM;
-    t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）` : `关键词匹配 → 动作 ${action}`;
+    t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
     t.steps.push(t.decision);
     tasks.push(t); persistTasks();
     runQueryTask(t, action, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
