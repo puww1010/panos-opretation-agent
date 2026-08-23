@@ -395,6 +395,31 @@ function fmtTop(top, fields) {
     return arr.length ? f + " Top: " + arr.map(([v, c]) => `${v}×${c}`).join(" ") : "";
   }).filter(Boolean).join("；") || "无统计";
 }
+// 改进1：按时间桶统计 action 分布（让 LLM/用户看到"何时 reset-both 多、何时全 allow"的时间线趋势）
+// 返回如 ["16:50 allow×2 reset-both×5", "17:00 allow×10", ...]，按时间升序
+function fmtLogTime(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:00`;
+}
+function actionTimeline(entries, bucketMinutes = 10) {
+  const buckets = new Map();
+  for (const e of entries) {
+    const t = Date.parse(String(e.receive_time || "").replace(/\//g, "-"));
+    if (isNaN(t)) continue;
+    const b = Math.floor(t / (bucketMinutes * 60000)) * (bucketMinutes * 60000);
+    const a = e.action || "?";
+    if (!buckets.has(b)) buckets.set(b, {});
+    buckets.get(b)[a] = (buckets.get(b)[a] || 0) + 1;
+  }
+  return [...buckets.entries()]
+    .sort((x, y) => x[0] - y[0])
+    .map(([ts, cnt]) => {
+      const d = new Date(ts);
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      return `${hh}:${mm} ${Object.entries(cnt).sort((a, b) => b[1] - a[1]).map(([a, c]) => `${a}×${c}`).join(" ")}`;
+    });
+}
 async function deepLog(type, opts = {}) {
   const { minutes = 60, nlogs = 200, query = "" } = opts;
   const data = await directLog(type, nlogs, query);
@@ -403,8 +428,13 @@ async function deepLog(type, opts = {}) {
   // 窗口内无数据时降级用全部样本（避免"无统计"误导），并标注时间范围
   const effective = windowed.length ? windowed : entries;
   const top = logStats(effective, ["src", "dst", "app", "action", "subtype", "severity"]);
+  // 改进2：数据时间范围（让 verdict 明确"基于什么时间段的数据"）
+  const times = effective.map((e) => e.receive_time).filter(Boolean).sort();
   return {
     entries: effective, minutes, nlogs, top,
+    // 改进1：时间线趋势
+    timeline: actionTimeline(effective, 10),
+    timeRange: times.length ? (times[0] + " → " + times[times.length - 1]) : "",
     rawCount: entries.length,
     inWindow: windowed.length,
     degraded: windowed.length === 0 && entries.length > 0,
@@ -798,6 +828,9 @@ async function llmSynthesize(input, sections, stats) {
   // 精简数据：每段 result 限 200 字符、统计限 600 字符，让 Kimi 等思考型模型能快速响应
   const ctx = sections.map((s) => "[" + s.step + "] " + String(s.result).slice(0, 200)).join("\n");
   const statCtx = stats ? "\n日志统计(前6):\n" + JSON.stringify(stats).slice(0, 600) : "";
+  // 改进1/2：额外注入时间线趋势 + 数据时间范围（sections 里已有"流量时间线"段，这里再确保 LLM 看到）
+  const tl = sections.find((s) => s.step === "流量时间线");
+  const tlCtx = tl && tl.result && tl.result !== "（无时间线数据）" ? "\n【流量时间线】(10分钟桶 action 分布，越靠右越新):\n" + tl.result.slice(0, 600) : "";
   const text = await llmClassify("诊断综合",
     `你是 PAN-OS 防火墙诊断专家。**禁止套模板**，必须真正读数据、交叉对照、做证据链推理。
 
@@ -812,11 +845,13 @@ async function llmSynthesize(input, sections, stats) {
 - **绝对优先级："功能未配置"识别**（这是最常见的误判陷阱）：当用户 query 涉及某个功能/组件（GP 客户端、VPN 隧道、IPSec、DHCP、HA、特定 zone 间路由等），如果相关数据**全部为空**（如 GP 配置空 + GP 用户列表空 + IPSec 隧道 0 + 源 IP 入接口无记录 + ARP 空 + 会话空），结论**应当是"该功能未配置 / 未启用 / 未启动"**，而不是"已配置但失败"。**绝对不要**强行套用"已建立但被拒绝""隧道建了但路由不通"这种模板——证据不支持。
   - 验证逻辑：先看用户 query 中"关键功能"的配置/启用证据（如 get_globalprotect_config 是否非空）→ 若全部为空 → 直接结论"未配置"
   - 反例警示：流量里有 ssl 应用 ≠ GP 客户端连接；流量 reset-both ≠ GP 客户端被拒绝（前提是是GP 必须已配置；如配置为空则这条推理完全无效）
+- **必须标注数据时间范围**：verdict 开头必须说明"本结论基于【时间范围】的数据（最早 → 最晚）"——若用户报告的现象时间（如"16:59 看到 reset-both"）落在时间范围之外，要明确指出"该现象在本次数据窗口外，无法用本次数据证实/证伪，建议指定该时间点重查"。
+- **必须看时间线趋势**：数据里的【时间线】字段按 10 分钟桶展示各 action 数量。如果时间线显示"某时刻起 reset-both/deny 集中出现，之后又恢复 allow"，说明是**阶段性/瞬时现象**，根因应解释"何时发生、为何恢复"，而不是给"当前状态"的单一快照结论。
 
 【输出格式】
 JSON：
 {
-  "verdict": "一段话根因（含证据引用：[流量]、[策略]、[zone] 等指明依据）",
+  "verdict": "一段话根因（开头标注数据时间范围；含证据引用：[流量]、[策略]、[zone] 等指明依据）",
   "confidence": "高/中/低",
   "confidence_reason": "为什么是这个置信度",
   "evidence": ["关键证据1:…", "关键证据2:…", "反驳证据:…"],
@@ -825,7 +860,7 @@ JSON：
 
 【用户症状】"${input}"
 【数据】
-${ctx}${statCtx}`,
+${ctx}${statCtx}${tlCtx}`,
     input, 120000);
   if (!text) return null;
   const m = text.match(/\{[\s\S]*?\}/);
@@ -843,7 +878,7 @@ ${ctx}${statCtx}`,
 }
 async function llmParseDiag(input) {
   const text = await llmClassify("诊断规划",
-    `你是网络诊断解析器。判断用户症状属于：connectivity（连通性排查，涉及源/目的/IP/端口/连不上/不通/访问不了）、threat_profile（威胁源画像，涉及"什么情况/一直扫描/攻击/画像"且给定了IP）、generic（通用健康检查）。提取参数：ip（IPv4）、port（端口）、direction（inbound/outbound）、target_label（如"外网"）、minutes（时间窗口分钟数，如"最近10分钟"=10、"最近1小时"=60、"今天"=1440，无则默认60）、probe（可选：用户要求"ping/测试连通/探测"填"ping"；要求"追踪路由/traceroute"填"traceroute"；否则不填）。
+    `你是网络诊断解析器。判断用户症状属于：connectivity（连通性排查，涉及源/目的/IP/端口/连不上/不通/访问不了）、threat_profile（威胁源画像，涉及"什么情况/一直扫描/攻击/画像"且给定了IP）、generic（通用健康检查）。提取参数：ip（IPv4）、port（端口）、direction（inbound/outbound）、target_label（如"外网"）、minutes（时间窗口分钟数，如"最近10分钟"=10、"最近1小时"=60、"今天"=1440，无则默认60）、probe（可选：用户要求"ping/测试连通/探测"填"ping"；要求"追踪路由/traceroute"填"traceroute"；否则不填）、around_time（可选：用户指定了**现象发生的具体时间点**，如"16:59那次/昨天下午3点/刚才(默认不填)/2026/08/23 16:59"，填 "YYYY/MM/DD HH:MM" 或 "HH:MM"；用户没指定时间点则**不填**）。
 【多轮追问】输入前可能附带【最近对话上下文】。若用户引用前文（如"那条策略/刚才那个IP/上面的结果"）继续诊断，从上下文提取 ip/port 等缺失参数。无法判断输出 {"type":null}。只输出 JSON：{"type":"<t>","params":{}}。`, withCtx(input));
   if (!text) return null;
   try {
@@ -1685,14 +1720,41 @@ async function runDiagTask(t, firewall) {
     const anyAllow = rules.some((r) => r.action === "allow" && !r.disabled && r.source?.member === "any" && r.destination?.member === "any");
     sections.push({ step: "策略命中分析", result: anyAllow ? "存在全放行规则，策略层不会阻断该目标" : (matched.length ? `命中 ${matched.length} 条规则: ` + matched.map((m) => `${m.name}(${m.action})`).join(", ") : "未找到明确匹配规则") });
     // 2 流量证据（deepLog：200 条 + 时间窗口 + Top N 统计）
-    const ld = await deepLog("traffic", { minutes, nlogs: 200 });
+    // 改进3：用户指定了现象发生时间点（around_time）→ 用 receive_time 精确过滤该点附近窗口
+    let logQuery = "";
+    if (params.around_time) {
+      const at = String(params.around_time).replace(/\//g, "/");
+      // 支持 "YYYY/MM/DD HH:MM" 或 "HH:MM"（今天）；取前后 60 分钟窗口
+      let winStart = "", winEnd = "";
+      const mFull = at.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
+      const mTime = at.match(/(\d{2}):(\d{2})/);
+      if (mFull) {
+        const base = new Date(+mFull[1], +mFull[2] - 1, +mFull[3], +mFull[4], +mFull[5]);
+        winStart = fmtLogTime(new Date(base.getTime() - 60 * 60000));
+        winEnd = fmtLogTime(new Date(base.getTime() + 60 * 60000));
+      } else if (mTime) {
+        const now = new Date();
+        const base = new Date(now.getFullYear(), now.getMonth(), now.getDate(), +mTime[1], +mTime[2]);
+        winStart = fmtLogTime(new Date(base.getTime() - 60 * 60000));
+        winEnd = fmtLogTime(new Date(base.getTime() + 60 * 60000));
+      }
+      if (winStart) {
+        logQuery = `(receive_time geq '${winStart}' and receive_time leq '${winEnd}')`;
+        console.log(`[diag] around_time=${at} → 日志窗口 ${winStart} ~ ${winEnd}`);
+      }
+    }
+    const ld = await deepLog("traffic", { minutes, nlogs: 200, query: logQuery });
     stats = ld.top;
     const logs = ld.entries;
     const hits = logs.filter((l) => (ip && (l.src === ip || l.dst === ip)) || (!ip && l.action !== "allow"));
     const actions = {};
     hits.forEach((l) => { actions[l.action] = (actions[l.action] || 0) + 1; });
-    sections.push({ step: "流量证据", result: hits.length ? `最近 ${minutes} 分钟该目标相关 ${hits.length} 条: ` + Object.entries(actions).map(([a, c]) => `${a}×${c}`).join(" ") : (ip ? `最近 ${minutes} 分钟无该目标流量记录` : `最近 ${minutes} 分钟未发现被拦截流量`) });
+    // 改进2：流量证据带时间范围
+    const timeNote = ld.timeRange ? `（数据时间 ${ld.timeRange}）` : "";
+    sections.push({ step: "流量证据", result: (logQuery ? `指定时间点查询${timeNote}` : `最近 ${minutes} 分钟${timeNote}`) + (hits.length ? ` 该目标相关 ${hits.length} 条: ` + Object.entries(actions).map(([a, c]) => `${a}×${c}`).join(" ") : (ip ? ` 无该目标流量记录` : ` 未发现被拦截流量`)) });
     sections.push({ step: "流量 Top 统计", result: fmtTop(ld.top, ["src", "dst", "app", "action"]) + (ld.degraded ? `（窗口内无数据，展示全部 ${ld.rawCount} 条，最早 ${ld.oldest}）` : "") });
+    // 改进1：流量时间线（10 分钟桶 action 分布——让 LLM 看到"何时 reset-both 集中、何时恢复"）
+    sections.push({ step: "流量时间线", result: ld.timeline && ld.timeline.length ? ld.timeline.join("；") : "（无时间线数据）" });
     // 3 路由（spec：路由联动——默认路由 + 是否有指向目标的特定路由）
     const routes = (await callTool("get_routing_table", {}, firewall))?.entry || [];
     const hasDefault = Array.isArray(routes) && routes.some((r) => (r.destination || "").includes("0.0.0.0"));
