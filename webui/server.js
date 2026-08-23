@@ -699,7 +699,11 @@ async function llmResolveAction(input) {
   const text = await llmClassify("意图规划",
     `你是防火墙运维意图分类器。从动作列表选一个 key；若输入与防火墙查询无关输出 {"action":null}；若输入是配置变更请求（创建/删除/封禁/改策略）输出 {"action":"change"}；若输入是故障诊断请求（连不上/不通/访问不了/排查/诊断/健康检查/某IP什么情况/一直扫描/某个具体故障现象）输出 {"action":"diag"}；若输入是审计/配置变更查询（谁改的/审计/变更记录/谁修改/谁删了/配置变更）输出 {"action":"audit"}。
 注意：若输入是**咨询/方案/教学/画图类**请求（如何配置XX、XX是什么、帮我画个拓扑图、最佳实践建议、概念解释等）→ 输出 {"action":null}（系统会用自由问答回答，不要归为 diag）。
-只输出 JSON：{"action":"<key>"}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, input);
+【多轮追问】输入前可能附带【最近对话上下文】。若当前问题引用了上下文（如"那条/上面那条/刚才那个/这个结果/它/那个策略/那台设备/结合上面的结果继续/基于刚才的"等指代词或依赖前文才能理解）→ 属于**追问**，按下列规则处理：
+  - 追问上轮结果的具体含义/细节/为什么 → {"action":null}（自由问答会结合上下文回答）
+  - 追问"把那条删掉/禁用/封禁"等（指代上下文中的具体条目）→ {"action":"change"}（系统会结合上下文解析出具体条目）
+  - 追问"那条对应的流量/策略分析"（指代上轮结果做进一步诊断）→ {"action":"diag"}
+只输出 JSON：{"action":"<key>"}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, withCtx(input));
   if (!text) return null;
   const m = text.match(/"action"\s*:\s*("?)(\w+|null)\1/);
   if (!m) return null;
@@ -746,7 +750,10 @@ block_ip_group（封禁 IP 组）：用于**多个 IP 封禁 + 放进地址组**
   - 提取所有 IPv4 到 params.ips 数组（如 ["1.1.2.1","1.1.2.2","1.1.2.3"]），不能是字符串
   - 用户给了组名（如"黑名单组/封禁组/internet-block"）→ 填 params.group_name；未给则系统自动生成 "block-group-YYYYMMDD"
   - **绝不能**把多个 IP 用逗号拼成一个名字（PAN-OS 不接受逗号），绝不能用 block_ip 单 IP 模板
-若无法匹配模板输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${tmplList}`, input);
+【多轮追问】输入前可能附带【最近对话上下文】（含关键条目名）。若用户用指代词引用上下文中的条目（如"把那条/上面那条/刚才那条/它/这个策略/那个对象 删除/禁用/启用/移动/封禁"）：
+  - 先看上下文的"关键条目"和"结果"，把指代解析为**上下文中真实存在的条目 name**（如 block-1.1.1.1-20260822 / Allow all），填入 params.name
+  - **禁止编造**上下文里不存在的 name；无法确定时 name 留空走 keyword 预检
+若无法匹配模板输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${tmplList}`, withCtx(input));
   if (!text) return null;
   try {
     const m = text.match(/\{[\s\S]*\}/);
@@ -836,7 +843,8 @@ ${ctx}${statCtx}`,
 }
 async function llmParseDiag(input) {
   const text = await llmClassify("诊断规划",
-    `你是网络诊断解析器。判断用户症状属于：connectivity（连通性排查，涉及源/目的/IP/端口/连不上/不通/访问不了）、threat_profile（威胁源画像，涉及"什么情况/一直扫描/攻击/画像"且给定了IP）、generic（通用健康检查）。提取参数：ip（IPv4）、port（端口）、direction（inbound/outbound）、target_label（如"外网"）、minutes（时间窗口分钟数，如"最近10分钟"=10、"最近1小时"=60、"今天"=1440，无则默认60）、probe（可选：用户要求"ping/测试连通/探测"填"ping"；要求"追踪路由/traceroute"填"traceroute"；否则不填）。无法判断输出 {"type":null}。只输出 JSON：{"type":"<t>","params":{}}。`, input);
+    `你是网络诊断解析器。判断用户症状属于：connectivity（连通性排查，涉及源/目的/IP/端口/连不上/不通/访问不了）、threat_profile（威胁源画像，涉及"什么情况/一直扫描/攻击/画像"且给定了IP）、generic（通用健康检查）。提取参数：ip（IPv4）、port（端口）、direction（inbound/outbound）、target_label（如"外网"）、minutes（时间窗口分钟数，如"最近10分钟"=10、"最近1小时"=60、"今天"=1440，无则默认60）、probe（可选：用户要求"ping/测试连通/探测"填"ping"；要求"追踪路由/traceroute"填"traceroute"；否则不填）。
+【多轮追问】输入前可能附带【最近对话上下文】。若用户引用前文（如"那条策略/刚才那个IP/上面的结果"）继续诊断，从上下文提取 ip/port 等缺失参数。无法判断输出 {"type":null}。只输出 JSON：{"type":"<t>","params":{}}。`, withCtx(input));
   if (!text) return null;
   try {
     const m = text.match(/\{[\s\S]*\}/);
@@ -849,7 +857,13 @@ async function llmParseDiag(input) {
 
 // ── 任务系统 ──
 function newTask(type, input, extra = {}) {
-  return { id: ++taskSeq, type, input, status: "pending", steps: [], result: null, error: null, createdAt: new Date().toLocaleString("zh-CN"), ...extra };
+  // 多轮追问：自动关联最近一个已完成的任务（前端据此显示"追问自 #N"；extra 可覆盖）
+  let followUpOf = null;
+  for (let i = tasks.length - 1; i >= 0; i--) {
+    const x = tasks[i];
+    if (["done", "failed"].includes(x.status) && ["query", "diag", "chat", "inspect"].includes(x.type)) { followUpOf = x.id; break; }
+  }
+  return { id: ++taskSeq, type, input, status: "pending", steps: [], result: null, error: null, createdAt: new Date().toLocaleString("zh-CN"), followUpOf, ...extra };
 }
 function saveTask(t) { const i = tasks.findIndex((x) => x.id === t.id); if (i >= 0) tasks[i] = t; persistTasks(); }
 
@@ -924,9 +938,10 @@ async function summarizeQuery(input, action, results) {
 3. **明确回答**：直接说出"有/无/几条"匹配；如果没有，**明确说"没有匹配的策略"**（不要强行凑"全放行 Allow all"这种看似匹配但实际不相关的）。
 4. **完整汇报元数据**：当工具返回 Dashboard General Information 风格的元数据（get_firewall_info）时，**主动列出关键模块版本和状态**——GP/AV/Threat/WildFire/URL 各模块版本号、Advanced Routing、Duplicate IP、Plugin DLP、Device Certificate Status、Uptime 等。问"设备清单/资产"时这些是关键信息，不能漏。
 5. **引用**：用条目 @_name 或关键字段标识匹配项。
+6. **多轮追问**：若用户问题引用了前文（如"那条/上面那条/它"），优先结合【最近对话上下文】中的条目名和结果回答，不要重复全量查询。
 
 输出 1-3 段简洁中文（≤350 字，比一般查询多 100 字用于展示元数据），不要堆 JSON。`,
-    `用户问句：${input}\n\n工具结果：\n${ctx}`,
+    `用户问句：${input}\n\n工具结果：\n${ctx}${buildConversationContext() ? "\n\n" + buildConversationContext() : ""}`,
     30000);
   return text || null;
 }
@@ -1342,6 +1357,45 @@ async function runChangeCommit(t, firewall) {
 }
 
 // ── 意图 → 任务路由 ──
+
+// ── 多轮追问上下文（方案A）：从 tasks 取最近 N 轮已结束任务，组装成上下文文本 ──
+// 所有通道（Web/飞书）的任务都进同一个 tasks 数组，自动按时间窗口串成会话，无需前端传 session
+const CTX_ROUNDS = 5;   // 上下文轮数（超限自动丢最旧，控制 token）
+const CTX_SUMMARY_LEN = 300; // 每轮结果摘要截断长度
+function extractKeyItems(t) {
+  // 从任务结果中提取关键条目名（@_name / 规则名 / 对象名），供 LLM 指代解析
+  const names = new Set();
+  const walk = (o) => {
+    if (o == null || typeof o !== "object") return;
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    for (const k of ["@_name", "name", "rule"]) {
+      const v = o[k];
+      if (typeof v === "string" && v && !/^(any|entry)$/.test(v)) names.add(v);
+    }
+    Object.values(o).forEach(walk);
+  };
+  const r = t.result || {};
+  (r.results || []).forEach((res) => walk(res.data));
+  return [...names].slice(0, 8).join(", ");
+}
+function buildConversationContext(limit = CTX_ROUNDS) {
+  const recent = tasks
+    .filter((x) => ["done", "failed"].includes(x.status) && ["query", "diag", "chat", "inspect"].includes(x.type))
+    .slice(-limit);
+  if (!recent.length) return "";
+  return "【最近对话上下文】（用户之前问过这些，你回答过；当前问题可能引用它们）\n" + recent.map((x, i) => {
+    const r = x.result || {};
+    const summary = String(r.summary || r.answer || "").slice(0, CTX_SUMMARY_LEN);
+    const items = extractKeyItems(x);
+    return `轮${i + 1} 用户问: ${x.input}\n结果: ${summary || "(无摘要)"}${items ? `\n关键条目: ${items}` : ""}`;
+  }).join("\n\n");
+}
+// 在用户问题前拼接上下文（无上下文时原样返回）
+function withCtx(userInput) {
+  const ctx = buildConversationContext();
+  return ctx ? ctx + "\n\n【用户当前问题】" + userInput : userInput;
+}
+
 async function createTaskFromInput(input, firewall, source) {
   // 重复任务去重：先扫描 active 任务，发现与 input normalize 后完全相同则取消旧任务
   const dup = dedupeActiveTask(input);
@@ -1432,8 +1486,9 @@ async function createFreeAnswer(input, firewall, source) {
 要求：
 - 不要敷衍，不要只说"无法处理"。
 - 如果问题其实是标准动作能解决的（例如用户在绕弯子问设备状态），先指出"这可以用系统 XX 功能直接查看"，再补充答案。
-- 200-400 字，条理清晰，用 markdown 列表。`,
-    `${fwCtx ? fwCtx + "\n" : ""}用户问题：${input}`,
+- 200-400 字，条理清晰，用 markdown 列表。
+【多轮追问】输入前可能附带【最近对话上下文】（含用户之前的问句、结果、关键条目名）。若当前问题引用前文（"那条/上面那条/刚才/它/第二条/这个结果"），**必须基于上下文中的真实条目和数据回答**（如引用上轮结果里的具体策略名/设备/数值），不要泛泛而谈，不要编造上下文里没有的条目。`,
+    `${fwCtx ? fwCtx + "\n" : ""}用户问题：${withCtx(input)}`,
     60000);
   const t = newTask("chat", input, { firewall, source });
   t.llm = currentLLM;
