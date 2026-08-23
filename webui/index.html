@@ -387,7 +387,7 @@ let _lastUserScrollAt = 0;        // 用户最近一次手动滚动时间（whee
 let _outAwaitingTaskId = null;     // 当前 out 区显示的"等待审批"提示对应的任务 id，任务状态变化时自动清除
 
 // ── 空闲超时（方案A：N 分钟无操作 → 60 秒警告 → 自动退出回登录页）──
-let _idleMinutes = 15;              // 后端下发（登录/check 接口返回），默认 15
+let _idleMinutes = 10;              // 后端下发（登录/check 接口返回），默认 10
 let _lastUserActiveAt = Date.now(); // 用户最近一次主动操作时间
 let _idleWarningShown = false;      // 警告弹窗是否已显示（避免重复弹）
 let _idleWarnTimer = null;          // 警告弹窗倒计时 timer

@@ -22,7 +22,7 @@ const AUTH_FILE = path.join(__dirname, "..", "cfgs", "auth.json");
 const crypto = require("crypto");
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const AUTH_SESSION_DAYS = 7;               // 登录会话绝对有效期
-const IDLE_MINUTES = Math.max(1, parseInt(process.env.PANOS_WEB_IDLE_MINUTES || "15", 10)); // 空闲超时（分钟），方案A=15
+const IDLE_MINUTES = Math.max(1, parseInt(process.env.PANOS_WEB_IDLE_MINUTES || "10", 10)); // 空闲超时（分钟），默认 10
 const IDLE_MS = IDLE_MINUTES * 60 * 1000;
 let authData = null;                        // { username, password_hash, sessions:{token:{exp,lastSeen}}, internal_token }
 function loadAuth() {
