@@ -132,3 +132,5 @@ MIT
 ###  引用
 
 https://github.com/apius-tech/Palo-MCP
+https://github.com/zm1990s/pan-os-mcp
+
