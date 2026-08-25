@@ -344,6 +344,16 @@
   .side-badge { margin-left:auto; background:var(--accent); color:#fff; font-size:10px; font-weight:600; padding:1px 7px; border-radius:10px; }
   body.side-collapsed .side-badge { display:none; }
   .side-foot { padding:8px; border-top:1px solid var(--border); position:relative; }
+  /* 网络状态组：后端地址 + 强刷 + 测网络（始终在侧栏底部可见，与"配置"下拉分离） */
+  .side-net { display:flex; align-items:center; gap:5px; padding:6px 8px 8px; margin-bottom:6px;
+    border:1px solid var(--border); border-radius:8px; background:var(--card2); }
+  .side-net .sn-label { font-size:10.5px; color:var(--dim); font-family:var(--mono); flex-shrink:0; }
+  .side-net .sn-url { font-size:11px; color:var(--accent); font-family:var(--mono); flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  body.side-collapsed .side-net .sn-label, body.side-collapsed .side-net .sn-url { display:none; }
+  .side-net .sn-btn { padding:3px 5px; border:1px solid var(--border2); background:var(--card);
+    border-radius:5px; cursor:pointer; color:var(--muted); display:flex; align-items:center; transition:all .15s; }
+  .side-net .sn-btn:hover { border-color:var(--accent); color:var(--accent); background:var(--run-bg); }
   /* 配置下拉（点击侧栏"配置"按钮从右侧弹出，避开侧栏） */
   .config-popup { position:absolute; left:calc(100% + 8px); bottom:0; min-width:170px;
     background:var(--card); border:1px solid var(--border); border-radius:10px; padding:6px;
@@ -488,6 +498,14 @@
       <button class="side-item" onclick="showLLMConfig()"><svg class="ic"><use href="#i-settings"/></svg><span class="txt">设置</span></button>
     </nav>
     <div class="side-foot">
+      <!-- 网络状态组：后端地址 + 强刷 + 测网络（始终可见，独立于配置下拉） -->
+      <div class="side-net" id="sideNet">
+        <span class="sn-label">后端→</span>
+        <code class="sn-url" id="backendUrl">http://localhost:8080</code>
+        <button class="sn-btn" onclick="location.reload(true)" title="强刷（Ctrl+R）"><svg class="ic sm"><use href="#i-refresh"/></svg></button>
+        <button class="sn-btn" onclick="testBackend()" title="网络健康检测"><svg class="ic sm"><use href="#i-pulse"/></svg></button>
+      </div>
+      <!-- 配置下拉（系统设置类，与网络工具分开） -->
       <button class="side-item" id="configBtn" onclick="toggleConfigMenu()">
         <svg class="ic"><use href="#i-settings"/></svg>
         <span class="txt">配置</span>
@@ -497,9 +515,6 @@
         <button class="cp-item" onclick="configAction('llm')"><svg class="ic sm"><use href="#i-settings"/></svg>模型配置</button>
         <button class="cp-item" onclick="configAction('input')"><svg class="ic sm"><use href="#i-pencil"/></svg>输入任务</button>
         <button class="cp-item" onclick="configAction('theme')"><svg class="ic sm" id="configThemeIcon"><use href="#i-moon"/></svg><span id="configThemeTxt">深色模式</span></button>
-        <div class="cp-sep"></div>
-        <button class="cp-item" onclick="configAction('refresh')"><svg class="ic sm"><use href="#i-refresh"/></svg>强刷</button>
-        <button class="cp-item" onclick="configAction('test')"><svg class="ic sm"><use href="#i-pulse"/></svg>测网络</button>
         <div class="cp-sep"></div>
         <button class="cp-item" onclick="configAction('pwd')"><svg class="ic sm"><use href="#i-key"/></svg>改密</button>
       </div>
@@ -512,12 +527,6 @@
       <h2 class="view-title" id="viewTitle">任务对话</h2>
       <div class="spacer"></div>
       <div class="top-ctrl">
-        <!-- 后端地址（只保留这一项） -->
-        <span id="diagBar" style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;
-          background:color-mix(in srgb, var(--card) 90%, transparent);border:1px solid var(--border2);border-radius:8px;padding:3px 8px;
-          font-family:var(--mono,monospace);white-space:nowrap;">
-          <span style="color:var(--muted)">后端→</span><code id="backendUrl" style="color:var(--accent)">http://localhost:8080</code>
-        </span>
         <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-lock"/></svg>退出</button>
       </div>
     </header>
