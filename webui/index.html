@@ -371,7 +371,7 @@
   .view { flex:1; min-height:0; display:flex; flex-direction:column; }
   .view[hidden] { display:none; }
   #view-chat .chat-scroll { flex:1; overflow-y:auto; padding:14px 20px 6px; }
-  /* 飞书对接独立视图 */
+  /* 飞书移动端独立视图 */
   .feishu-scroll { flex:1; overflow-y:auto; padding:18px 22px 30px; }
   .feishu-inner { max-width:880px; margin:0 auto; }
   /* 飞书视图内的 fs-fold 强制展开（无折叠交互），更突出 */
@@ -491,6 +491,7 @@
     <nav class="side-nav">
       <button class="side-item" data-view="dashboard" onclick="showView('dashboard')"><svg class="ic"><use href="#i-grid"/></svg><span class="txt">概览</span></button>
       <button class="side-item on" data-view="chat" onclick="showView('chat')"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">任务对话</span><b class="side-badge" id="sideTaskBadge" style="display:none">0</b></button>
+      <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-phone"/></svg><span class="txt">飞书移动端</span></button>
       <div class="side-sep">快捷入口</div>
       <button class="side-item" onclick="quickTask('设备状态')"><svg class="ic"><use href="#i-device"/></svg><span class="txt">设备状态</span></button>
       <button class="side-item" onclick="quickTask('安全策略')"><svg class="ic"><use href="#i-shield"/></svg><span class="txt">安全策略</span></button>
@@ -499,7 +500,6 @@
       <button class="side-item" onclick="quickTask('审计记录')"><svg class="ic"><use href="#i-clock"/></svg><span class="txt">审计记录</span></button>
       <button class="side-item" onclick="quickTask('完整巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">完整巡检</span></button>
       <div class="side-sep">系统</div>
-      <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">飞书对接</span></button>
       <button class="side-item" id="settingsBtn" onclick="toggleSettingsMenu()">
         <svg class="ic"><use href="#i-settings"/></svg>
         <span class="txt">设置</span>
@@ -525,7 +525,7 @@
       </div>
     </header>
 
-    <!-- 视图：任务对话（气泡流 + 输入栏，飞书对接已移至独立视图） -->
+    <!-- 视图：任务对话（气泡流 + 输入栏，飞书移动端已移至独立视图） -->
     <div class="view" id="view-chat">
       <div class="chat-scroll" id="chatScroll">
         <div class="chat-inner">
@@ -536,7 +536,7 @@
               <svg class="ic sm"><use href="#i-chat"/></svg>
               <span>任务对话</span>
               <span class="pill" id="chatCount">—</span>
-              <button class="btn" onclick="showView('feishu')" title="切换到飞书对接" style="margin-left:auto;padding:3px 11px;font-size:12px"><svg class="ic sm" style="margin-right:3px"><use href="#i-chat"/></svg>飞书对接</button>
+              <button class="btn" onclick="showView('feishu')" title="切换到飞书移动端" style="margin-left:auto;padding:3px 11px;font-size:12px"><svg class="ic sm" style="margin-right:3px"><use href="#i-chat"/></svg>飞书移动端</button>
             </div>
             <!-- 气泡流主体（pollTasks → renderChat 填充） -->
             <div id="chat"><div class="empty" style="text-align:center;padding:30px 0">⏳ 加载任务…</div></div>
@@ -567,13 +567,13 @@
       </div>
     </div>
 
-    <!-- 视图：飞书对接（独立视图，仅含飞书相关功能） -->
+    <!-- 视图：飞书移动端（独立视图，仅含飞书相关功能） -->
     <div class="view" id="view-feishu" hidden>
       <div class="feishu-scroll">
         <div class="feishu-inner">
           <div class="fs-fold" id="fsFold" style="border-radius:14px">
             <div class="fs-fold-head" style="cursor:default">
-              <span><svg class="ic sm"><use href="#i-chat"/></svg>飞书对接</span>
+              <span><svg class="ic sm"><use href="#i-chat"/></svg>飞书移动端</span>
               <span class="pill"><span class="dot green" id="fsDot"></span><span id="fsTxt">飞书检测中</span></span>
               <button class="btn" onclick="showView('chat')" style="margin-left:auto;padding:2px 9px;font-size:11px" title="返回任务对话">← 返回任务对话</button>
             </div>
@@ -678,7 +678,7 @@ function toggleTheme() {
   applyTheme(dark);
 })();
 // ── 视图切换 + 侧边栏（方案C 混合模型）──
-const VIEW_NAMES = { dashboard: "概览", chat: "任务对话", feishu: "飞书对接" };
+const VIEW_NAMES = { dashboard: "概览", chat: "任务对话", feishu: "飞书移动端" };
 function showView(name) {
   document.querySelectorAll(".view").forEach(v => { v.hidden = v.id !== "view-" + name; });
   document.querySelectorAll(".side-item[data-view]").forEach(b => { b.classList.toggle("on", b.getAttribute("data-view") === name); });
@@ -703,7 +703,7 @@ function quickTask(text) {
   if (q) { q.value = text; autoGrow(q); }
   submit();
 }
-// 飞书对接：菜单项/按钮统一通过 showView('feishu') 进入独立视图，此函数已废弃
+// 飞书移动端：菜单项/按钮统一通过 showView('feishu') 进入独立视图，此函数已废弃
 // ── 侧栏「设置」下拉（点击弹出设置菜单；底部网络组已独立）──
 function toggleSettingsMenu() {
   const b = document.getElementById("settingsBtn");
