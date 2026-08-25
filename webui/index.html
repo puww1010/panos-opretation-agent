@@ -343,7 +343,17 @@
   body.side-collapsed .side-item .txt { display:none; }
   .side-badge { margin-left:auto; background:var(--accent); color:#fff; font-size:10px; font-weight:600; padding:1px 7px; border-radius:10px; }
   body.side-collapsed .side-badge { display:none; }
-  .side-foot { padding:8px; border-top:1px solid var(--border); }
+  .side-foot { padding:8px; border-top:1px solid var(--border); position:relative; }
+  /* 配置下拉（点击侧栏"配置"按钮从右侧弹出，避开侧栏） */
+  .config-popup { position:absolute; left:calc(100% + 8px); bottom:0; min-width:170px;
+    background:var(--card); border:1px solid var(--border); border-radius:10px; padding:6px;
+    box-shadow:0 10px 32px rgba(15,23,42,.18); z-index:200; }
+  .config-popup[hidden] { display:none; }
+  .cp-item { display:flex; align-items:center; gap:8px; width:100%; padding:8px 10px; border:none; background:none;
+    border-radius:7px; color:var(--text); font-size:13px; cursor:pointer; text-align:left; transition:background .12s; white-space:nowrap; }
+  .cp-item:hover { background:var(--run-bg); color:var(--run-fg); }
+  .cp-item .ic { flex-shrink:0; }
+  .cp-sep { height:1px; background:var(--border); margin:4px 4px; }
   /* 主区 + 视图 */
   .main { flex:1; min-width:0; display:flex; flex-direction:column; }
   .view { flex:1; min-height:0; display:flex; flex-direction:column; }
@@ -416,6 +426,7 @@
     <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   </defs>
 </svg>
 
@@ -472,7 +483,21 @@
       <button class="side-item" onclick="showLLMConfig()"><svg class="ic"><use href="#i-settings"/></svg><span class="txt">设置</span></button>
     </nav>
     <div class="side-foot">
-      <button class="side-item" onclick="toggleTheme()"><svg class="ic" id="sideThemeIcon"><use href="#i-moon"/></svg><span class="txt" id="sideThemeTxt">深色模式</span></button>
+      <button class="side-item" id="configBtn" onclick="toggleConfigMenu()">
+        <svg class="ic"><use href="#i-settings"/></svg>
+        <span class="txt">配置</span>
+        <svg class="ic sm" style="margin-left:auto;opacity:.55"><use href="#i-down"/></svg>
+      </button>
+      <div class="config-popup" id="configPopup" hidden>
+        <button class="cp-item" onclick="configAction('llm')"><svg class="ic sm"><use href="#i-settings"/></svg>模型配置</button>
+        <button class="cp-item" onclick="configAction('input')"><svg class="ic sm"><use href="#i-pencil"/></svg>输入任务</button>
+        <button class="cp-item" onclick="configAction('theme')"><svg class="ic sm" id="configThemeIcon"><use href="#i-moon"/></svg><span id="configThemeTxt">深色模式</span></button>
+        <div class="cp-sep"></div>
+        <button class="cp-item" onclick="configAction('refresh')"><svg class="ic sm"><use href="#i-refresh"/></svg>强刷</button>
+        <button class="cp-item" onclick="configAction('test')"><svg class="ic sm"><use href="#i-pulse"/></svg>测网络</button>
+        <div class="cp-sep"></div>
+        <button class="cp-item" onclick="configAction('pwd')"><svg class="ic sm"><use href="#i-key"/></svg>改密</button>
+      </div>
     </div>
   </aside>
 
@@ -482,18 +507,12 @@
       <h2 class="view-title" id="viewTitle">任务对话</h2>
       <div class="spacer"></div>
       <div class="top-ctrl">
-        <button class="btn" onclick="showLLMConfig()"><svg class="ic-btn"><use href="#i-settings"/></svg>模型配置</button>
-        <button class="btn primary" onclick="focusInput()" title="快速回到底部输入框（快捷键 Ctrl/Cmd+K）" style="padding:3px 12px;font-size:12px"><svg class="ic-btn"><use href="#i-pencil"/></svg>输入任务</button>
-        <button class="btn" id="themeBtn" onclick="toggleTheme()" title="切换深色 / 浅色模式" style="padding:3px 10px;font-size:12px"><svg class="ic-btn" id="themeIcon"><use href="#i-moon"/></svg><span id="themeTxt">深色</span></button>
-        <!-- 网络诊断条（后端地址 + 强刷 + 测网络），与模型配置同一行 -->
+        <!-- 后端地址（只保留这一项） -->
         <span id="diagBar" style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;
           background:color-mix(in srgb, var(--card) 90%, transparent);border:1px solid var(--border2);border-radius:8px;padding:3px 8px;
           font-family:var(--mono,monospace);white-space:nowrap;">
           <span style="color:var(--muted)">后端→</span><code id="backendUrl" style="color:var(--accent)">http://localhost:8080</code>
-          <button class="btn" style="padding:2px 8px;font-size:11px" onclick="location.reload(true)"><svg class="ic sm"><use href="#i-refresh"/></svg>强刷</button>
-          <button class="btn" style="padding:2px 8px;font-size:11px" onclick="testBackend()"><svg class="ic sm"><use href="#i-pulse"/></svg>测网络</button>
         </span>
-        <button class="btn" onclick="showChangePwd()" title="修改登录密码（首次登录建议立即修改）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-key"/></svg>改密</button>
         <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-lock"/></svg>退出</button>
       </div>
     </header>
@@ -614,8 +633,8 @@ function applyTheme(dark) {
   const txt = document.getElementById("themeTxt");
   if (icon) icon.innerHTML = dark ? '<use href="#i-sun"/>' : '<use href="#i-moon"/>';
   if (txt) txt.textContent = dark ? "浅色" : "深色";
-  const sIcon = document.getElementById("sideThemeIcon");
-  const sTxt = document.getElementById("sideThemeTxt");
+  const sIcon = document.getElementById("configThemeIcon");
+  const sTxt = document.getElementById("configThemeTxt");
   if (sIcon) sIcon.innerHTML = dark ? '<use href="#i-sun"/>' : '<use href="#i-moon"/>';
   if (sTxt) sTxt.textContent = dark ? "浅色模式" : "深色模式";
 }
@@ -662,6 +681,25 @@ function openFeishu() {
   const f = document.getElementById("fsFold");
   if (f) { f.classList.add("open"); setTimeout(() => f.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60); }
 }
+// ── 侧栏「配置」下拉（顶栏只留后端+退出，其余功能收纳于此）──
+function toggleConfigMenu() { const p = document.getElementById("configPopup"); if (p) p.hidden = !p.hidden; }
+function closeConfigMenu() { const p = document.getElementById("configPopup"); if (p) p.hidden = true; }
+function configAction(key) {
+  closeConfigMenu();
+  if (key === "llm") showLLMConfig();
+  else if (key === "input") focusInput();
+  else if (key === "theme") toggleTheme();
+  else if (key === "refresh") location.reload(true);
+  else if (key === "test") testBackend();
+  else if (key === "pwd") showChangePwd();
+}
+document.addEventListener("click", (e) => {
+  const p = document.getElementById("configPopup");
+  const b = document.getElementById("configBtn");
+  if (!p || p.hidden) return;
+  if (!p.contains(e.target) && !(b && b.contains(e.target))) closeConfigMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeConfigMenu(); });
 // 恢复视图/侧栏状态（登录后 init 前调用；窄屏默认折叠）
 function initShell() {
   let v = null; try { v = localStorage.getItem("panos_view"); } catch (e) {}
