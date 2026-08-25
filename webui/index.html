@@ -274,8 +274,9 @@
   .conv-divider { display:flex; align-items:center; gap:10px; margin:20px 0 14px; color:var(--dim); font-size:11px; letter-spacing:.5px; user-select:none; }
   .conv-divider::before, .conv-divider::after { content:""; flex:1; height:1px; background:var(--border); }
   .conv-divider b { color:var(--muted); font-weight:600; }
-  /* 消息行：淡入动画 */
-  .msg-row { display:flex; margin:12px 0; animation:fadeUp .18s ease; }
+  /* 消息行：淡入动画（仅新增消息播放，避免轮询全量重建导致整页抖动） */
+  .msg-row { display:flex; margin:12px 0; }
+  .msg-row.msg-new { animation:fadeUp .18s ease; }
   @keyframes fadeUp { from { opacity:0; transform:translateY(4px);} to { opacity:1; transform:none;} }
   .msg-row.user { justify-content:flex-end; }
   .msg-row.ai { justify-content:flex-start; }
@@ -1083,8 +1084,13 @@ async function pollTasks() {
     const cc = document.getElementById("chatCount");
     if (cc) cc.textContent = tasks.length + " 条消息";
     const chat = document.getElementById("chat");
+    // 重建前记录滚动位置：内容高度基本不变时恢复原位（防轮询重建导致跳动/抖动）
+    const sc = document.getElementById("chatScroll");
+    const prevTop = sc ? sc.scrollTop : 0;
+    const prevH = sc ? sc.scrollHeight : 0;
     if (!tasks.length) { chat.innerHTML = '<div class="empty" style="text-align:center;padding:26px 0">暂无任务 · 从下方输入栏发起第一个任务</div>'; }
     else { chat.innerHTML = renderChat(tasks); }
+    if (sc && Math.abs(sc.scrollHeight - prevH) < 80) sc.scrollTop = prevTop;
     // 重建 DOM 后恢复多选 checkbox 状态
     tasks.filter(t => t.status === "awaiting_selection" && _selState[t.id]).forEach(t => _restoreSel(t.id));
     hadActive = tasks.some((t) => ["pending", "running", "executing", "committing"].includes(t.status));
@@ -1112,6 +1118,13 @@ const LLM_NAME = { deepseek: "DeepSeek", qwen: "通义千问", kimi: "Kimi", key
 // SVG 图标快捷生成（方案A 图标化）：ic("search") → <svg class="ic"><use href="#i-search"/></svg>
 function ic(name, cls) { return '<svg class="ic ' + (cls || "") + '"><use href="#i-' + name + '"/></svg>'; }
 function renderChat(tasks) {
+  // 新增消息检测：对比已渲染任务 id 集合，只给"新增"的气泡播放淡入动画；
+  // 否则 pollTasks 每 3-5 秒全量重建 DOM 会让所有消息反复播放动画 → 页面持续抖动
+  const ids = new Set(tasks.map(t => t.id));
+  const isFirstRender = _renderedTaskIds.size === 0;
+  const newIds = isFirstRender ? ids : new Set([...ids].filter(id => !_renderedTaskIds.has(id)));
+  _renderedTaskIds = ids;
+  const renderOne = (t) => renderTaskMessages(t, newIds.has(t.id));
   // 分组：有 conversationId 按会话；无 id 的老任务（旧数据）归入 "legacy" 一组
   const groups = new Map();
   for (const t of tasks) {
@@ -1130,16 +1143,17 @@ function renderChat(tasks) {
     html += '<div class="conv-divider"><b>' + label + '</b><span>' + list.length + ' 条</span></div>';
     // 组内折叠：>12 条时中间折叠（localStorage 记忆展开状态），避免超长会话撑爆页面
     if (list.length > 12 && !convExpanded(convId)) {
-      html += list.slice(0, 3).map(renderTaskMessages).join("");
+      html += list.slice(0, 3).map(renderOne).join("");
       html += '<div class="conv-collapse" onclick="expandConv(\'' + convId + '\')">▾ 该话题中间还有 ' + (list.length - 6) + ' 条消息 · 点击展开全部</div>';
-      html += list.slice(-3).map(renderTaskMessages).join("");
+      html += list.slice(-3).map(renderOne).join("");
     } else {
-      html += list.map(renderTaskMessages).join("");
+      html += list.map(renderOne).join("");
     }
   }
   if (!html) html = '<div class="empty" style="text-align:center;padding:26px 0">暂无任务 · 从下方输入栏发起第一个任务</div>';
   return html;
 }
+let _renderedTaskIds = new Set(); // 已渲染任务 id 集合（新增检测）
 function convExpanded(id) {
   try { return localStorage.getItem("convOpen_" + id) === "1"; } catch (e) { return false; }
 }
@@ -1193,17 +1207,19 @@ async function cleanAndRefresh() {
 }
 
 // ── 气泡消息渲染（方案C）：一个任务 = 用户气泡（右蓝）+ AI 气泡（左白，含结果/操作/步骤）──
-function renderTaskMessages(t) {
+// animate=true 时加 msg-new 类播放淡入（仅新增消息）
+function renderTaskMessages(t, animate) {
   const LIVE = ["pending", "running", "executing", "committing"];
   const isLive = LIVE.includes(t.status);
+  const animCls = animate ? " msg-new" : "";
   const stHtml = '<span class="st ' + t.status + '">' + statusText(t.status) + '</span>' + (isLive ? ' <span class="live-badge">LIVE</span>' : "");
   // 用户气泡（右对齐蓝）：输入 + 状态徽章 + 时间
-  let h = '<div class="msg-row user"><div class="msg-bubble">' +
+  let h = '<div class="msg-row user' + animCls + '"><div class="msg-bubble">' +
     '<div class="msg-input">' + esc(t.input) + '</div>' +
     '<div class="msg-meta">' + stHtml + '<span>' + esc(t.createdAt || "") + '</span></div>' +
     '</div></div>';
   // AI 气泡（左对齐）：结果/操作/步骤 + 悬停操作条（↩ 追问这条 / ⧉ 复制 / 取消）
-  h += '<div class="msg-row ai"><div class="msg-avatar">' + ic("robot", "lg") + '</div><div class="msg-bubble">' +
+  h += '<div class="msg-row ai' + animCls + '"><div class="msg-avatar">' + ic("robot", "lg") + '</div><div class="msg-bubble">' +
     renderAiBody(t) +
     '<div class="msg-actions">' +
       '<button onclick="replyToTask(' + t.id + ')" title="针对这条结果继续追问（输入框将填入 @#N 前缀）">' + ic("reply", "sm") + ' 追问这条</button>' +
