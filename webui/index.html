@@ -256,7 +256,7 @@
     color:var(--text); padding:2px 2px 9px; border-bottom:1px dashed var(--border); margin-bottom:8px; }
   .chat-panel-head .pill { margin-left:auto; background:var(--chat-panel-head-bg); border-color:transparent; color:var(--run-fg); }
   /* 底部输入栏：改为对话框内底部（随内容滚动，不再是视口固定） */
-  .cmdbar { background:transparent; border-top:1px solid var(--border); padding:10px 0 8px; box-shadow:none; }
+  .cmdbar { background:transparent; border-top:1px solid var(--border); padding:14px 0 6px; box-shadow:none; }
   .cmdbar-inner { max-width:none; }
   /* 顶部 KPI 紧凑行 */
   .kpis-compact { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-bottom:10px; }
@@ -310,14 +310,15 @@
   .chips-bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
   .chips-bar .chip { font-size:12px; padding:4px 12px; background:var(--card); }
   .input-row { display:flex; gap:10px; align-items:flex-end; }
-  .input-row textarea { flex:1; border:1px solid var(--border2); border-radius:12px; padding:11px 14px; font:inherit; font-size:14.5px; resize:none; min-height:44px; max-height:160px; outline:none; line-height:1.5; background:var(--panel-bg); transition:border-color .15s; color:var(--text); }
+  .input-row textarea { flex:1; border:1px solid var(--border2); border-radius:14px; padding:14px 16px; font:inherit; font-size:15px; resize:none; min-height:76px; max-height:240px; outline:none; line-height:1.55; background:var(--panel-bg); transition:border-color .15s; color:var(--text); }
   .input-row textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(22,104,220,.12); }
   .input-row textarea::placeholder { color:var(--dim); }
   /* 输入框聚焦闪烁提示（顶部 ✏️ 输入任务 点击后） */
   .input-row textarea.flash-focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(22,104,220,.28), 0 0 0 7px rgba(22,104,220,.10); animation:flashIn 1.2s ease; }
   @keyframes flashIn { 0% { box-shadow:0 0 0 3px rgba(22,104,220,.45), 0 0 0 10px rgba(22,104,220,.2); } 100% { box-shadow:0 0 0 3px rgba(22,104,220,.28), 0 0 0 7px rgba(22,104,220,.10); } }
-  .input-row .select { border-radius:10px; padding:10px 12px; font-size:13px; }
-  .input-row .btn { border-radius:12px; padding:0 22px; height:44px; font-size:14px; }
+  .input-row .select { border-radius:10px; padding:14px 12px; font-size:13px; }
+  .input-row .btn { border-radius:12px; padding:0 22px; height:56px; font-size:14px; }
+  .input-row textarea::placeholder { color:var(--dim); }
   /* 回复目标 chip（@#N 回显） */
   .reply-chip { display:inline-flex; align-items:center; gap:6px; background:var(--warn-bg2); border:1px solid var(--warn-border2); color:var(--warn-fg); font-size:12px; font-weight:600; padding:3px 10px; border-radius:12px; margin-bottom:6px; }
   .reply-chip button { border:none; background:transparent; color:var(--warn-fg); cursor:pointer; font-size:12px; padding:0 2px; }
@@ -328,7 +329,7 @@
   body.side-collapsed .sidebar { width:56px; }
   .side-logo { display:flex; align-items:center; gap:9px; padding:11px 12px 10px; border-bottom:1px solid var(--border); min-height:54px; }
   .side-logo .logo { width:30px; height:30px; border-radius:8px; box-shadow:0 2px 10px rgba(22,104,220,.28); }
-  .side-logo .side-title { font-size:14px; font-weight:700; color:var(--title); white-space:nowrap; }
+  .side-logo .side-title { font-size:12.5px; font-weight:700; color:var(--title); white-space:nowrap; letter-spacing:.2px; }
   body.side-collapsed .side-title { display:none; }
   .side-fold { margin-left:auto; padding:3px 7px; font-size:12px; }
   body.side-collapsed .side-fold { margin-left:0; }
@@ -480,7 +481,7 @@
   <aside class="sidebar" id="sidebar">
     <div class="side-logo">
       <img class="logo" src="assets/agent-logo.png" alt="agent logo">
-      <span class="side-title">PAN-OS 运维</span>
+      <span class="side-title">PAN-OS防火墙监控运维机器人</span>
       <button class="side-fold btn" onclick="toggleSidebar()" title="折叠 / 展开菜单"><svg class="ic sm" id="foldIcon"><use href="#i-left"/></svg></button>
     </div>
     <nav class="side-nav">
@@ -1055,7 +1056,7 @@ function renderFirewallSelect(fws) {
 
 function autoGrow(el) {
   el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, 180) + "px";
+  el.style.height = Math.min(el.scrollHeight, 240) + "px";
 }
 
 function renderLLMSelect(llm) {
