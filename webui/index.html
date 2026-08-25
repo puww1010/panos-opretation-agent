@@ -245,7 +245,7 @@
   .foot { text-align:center; color:var(--dim); font-size:11px; padding:20px 0 10px; letter-spacing:1px; }
   /* ══ 气泡式对话布局（方案C）══ */
   .app { display:flex; flex-direction:column; height:100vh; }
-  .chat-scroll { flex:1; overflow-y:auto; padding:14px 20px 6px; scroll-behavior:smooth; }
+  .chat-scroll { flex:1; overflow-y:auto; padding:14px 20px 6px; }
   .chat-inner { max-width:900px; margin:0 auto; }
   /* 任务对话颜色框（方案A 精修）：所有对话在框内进行，位于飞书集成下方 */
   .chat-panel { background:var(--chat-panel-bg); border:1px solid var(--chat-panel-border);
@@ -1084,27 +1084,29 @@ async function pollTasks() {
     const cc = document.getElementById("chatCount");
     if (cc) cc.textContent = tasks.length + " 条消息";
     const chat = document.getElementById("chat");
-    // 重建前记录滚动位置：内容高度基本不变时恢复原位（防轮询重建导致跳动/抖动）
+    // 重建前记录滚动位置（瞬时恢复，配合已移除的 scroll-behavior:smooth，
+    // 避免每次轮询重建触发平滑滚动回弹 → 新旧消息都"震动"）
     const sc = document.getElementById("chatScroll");
     const prevTop = sc ? sc.scrollTop : 0;
-    const prevH = sc ? sc.scrollHeight : 0;
     if (!tasks.length) { chat.innerHTML = '<div class="empty" style="text-align:center;padding:26px 0">暂无任务 · 从下方输入栏发起第一个任务</div>'; }
     else { chat.innerHTML = renderChat(tasks); }
-    if (sc && Math.abs(sc.scrollHeight - prevH) < 80) sc.scrollTop = prevTop;
     // 重建 DOM 后恢复多选 checkbox 状态
     tasks.filter(t => t.status === "awaiting_selection" && _selState[t.id]).forEach(t => _restoreSel(t.id));
     hadActive = tasks.some((t) => ["pending", "running", "executing", "committing"].includes(t.status));
-    // 实时任务分解：只在"新 live 任务出现"时自动滚动一次（避免每 3 秒强制拉回页面，
-    // 导致用户无法向上滚动查看历史——旧实现只要有任何 live 任务就持续 scrollIntoView）
+    // 滚动策略：新 live 任务出现 + 用户未在浏览 → 平滑跟随底部；
+    // 用户本来就贴在底部（live 内容增长）→ 也平滑跟随；否则瞬时恢复原位置（不触发平滑动画，杜绝震动）
+    let shouldFollow = false;
     if (hadActive) {
       const cur = tasks.find((t) => ["pending", "running", "executing", "committing"].includes(t.status));
-      if (cur && _lastAutoScrollTaskId !== cur.id) {
-        // 用户手动滚动过（wheel/touch），5 秒内不再自动滚，尊重用户位置
-        const now = Date.now();
-        if (now - (_lastUserScrollAt || 0) >= 5000) {
-          const sc = document.getElementById("chatScroll");
-          if (sc) { sc.scrollTo({ top: sc.scrollHeight, behavior: "smooth" }); _lastAutoScrollTaskId = cur.id; }
-        }
+      if (cur && _lastAutoScrollTaskId !== cur.id && (Date.now() - (_lastUserScrollAt || 0)) >= 5000) shouldFollow = true;
+    }
+    if (sc) {
+      const nearBottom = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 60;
+      if (shouldFollow || nearBottom) {
+        sc.scrollTo({ top: sc.scrollHeight, behavior: "smooth" });
+        if (shouldFollow) _lastAutoScrollTaskId = tasks.find((t) => ["pending", "running", "executing", "committing"].includes(t.status)).id;
+      } else {
+        sc.scrollTop = prevTop; // 瞬时赋值
       }
     }
   } catch (e) { document.getElementById("chat").innerHTML = '<div class="empty">任务列表加载失败：' + esc(e.message || String(e)) + '</div>'; pulseLiveBadge("err"); }
