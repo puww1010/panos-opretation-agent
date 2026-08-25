@@ -347,13 +347,12 @@
   .side-badge { margin-left:auto; background:var(--accent); color:#fff; font-size:10px; font-weight:600; padding:1px 7px; border-radius:10px; }
   body.side-collapsed .side-badge { display:none; }
   .side-foot { padding:8px; border-top:1px solid var(--border); }
-  /* 网络状态组：后端地址 + 强刷 + 测网络（始终在侧栏底部可见） */
-  .side-net { display:flex; align-items:center; gap:5px; padding:6px 8px 8px; margin-bottom:6px;
+  /* 网络状态组：后端地址 + 强刷 + 测网络（位于顶栏退出按钮左侧） */
+  .side-net { display:flex; align-items:center; gap:5px; padding:4px 8px;
     border:1px solid var(--border); border-radius:8px; background:var(--card2); }
   .side-net .sn-label { font-size:10.5px; color:var(--dim); font-family:var(--mono); flex-shrink:0; }
   .side-net .sn-url { font-size:11px; color:var(--accent); font-family:var(--mono); flex:1; min-width:0;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  body.side-collapsed .side-net .sn-label, body.side-collapsed .side-net .sn-url { display:none; }
   .side-net .sn-btn { padding:3px 5px; border:1px solid var(--border2); background:var(--card);
     border-radius:5px; cursor:pointer; color:var(--muted); display:flex; align-items:center; transition:all .15s; }
   .side-net .sn-btn:hover { border-color:var(--accent); color:var(--accent); background:var(--run-bg); }
@@ -507,15 +506,6 @@
         <svg class="ic sm" style="margin-left:auto;opacity:.55"><use href="#i-down"/></svg>
       </button>
     </nav>
-    <div class="side-foot">
-      <!-- 网络状态组：后端地址 + 强刷 + 测网络（始终可见，独立于设置下拉） -->
-      <div class="side-net" id="sideNet">
-        <span class="sn-label">后端→</span>
-        <code class="sn-url" id="backendUrl">http://localhost:8080</code>
-        <button class="sn-btn" onclick="location.reload(true)" title="强刷（Ctrl+R）"><svg class="ic sm"><use href="#i-refresh"/></svg></button>
-        <button class="sn-btn" onclick="testBackend()" title="网络健康检测"><svg class="ic sm"><use href="#i-pulse"/></svg></button>
-      </div>
-    </div>
   </aside>
 
   <!-- 主区：顶栏 + 视图 -->
@@ -524,6 +514,13 @@
       <h2 class="view-title" id="viewTitle">任务对话</h2>
       <div class="spacer"></div>
       <div class="top-ctrl">
+        <!-- 网络状态组：后端地址 + 强刷 + 测网络（放退出按钮左侧） -->
+        <span class="side-net" id="sideNet">
+          <span class="sn-label">后端→</span>
+          <code class="sn-url" id="backendUrl">http://localhost:8080</code>
+          <button class="sn-btn" onclick="location.reload(true)" title="强刷（Ctrl+R）"><svg class="ic sm"><use href="#i-refresh"/></svg></button>
+          <button class="sn-btn" onclick="testBackend()" title="网络健康检测"><svg class="ic sm"><use href="#i-pulse"/></svg></button>
+        </span>
         <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-lock"/></svg>退出</button>
       </div>
     </header>
