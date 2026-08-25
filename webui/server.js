@@ -754,7 +754,7 @@ async function llmClassify(role, system, input, timeoutMs = 20000) {
   return null;
 }
 
-async function llmResolveAction(input) {
+async function llmResolveAction(input, conversationId) {
   const list = Object.entries(ACTIONS).map(([k, v]) => `${k}: ${v.label}（如"${v.keywords[0]}"）`).join("\n");
   const text = await llmClassify("意图规划",
     `你是防火墙运维意图分类器。从动作列表选一个 key；若输入与防火墙查询无关输出 {"action":null}；若输入是配置变更请求（创建/删除/封禁/改策略）输出 {"action":"change"}；若输入是故障诊断请求（连不上/不通/访问不了/排查/诊断/健康检查/某IP什么情况/一直扫描/某个具体故障现象）输出 {"action":"diag"}；若输入是审计/配置变更查询（谁改的/审计/变更记录/谁修改/谁删了/配置变更）输出 {"action":"audit"}。
@@ -764,7 +764,7 @@ async function llmResolveAction(input) {
   - 追问"把那条删掉/禁用/封禁"等（指代上下文中的具体条目）→ {"action":"change"}（系统会结合上下文解析出具体条目）
   - 追问"那条对应的流量/策略分析"（指代上轮结果做进一步诊断）→ {"action":"diag"}
 【时间窗口 minutes】当动作是日志类查询（traffic 流量日志 / threat 威胁日志 / url 过滤日志等）且用户指定了时间范围时，提取为分钟数：如"过去4小时/4个小时/最近4小时"=240、"过去1小时/最近一小时"=60、"最近30分钟/半小时"=30、"最近10分钟"=10、"今天/最近1天"=1440、"过去2小时"=120、"过去6小时"=360。用户没提时间 → minutes=null。**如果用户提到时间但动作不是日志查询，minutes 仍为 null**。
-只输出 JSON：{"action":"<key>","minutes":<数字或null>}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, withCtx(input));
+只输出 JSON：{"action":"<key>","minutes":<数字或null>}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, withCtx(input, conversationId));
   if (!text) return null;
   const m = text.match(/"action"\s*:\s*("?)(\w+|null)\1/);
   if (!m) return null;
@@ -776,7 +776,7 @@ async function llmResolveAction(input) {
 }
 
 // 变更参数提取（模板化，LLM 只填参数）
-async function llmExtractChange(input) {
+async function llmExtractChange(input, conversationId) {
   const tmplList = Object.entries(CHANGE_TEMPLATES).map(([k, v]) => `${k}: ${v.label}（参数: ${v.params.join(", ")}）`).join("\n");
   const text = await llmClassify("变更参数提取",
     `你是防火墙配置变更解析器。从模板列表选一个 template，并提取参数（ip 为合法 IPv4；name 允许字母/数字/点/下划线/连字符 [a-zA-Z0-9_.-]，防火墙规则名如 block-1.1.1.1-20260820 是合法的，必须原样保留）。
@@ -817,7 +817,7 @@ block_ip_group（封禁 IP 组）：用于**多个 IP 封禁 + 放进地址组**
 【多轮追问】输入前可能附带【最近对话上下文】（含关键条目名）。若用户用指代词引用上下文中的条目（如"把那条/上面那条/刚才那条/它/这个策略/那个对象 删除/禁用/启用/移动/封禁"）：
   - 先看上下文的"关键条目"和"结果"，把指代解析为**上下文中真实存在的条目 name**（如 block-1.1.1.1-20260822 / Allow all），填入 params.name
   - **禁止编造**上下文里不存在的 name；无法确定时 name 留空走 keyword 预检
-若无法匹配模板输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${tmplList}`, withCtx(input));
+若无法匹配模板输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${tmplList}`, withCtx(input, conversationId));
   if (!text) return null;
   try {
     const m = text.match(/\{[\s\S]*\}/);
@@ -910,10 +910,10 @@ ${ctx}${statCtx}${tlCtx}`,
     };
   } catch { return { verdict: text.slice(0, 300), confidence: "?", recommendation: "" }; }
 }
-async function llmParseDiag(input) {
+async function llmParseDiag(input, conversationId) {
   const text = await llmClassify("诊断规划",
     `你是网络诊断解析器。判断用户症状属于：connectivity（连通性排查，涉及源/目的/IP/端口/连不上/不通/访问不了）、threat_profile（威胁源画像，涉及"什么情况/一直扫描/攻击/画像"且给定了IP）、generic（通用健康检查）。提取参数：ip（IPv4）、port（端口）、direction（inbound/outbound）、target_label（如"外网"）、minutes（时间窗口分钟数，如"最近10分钟"=10、"最近1小时"=60、"今天"=1440，无则默认60）、probe（可选：用户要求"ping/测试连通/探测"填"ping"；要求"追踪路由/traceroute"填"traceroute"；否则不填）、around_time（可选：用户指定了**现象发生的具体时间点**，如"16:59那次/昨天下午3点/刚才(默认不填)/2026/08/23 16:59"，填 "YYYY/MM/DD HH:MM" 或 "HH:MM"；用户没指定时间点则**不填**）。
-【多轮追问】输入前可能附带【最近对话上下文】。若用户引用前文（如"那条策略/刚才那个IP/上面的结果"）继续诊断，从上下文提取 ip/port 等缺失参数。无法判断输出 {"type":null}。只输出 JSON：{"type":"<t>","params":{}}。`, withCtx(input));
+【多轮追问】输入前可能附带【最近对话上下文】。若用户引用前文（如"那条策略/刚才那个IP/上面的结果"）继续诊断，从上下文提取 ip/port 等缺失参数。无法判断输出 {"type":null}。只输出 JSON：{"type":"<t>","params":{}}。`, withCtx(input, conversationId));
   if (!text) return null;
   try {
     const m = text.match(/\{[\s\S]*\}/);
@@ -924,13 +924,51 @@ async function llmParseDiag(input) {
   } catch { return null; }
 }
 
+// ── 会话归组（方案C）：显式 replyTo → 沿链并入目标会话；否则按时间窗自动归组 ──
+const SESSION_GAP_MS = 5 * 60 * 1000; // 连续任务间隔 <5 分钟 → 同一会话
+let _convSeq = 0;
+function nextConvId() {
+  // 从现有任务恢复会话计数（重启后不重复编号）
+  if (!_convSeq) {
+    for (const x of tasks) {
+      const m = x.conversationId && String(x.conversationId).match(/^conv-(\d+)$/);
+      if (m) _convSeq = Math.max(_convSeq, Number(m[1]));
+    }
+  }
+  _convSeq += 1;
+  return "conv-" + _convSeq;
+}
+// 解析新任务会话归属：显式 replyTo（追问某条）→ 归入目标任务所在会话；
+// 无 replyTo 时看最近一个任务的时间差，<SESSION_GAP_MS 归同会话，否则开新会话。
+// 老任务（无 conversationId）惰性补号；返回 {conversationId, replyTo}
+function resolveConversation(replyTo) {
+  if (replyTo) {
+    const target = tasks.find((x) => x.id === Number(replyTo));
+    if (target) {
+      if (!target.conversationId) { target.conversationId = nextConvId(); persistTasks(); } // 惰性迁移老任务（落盘防重启计数重复）
+      return { conversationId: target.conversationId, replyTo: target.id };
+    }
+  }
+  const last = tasks[tasks.length - 1];
+  if (last) {
+    const t0 = Date.parse(String(last.createdAt || "").replace(/\//g, "-"));
+    if (!isNaN(t0) && Date.now() - t0 < SESSION_GAP_MS) {
+      if (!last.conversationId) { last.conversationId = nextConvId(); persistTasks(); }
+      return { conversationId: last.conversationId, replyTo: null };
+    }
+  }
+  return { conversationId: nextConvId(), replyTo: null };
+}
+
 // ── 任务系统 ──
 function newTask(type, input, extra = {}) {
-  // 多轮追问：自动关联最近一个已完成的任务（前端据此显示"追问自 #N"；extra 可覆盖）
+  // 多轮追问：无显式会话时自动关联最近一个已完成的任务（前端据此显示"追问自 #N"；extra 可覆盖）
   let followUpOf = null;
-  for (let i = tasks.length - 1; i >= 0; i--) {
-    const x = tasks[i];
-    if (["done", "failed"].includes(x.status) && ["query", "diag", "chat", "inspect"].includes(x.type)) { followUpOf = x.id; break; }
+  if (!extra.conversationId) {
+    for (let i = tasks.length - 1; i >= 0; i--) {
+      const x = tasks[i];
+      if (["done", "failed"].includes(x.status) && ["query", "diag", "chat", "inspect"].includes(x.type)) { followUpOf = x.id; break; }
+    }
   }
   return { id: ++taskSeq, type, input, status: "pending", steps: [], result: null, error: null, createdAt: new Date().toLocaleString("zh-CN"), followUpOf, ...extra };
 }
@@ -957,7 +995,7 @@ async function runQueryTask(t, action, firewall) {
     // （例：query"哪些策略放行了 Internet 到 DMZ" → LLM 要把"Internet"映射到源 zone/DAG，
     //  "DMZ"映射到目标 zone，再从规则列表中筛出真正匹配的放行规则）
     try {
-      const summary = await summarizeQuery(t.input, action, results);
+      const summary = await summarizeQuery(t.input, action, results, t.conversationId);
       t.result = { label: ACTIONS[action].label, results, summary };
     } catch (e) {
       // LLM 失败不影响查询结果本身——只展示工具原始数据
@@ -971,7 +1009,7 @@ async function runQueryTask(t, action, firewall) {
 }
 
 // 查询任务的语义匹配分析（轻量 LLM 调用，30s 超时）
-async function summarizeQuery(input, action, results) {
+async function summarizeQuery(input, action, results, conversationId) {
   // 抽取最核心的语义：每个工具结果的"条目摘要"——关键字段放最前，避免长 JSON 截断丢失 action/@_name
   const ctx = results.map((r) => {
     if (r.error) return `[${r.tool}] ERROR: ${r.error}`;
@@ -1017,7 +1055,7 @@ async function summarizeQuery(input, action, results) {
 6. **多轮追问**：若用户问题引用了前文（如"那条/上面那条/它"），优先结合【最近对话上下文】中的条目名和结果回答，不要重复全量查询。
 
 输出 1-3 段简洁中文（≤350 字，比一般查询多 100 字用于展示元数据），不要堆 JSON。`,
-    `用户问句：${input}${timeHint}\n\n工具结果：\n${ctx}${buildConversationContext() ? "\n\n" + buildConversationContext() : ""}`,
+    `用户问句：${input}${timeHint}\n\n工具结果：\n${ctx}${buildConversationContext(CTX_ROUNDS, conversationId) ? "\n\n" + buildConversationContext(CTX_ROUNDS, conversationId) : ""}`,
     30000);
   return text || null;
 }
@@ -1434,8 +1472,8 @@ async function runChangeCommit(t, firewall) {
 
 // ── 意图 → 任务路由 ──
 
-// ── 多轮追问上下文（方案A）：从 tasks 取最近 N 轮已结束任务，组装成上下文文本 ──
-// 所有通道（Web/飞书）的任务都进同一个 tasks 数组，自动按时间窗口串成会话，无需前端传 session
+// ── 多轮追问上下文（方案C）：优先注入同一 conversationId 会话内的已完成任务 ──
+// 显式 replyTo/会话归组后，只取同会话历史，避免无关任务的上下文污染 LLM 判断
 const CTX_ROUNDS = 5;   // 上下文轮数（超限自动丢最旧，控制 token）
 const CTX_SUMMARY_LEN = 300; // 每轮结果摘要截断长度
 function extractKeyItems(t) {
@@ -1454,8 +1492,10 @@ function extractKeyItems(t) {
   (r.results || []).forEach((res) => walk(res.data));
   return [...names].slice(0, 8).join(", ");
 }
-function buildConversationContext(limit = CTX_ROUNDS) {
-  const recent = tasks
+function buildConversationContext(limit = CTX_ROUNDS, conversationId) {
+  // 指定会话 → 只取同会话内的任务；未指定（老调用/无会话）→ 退化为全局最近 N 个（兼容）
+  const pool = conversationId ? tasks.filter((x) => x.conversationId === conversationId) : tasks;
+  const recent = pool
     .filter((x) => ["done", "failed"].includes(x.status) && ["query", "diag", "chat", "inspect"].includes(x.type))
     .slice(-limit);
   if (!recent.length) return "";
@@ -1467,28 +1507,30 @@ function buildConversationContext(limit = CTX_ROUNDS) {
   }).join("\n\n");
 }
 // 在用户问题前拼接上下文（无上下文时原样返回）
-function withCtx(userInput) {
-  const ctx = buildConversationContext();
+function withCtx(userInput, conversationId) {
+  const ctx = buildConversationContext(CTX_ROUNDS, conversationId);
   return ctx ? ctx + "\n\n【用户当前问题】" + userInput : userInput;
 }
 
-async function createTaskFromInput(input, firewall, source) {
+async function createTaskFromInput(input, firewall, source, opts = {}) {
   // 重复任务去重：先扫描 active 任务，发现与 input normalize 后完全相同则取消旧任务
   const dup = dedupeActiveTask(input);
+  // 会话归组（方案C）：显式 replyTo（前端"↩ 追问这条"）→ 并入目标会话；否则按时间窗归组
+  const conv = resolveConversation(opts.replyTo);
   let action = null, fromLLM = false, minutes = null;
   for (const [k, v] of Object.entries(ACTIONS)) { if (k === input || v.label === input) action = k; }
   if (!action) {
-    const resolved = await llmResolveAction(input);
+    const resolved = await llmResolveAction(input, conv.conversationId);
     if (resolved) { action = resolved.action; minutes = resolved.minutes; if (action) fromLLM = true; }
   }
   if (action === "change") {
-    const c = await llmExtractChange(input);
+    const c = await llmExtractChange(input, conv.conversationId);
     if (!c) return { error: "无法解析变更意图（支持：创建/删除地址对象、封禁/放行 IP、移动/删除/禁用/启用安全策略）" };
     const tmpl = CHANGE_TEMPLATES[c.template];
     // 规则类模板（delete/disable/enable）若只有模糊 keyword，先预检转 awaiting_selection
     const RULE_TMPL = ["delete_security_rule", "set_security_rule_disabled", "set_security_rule_enabled"];
     const needPrecheck = RULE_TMPL.includes(c.template) && !(c.params?.name && /^[a-zA-Z0-9_.\-]+$/.test(c.params.name));
-    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, source, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
+    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
     t.plan = tmpl.plan(c.params || {});
     if (needPrecheck) {
       // 同步做一次预检（list candidates）→ 任务状态已是 awaiting_selection，前端直接展示候选按钮
@@ -1505,7 +1547,7 @@ async function createTaskFromInput(input, firewall, source) {
   }
   if (action === "audit") {
     const a = await llmParseAudit(input);
-    const t = newTask("audit", input, { firewall, source, audit: a });
+    const t = newTask("audit", input, { firewall, source, audit: a, conversationId: conv.conversationId, replyTo: conv.replyTo });
     t.llm = currentLLM;
     t.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
     t.steps.push(t.decision);
@@ -1514,11 +1556,11 @@ async function createTaskFromInput(input, firewall, source) {
     return { taskId: t.id, status: t.status, type: "audit" };
   }
   if (action === "diag") {
-    const d = await llmParseDiag(input);
+    const d = await llmParseDiag(input, conv.conversationId);
     // 诊断规划判定为非诊断请求（type:null，如"画个拓扑图"）→ 降级自由问答，
     // 不再生硬报"无法解析诊断意图"——让 LLM 分析推理回答（16:48 飞书案例根因）
-    if (!d || !d.type) return await createFreeAnswer(input, firewall);
-    const t = newTask("diag", input, { firewall, source, diag: d });
+    if (!d || !d.type) return await createFreeAnswer(input, firewall, source, conv);
+    const t = newTask("diag", input, { firewall, source, diag: d, conversationId: conv.conversationId, replyTo: conv.replyTo });
     t.llm = currentLLM;
     t.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
     t.steps.push(t.decision);
@@ -1527,13 +1569,13 @@ async function createTaskFromInput(input, firewall, source) {
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
-    const t = newTask("inspect", input, { firewall, source });
+    const t = newTask("inspect", input, { firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo });
     tasks.push(t); persistTasks();
     runInspectTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
     return { taskId: t.id, status: t.status, type: "inspect" };
   }
   if (action && ACTIONS[action]) {
-    const t = newTask("query", input, { action, firewall, source, minutes });
+    const t = newTask("query", input, { action, firewall, source, minutes, conversationId: conv.conversationId, replyTo: conv.replyTo });
     if (fromLLM) t.llm = currentLLM;
     t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
     t.steps.push(t.decision);
@@ -1542,11 +1584,11 @@ async function createTaskFromInput(input, firewall, source) {
     return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
   }
   // 兜底：意图不匹配任何 action → 自由问答（LLM 分析/推理/思考后回答，不直接拒绝）
-  return await createFreeAnswer(input, firewall, source);
+  return await createFreeAnswer(input, firewall, source, conv);
 }
 
 // 自由问答兜底：用户问题未匹配现有 tools/action 时，让 LLM 结合设备基础信息做分析推理回答
-async function createFreeAnswer(input, firewall, source) {
+async function createFreeAnswer(input, firewall, source, opts = {}) {
   let fwCtx = "";
   try {
     const fw = await callTool("get_firewall_info", {}, firewall).catch(() => null);
@@ -1564,9 +1606,9 @@ async function createFreeAnswer(input, firewall, source) {
 - 如果问题其实是标准动作能解决的（例如用户在绕弯子问设备状态），先指出"这可以用系统 XX 功能直接查看"，再补充答案。
 - 200-400 字，条理清晰，用 markdown 列表。
 【多轮追问】输入前可能附带【最近对话上下文】（含用户之前的问句、结果、关键条目名）。若当前问题引用前文（"那条/上面那条/刚才/它/第二条/这个结果"），**必须基于上下文中的真实条目和数据回答**（如引用上轮结果里的具体策略名/设备/数值），不要泛泛而谈，不要编造上下文里没有的条目。`,
-    `${fwCtx ? fwCtx + "\n" : ""}用户问题：${withCtx(input)}`,
+    `${fwCtx ? fwCtx + "\n" : ""}用户问题：${withCtx(input, opts.conversationId)}`,
     60000);
-  const t = newTask("chat", input, { firewall, source });
+  const t = newTask("chat", input, { firewall, source, conversationId: opts.conversationId, replyTo: opts.replyTo });
   t.llm = currentLLM;
   if (source) t.source = source;  // 标记任务来源（'feishu'/'web'/'bridge'），用于 WebUI 区分展示
   t.decision = `LLM 兜底 → 自由问答（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
@@ -2199,11 +2241,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/task") {
-      const { query, firewall, source } = JSON.parse(await body());
+      const { query, firewall, source, replyTo } = JSON.parse(await body());
       if (!client) await connect();
       // 区分任务来源：'web'（Web 控制台默认）/ 'feishu'（飞书 bridge 提交）
       // 飞书移动端发来的任务 WebUI 不显示长答案，Web 端正常显示
-      send(200, await createTaskFromInput(query, firewall, source || "web"));
+      // replyTo：前端"↩ 追问这条"时携带被追问的任务 id，后端并入该任务所在会话
+      send(200, await createTaskFromInput(query, firewall, source || "web", { replyTo }));
       return;
     }
     if (req.method === "POST" && req.url.startsWith("/api/task/")) {

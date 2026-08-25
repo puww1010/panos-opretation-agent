@@ -178,7 +178,65 @@
   .modal-box h2 { font-size:16px; margin-bottom:14px; }
   .modal-box code { background:var(--panel-bg); padding:2px 7px; border-radius:5px; font-size:12px; color:var(--accent); }
   .foot { text-align:center; color:var(--dim); font-size:11px; padding:20px 0 10px; letter-spacing:1px; }
-  @media (max-width:720px) { .topbar{padding:10px 14px} .wrap{padding:14px} .cmd-row{flex-direction:column} .cmd .btn{padding:12px} }
+  /* ══ 气泡式对话布局（方案C）══ */
+  .app { display:flex; flex-direction:column; height:100vh; }
+  .chat-scroll { flex:1; overflow-y:auto; padding:14px 20px 6px; scroll-behavior:smooth; }
+  .chat-inner { max-width:900px; margin:0 auto; }
+  /* 顶部 KPI 紧凑行 */
+  .kpis-compact { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-bottom:10px; }
+  .kpis-compact .kpi { border-radius:10px; padding:8px 12px; }
+  .kpis-compact .kpi .label { font-size:10px; }
+  .kpis-compact .kpi .value { font-size:16px; margin-top:2px; }
+  .kpis-compact .kpi .extra { font-size:10px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .kpis-compact .kpi .bar { display:none; }
+  /* 飞书集成面板（折叠式） */
+  .fs-fold { border:1px solid var(--border); border-radius:12px; background:#fff; margin-bottom:10px; overflow:hidden; box-shadow:0 1px 3px rgba(15,23,42,.05); }
+  .fs-fold-head { display:flex; align-items:center; gap:8px; padding:8px 14px; cursor:pointer; background:var(--card2); font-size:13px; font-weight:600; }
+  .fs-fold-body { display:none; padding:10px 14px; }
+  .fs-fold.open .fs-fold-body { display:block; }
+  .fs-fold-head .pill { margin-left:auto; }
+  /* 会话分隔线 */
+  .conv-divider { display:flex; align-items:center; gap:10px; margin:20px 0 14px; color:var(--dim); font-size:11px; letter-spacing:.5px; user-select:none; }
+  .conv-divider::before, .conv-divider::after { content:""; flex:1; height:1px; background:var(--border); }
+  .conv-divider b { color:var(--muted); font-weight:600; }
+  /* 消息行 */
+  .msg-row { display:flex; margin:12px 0; }
+  .msg-row.user { justify-content:flex-end; }
+  .msg-row.ai { justify-content:flex-start; }
+  .msg-avatar { width:32px; height:32px; border-radius:50%; background:linear-gradient(135deg,var(--accent),#0ea5e9); color:#fff; display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; margin-right:8px; box-shadow:0 2px 8px rgba(22,104,220,.25); }
+  .msg-bubble { max-width:80%; border-radius:14px; padding:10px 14px; font-size:13.5px; line-height:1.65; box-shadow:0 1px 3px rgba(15,23,42,.06); word-break:break-word; position:relative; }
+  .msg-row.user .msg-bubble { background:linear-gradient(135deg,#1668dc,#3b82f6); color:#fff; border-bottom-right-radius:4px; }
+  .msg-row.ai .msg-bubble { background:#fff; border:1px solid var(--border); border-bottom-left-radius:4px; min-width:120px; }
+  .msg-input { white-space:pre-wrap; }
+  .msg-meta { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:10.5px; flex-wrap:wrap; }
+  .msg-row.user .msg-meta { justify-content:flex-end; color:#bfdbfe; }
+  .msg-row.ai .msg-meta { color:var(--dim); }
+  .msg-bubble .st { font-size:10.5px; padding:1px 8px; }
+  /* AI 气泡操作条（悬停显示） */
+  .msg-actions { display:flex; gap:6px; margin-top:8px; padding-top:7px; border-top:1px dashed var(--border); opacity:0; transition:opacity .15s; flex-wrap:wrap; }
+  .msg-row.ai:hover .msg-actions { opacity:1; }
+  .msg-actions button { font-size:11px; padding:3px 10px; border-radius:6px; border:1px solid var(--border2); background:#fff; color:var(--muted); cursor:pointer; transition:all .15s; }
+  .msg-actions button:hover { border-color:var(--accent); color:var(--accent); background:rgba(22,104,220,.05); }
+  /* 任务内部内容（复用原样式，限制在气泡内） */
+  .msg-bubble .task-body { padding:0; }
+  .msg-bubble table { font-size:12px; }
+  /* 会话折叠条 */
+  .conv-collapse { display:flex; align-items:center; justify-content:center; gap:8px; margin:14px 0; color:var(--muted); font-size:12px; cursor:pointer; padding:8px; border:1px dashed var(--border2); border-radius:10px; background:#fafbfc; user-select:none; transition:all .15s; }
+  .conv-collapse:hover { border-color:var(--accent); color:var(--accent); }
+  /* 底部输入栏 */
+  .cmdbar { background:rgba(255,255,255,.96); backdrop-filter:blur(10px); border-top:1px solid var(--border); padding:10px 20px 14px; box-shadow:0 -6px 20px rgba(15,23,42,.04); }
+  .cmdbar-inner { max-width:900px; margin:0 auto; }
+  .chips-bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .chips-bar .chip { font-size:12px; padding:4px 12px; }
+  .input-row { display:flex; gap:10px; align-items:flex-end; }
+  .input-row textarea { flex:1; border:1px solid var(--border2); border-radius:12px; padding:11px 14px; font:inherit; font-size:14.5px; resize:none; min-height:44px; max-height:160px; outline:none; line-height:1.5; background:var(--panel-bg); transition:border-color .15s; }
+  .input-row textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(22,104,220,.12); }
+  .input-row .select { border-radius:10px; padding:10px 12px; font-size:13px; }
+  .input-row .btn { border-radius:12px; padding:0 22px; height:44px; font-size:14px; }
+  /* 回复目标 chip（@#N 回显） */
+  .reply-chip { display:inline-flex; align-items:center; gap:6px; background:#fef3c7; border:1px solid #fcd34d; color:#92400e; font-size:12px; font-weight:600; padding:3px 10px; border-radius:12px; margin-bottom:6px; }
+  .reply-chip button { border:none; background:transparent; color:#92400e; cursor:pointer; font-size:12px; padding:0 2px; }
+  @media (max-width:720px) { .topbar{padding:10px 14px} .wrap{padding:14px} .cmd-row{flex-direction:column} .cmd .btn{padding:12px} .msg-bubble{max-width:92%} .chat-scroll{padding:10px 10px 4px} .cmdbar{padding:8px 10px 12px} .kpis-compact{grid-template-columns:repeat(2,1fr)} }
 </style>
 </head>
 <body>
@@ -235,72 +293,62 @@
   </div>
 </div>
 
-<div class="wrap">
+<div class="app">
 
-  <!-- KPI 概览卡（loadOverview 用 getElementById 找这些 ID） -->
-  <div class="kpis">
-    <div class="kpi" id="kpiDevice"><div class="label">🖥️ 设备</div><div class="value">--</div><div class="extra">--</div></div>
-    <div class="kpi" id="kpiHa"><div class="label">🔁 HA 高可用</div><div class="value">--</div><div class="extra">PA 高可用对</div></div>
-    <div class="kpi" id="kpiSession"><div class="label">🔌 活跃会话</div><div class="value">--</div><div class="bar"><i></i></div><div class="extra">--</div></div>
-    <div class="kpi" id="kpiResource"><div class="label">📊 负载 / 内存</div><div class="value">--</div><div class="extra">--</div></div>
-    <div class="kpi" id="kpiLicense"><div class="label">📜 许可证</div><div class="value">--</div><div class="extra">--</div></div>
-  </div>
+  <!-- 气泡对话流：KPI 紧凑行 + 折叠式飞书面板 + 会话气泡 -->
+  <div class="chat-scroll" id="chatScroll">
+    <div class="chat-inner">
 
-  <!-- 飞书集成面板 -->
-  <div class="panel">
-    <div class="panel-head">
-      <h2>💬 飞书集成</h2>
-      <span class="pill"><span class="dot green" id="fsDot"></span><span id="fsTxt">飞书检测中</span></span>
-      <span class="meta" id="feishuStatus">检测中...</span>
-    </div>
-    <div class="panel-body">
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <input class="input" id="feishuMsg" placeholder="输入要发送到飞书群的消息...（回车发送）" style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();feishuSend();}">
-        <button class="btn primary" onclick="feishuSend()">发送</button>
-        <button class="btn" onclick="feishuPushReport()">推送最新巡检报告</button>
+      <!-- KPI 概览卡（loadOverview 用 getElementById 找这些 ID；紧凑样式） -->
+      <div class="kpis kpis-compact">
+        <div class="kpi" id="kpiDevice"><div class="label">🖥️ 设备</div><div class="value">--</div><div class="extra">--</div></div>
+        <div class="kpi" id="kpiHa"><div class="label">🔁 HA 高可用</div><div class="value">--</div><div class="extra">PA 高可用对</div></div>
+        <div class="kpi" id="kpiSession"><div class="label">🔌 活跃会话</div><div class="value">--</div><div class="bar"><i></i></div><div class="extra">--</div></div>
+        <div class="kpi" id="kpiResource"><div class="label">📊 负载 / 内存</div><div class="value">--</div><div class="extra">--</div></div>
+        <div class="kpi" id="kpiLicense"><div class="label">📜 许可证</div><div class="value">--</div><div class="extra">--</div></div>
       </div>
-      <div id="feishuResult" class="empty"></div>
-    </div>
-  </div>
 
-  <!-- 自然语言命令框 -->
-  <div class="panel">
-    <div class="panel-head">
-      <h2>⚡ 任务命令中心 <span style="display:inline-flex;align-items:center;gap:4px;margin-left:10px;font-size:11.5px;font-weight:500;color:var(--muted);background:rgba(22,104,220,.06);padding:3px 10px;border-radius:12px;border:1px solid rgba(22,104,220,.22);vertical-align:middle" title="支持自然语言描述需求，例如'封禁 1.2.3.4'或'查最近10分钟被阻止的连接'"><span style="font-size:12px">💡</span>用自然语言提示词来发起命令</span></h2>
-      <!-- 当前 LLM 实时指示器：与下拉保持同步，hover 提示说明 -->
-      <span id="currentLLMChip" title="当前 LLM（新提交的任务会由它处理）" style="display:inline-flex;align-items:center;gap:4px;padding:3px 11px;border-radius:14px;font-size:11.5px;font-weight:600;border:1px solid var(--border2);background:#fff;color:var(--muted);cursor:pointer" onclick="showLLMConfig()">当前 ➜ 🟦 — </span>
-    </div>
-    <div class="panel-body">
-      <div class="cmd">
-        <div class="cmd-box">
-          <textarea id="q" rows="3" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 创建地址对象 x=10.0.0.0/24 / 封禁 1.2.3.4 …（Shift+Enter 换行）"
-            oninput="autoGrow(this)"
-            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submit()}"></textarea>
-          <div class="cmd-box-foot">
-            <select class="select" id="fwSel" style="display:none"></select>
-            <select class="select" id="llmSel">
-              <option value="deepseek">DeepSeek（默认）</option>
-            </select>
-            <button class="btn primary" id="submitBtn" onclick="submit()" title="执行（⌘/Ctrl+Enter）">📤 执行</button>
-          </div>
+      <!-- 飞书集成面板（默认折叠，点击标题展开） -->
+      <div class="fs-fold" id="fsFold">
+        <div class="fs-fold-head" onclick="toggleFsFold()">
+          <span>💬 飞书集成</span>
+          <span class="pill"><span class="dot green" id="fsDot"></span><span id="fsTxt">飞书检测中</span></span>
+          <span style="font-size:11px;color:var(--dim)">▾ 展开</span>
         </div>
-        <div class="chips" id="btns"></div>
-        <div class="trouble" id="troublePanel"></div>
+        <div class="fs-fold-body">
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <input class="input" id="feishuMsg" placeholder="输入要发送到飞书群的消息...（回车发送）" style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();feishuSend();}">
+            <button class="btn primary" onclick="feishuSend()">发送</button>
+            <button class="btn" onclick="feishuPushReport()">推送最新巡检报告</button>
+          </div>
+          <div id="feishuResult" class="empty"></div>
+        </div>
       </div>
-      <div id="out"></div>
+
+      <!-- 气泡流主体（pollTasks → renderChat 填充） -->
+      <div id="chat"><div class="empty" style="text-align:center;padding:30px 0">⏳ 加载任务…</div></div>
+
+      <div class="foot">Palo Alto Networks · PAN-OS 安全运维监控 · 数字员工平台</div>
     </div>
   </div>
 
-  <!-- 任务中心 -->
-  <div class="panel">
-    <div class="panel-head">
-      <h2>🎯 任务实时分析和结果展示 <span style="display:inline-flex;align-items:center;gap:5px;margin-left:10px;font-size:11.5px;font-weight:600;color:var(--accent);background:rgba(22,104,220,.1);padding:3px 10px;border-radius:12px;border:1px solid rgba(22,104,220,.3);vertical-align:middle"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:liveBlink 1.4s infinite"></span>⏱ 实时</span></h2>
-      <button class="btn" onclick="cleanAndRefresh()" style="padding:5px 12px">🧹 清除已完成并刷新</button>
+  <!-- 底部固定输入栏：快捷 chips + 回复目标 + 输入框 + LLM 选择 + 发送 -->
+  <div class="cmdbar">
+    <div class="cmdbar-inner">
+      <div class="chips-bar" id="btns"></div>
+      <div id="replyChipWrap"></div>
+      <div class="input-row">
+        <textarea id="q" rows="1" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 封禁 1.2.3.4 …（Shift+Enter 换行，Enter 发送）"
+          oninput="autoGrow(this)"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();submit()}"></textarea>
+        <select class="select" id="llmSel" title="当前 LLM（新提交的任务会由它处理）">
+          <option value="keyword">关键词模式（免费）</option>
+        </select>
+        <button class="btn primary" id="submitBtn" onclick="submit()" title="发送（⌘/Ctrl+Enter）">📤 发送</button>
+      </div>
+      <div class="trouble" id="troublePanel"></div>
     </div>
-    <div class="panel-body" id="tasks"><div class="empty">暂无任务</div></div>
   </div>
-
-  <div class="foot">Palo Alto Networks · PAN-OS 安全运维监控 · 数字员工平台</div>
 </div>
 
 <script>
@@ -593,6 +641,7 @@ function toggleTrouble() {
 
 function renderFirewallSelect(fws) {
   const sel = document.getElementById("fwSel");
+  if (!sel) return; // 单防火墙部署时无此元素（气泡版输入栏未放防火墙选择）
   sel.innerHTML = "";
   (fws.firewalls || []).forEach(f => {
     const o = document.createElement("option");
@@ -641,7 +690,8 @@ function updateCurrentLLMChip(cur) {
 
 function currentFirewall() {
   const s = document.getElementById("fwSel");
-  return s.style.display === "none" ? null : s.value;
+  if (!s || s.style.display === "none") return null;
+  return s.value;
 }
 
 /* ── KPI 概览 ── */
@@ -673,32 +723,61 @@ async function loadOverview() {
   setTimeout(loadOverview, 5000);
 }
 
+// ── 气泡式对话提交（方案C）：支持 @#N 前缀追问指定任务 ──
+let _replyToTaskId = null; // 当前回复目标任务 id（"↩ 追问这条"设置）
+function replyToTask(id) {
+  _replyToTaskId = id;
+  const q = document.getElementById("q");
+  q.value = "@#" + id + " ";
+  q.focus();
+  autoGrow(q);
+  renderReplyChip();
+}
+function renderReplyChip() {
+  const wrap = document.getElementById("replyChipWrap");
+  if (!wrap) return;
+  wrap.innerHTML = _replyToTaskId
+    ? '<span class="reply-chip">↩ 回复任务 #' + _replyToTaskId + ' <button onclick="clearReplyChip()" title="取消回复">✕</button></span>'
+    : "";
+}
+function clearReplyChip() {
+  _replyToTaskId = null;
+  const q = document.getElementById("q");
+  if (q) { q.value = q.value.replace(/^@#\d+\s*/, ""); autoGrow(q); }
+  renderReplyChip();
+}
 async function submit() {
-  const q = document.getElementById("q").value.trim();
+  const qEl = document.getElementById("q");
+  let raw = qEl.value;
+  // 解析 @#N 前缀 → replyTo（后端并入该任务所在会话；与回复 chip 双向同步）
+  let replyTo = _replyToTaskId;
+  const m = raw.match(/^@#(\d+)\s*/);
+  if (m) { replyTo = Number(m[1]); raw = raw.replace(m[0], ""); }
+  const q = raw.trim();
   if (!q) return;
-  const out = document.getElementById("out");
   const btn = document.getElementById("submitBtn");
   btn.disabled = true;
   try {
+    const body = { query: q, firewall: currentFirewall() };
+    if (replyTo) body.replyTo = replyTo;
     const r = await fetch("/api/task", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: q, firewall: currentFirewall() })
+      body: JSON.stringify(body)
     });
     const d = await r.json();
     if (d.error) {
-      out.innerHTML = '<div class="panel"><div class="panel-body"><div class="err">' + esc(d.error) + "</div></div></div>";
-      setTimeout(() => { if (out.innerHTML.includes("err")) out.innerHTML = ""; }, 3000);
-    } else if (d.status === "awaiting_approval") {
-      out.innerHTML = '<div class="panel" id="outAwaitingPanel" data-task-id="' + d.taskId + '"><div class="panel-body"><div class="plan">⏳ 等待审批：' + esc(d.plan) + '</div><div style="display:flex;align-items:center;gap:5px;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(124,108,168,.25);font-size:11.5px;color:#7a6db8;line-height:1.5;letter-spacing:.2px"><span style="font-size:12px">💡</span>请在<strong style="color:#5b4dbd;font-weight:600">任务实时分析和结果展示</strong>中点击「批准」或「拒绝」<span style="margin-left:auto"><button class="btn" onclick="closeOutAwaitingPanel()" style="padding:2px 8px;font-size:11px;border-radius:6px">✕ 关闭</button></span></div></div></div>';
-      _outAwaitingTaskId = d.taskId; // 记录任务 id，pollTasks 检测到状态变化自动清除
-    } else {
-      out.innerHTML = '<div class="panel"><div class="panel-body"><div class="empty">任务 #' + d.taskId + " 已提交，查看任务中心 ↓</div></div></div>";
-      setTimeout(() => { if (out.innerHTML.includes("已提交")) out.innerHTML = ""; }, 1500);
+      pulseLiveBadge("err");
+      const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "❌ " + (d.error || "提交失败");
+      return;
     }
+    // 成功：清空输入与回复目标，立即刷新气泡流
+    qEl.value = ""; autoGrow(qEl);
+    clearReplyChip();
     pollTasks();
   } catch (e) {
-    out.innerHTML = '<div class="panel"><div class="panel-body"><div class="err">' + esc(e.message || e) + "</div></div></div>";
+    pulseLiveBadge("err");
+    const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "❌ 提交失败: " + (e.message || e);
   } finally {
     btn.disabled = false;
   }
@@ -831,70 +910,141 @@ async function pollTasks() {
   try {
     const d = await fjs("/api/tasks", { timeout: 5000 });
     const tasks = d.tasks || [];
-    const box = document.getElementById("tasks");
-    if (!tasks.length) { box.innerHTML = '<div class="empty">暂无任务 · 从上方命令中心下达第一个任务</div>'; }
-    else { box.innerHTML = tasks.slice(0, 20).map(renderTask).join(""); }
+    _taskCache = tasks; // 供 copyTaskText 读取结果
+    const chat = document.getElementById("chat");
+    if (!tasks.length) { chat.innerHTML = '<div class="empty" style="text-align:center;padding:26px 0">暂无任务 · 从下方输入栏发起第一个任务</div>'; }
+    else { chat.innerHTML = renderChat(tasks); }
     // 重建 DOM 后恢复多选 checkbox 状态
     tasks.filter(t => t.status === "awaiting_selection" && _selState[t.id]).forEach(t => _restoreSel(t.id));
     hadActive = tasks.some((t) => ["pending", "running", "executing", "committing"].includes(t.status));
-    // 等待审批提示框：关联任务进入非 awaiting_approval 状态时自动清除（修复"任务完成但提示框还挂着"）
-    if (_outAwaitingTaskId != null) {
-      const ref = tasks.find((x) => x.id === _outAwaitingTaskId);
-      if (!ref || ref.status !== "awaiting_approval") {
-        closeOutAwaitingPanel();
-      }
-    }
     // 实时任务分解：只在"新 live 任务出现"时自动滚动一次（避免每 3 秒强制拉回页面，
-    // 导致用户无法向上滚动到顶部——旧实现只要有任何 live 任务就持续 scrollIntoView）
+    // 导致用户无法向上滚动查看历史——旧实现只要有任何 live 任务就持续 scrollIntoView）
     if (hadActive) {
       const cur = tasks.find((t) => ["pending", "running", "executing", "committing"].includes(t.status));
-      if (cur) {
+      if (cur && _lastAutoScrollTaskId !== cur.id) {
         // 用户手动滚动过（wheel/touch），5 秒内不再自动滚，尊重用户位置
         const now = Date.now();
-        if (now - (_lastUserScrollAt || 0) < 5000) {
-          // 用户正在浏览，跳过自动滚动
-        } else if (_lastAutoScrollTaskId !== cur.id) {
-          const el = document.getElementById("tl-" + cur.id);
-          if (el && el.scrollIntoView) {
-            el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-            _lastAutoScrollTaskId = cur.id; // 只对"新出现的 live 任务"滚一次，不重复打扰
-          }
+        if (now - (_lastUserScrollAt || 0) >= 5000) {
+          const sc = document.getElementById("chatScroll");
+          if (sc) { sc.scrollTo({ top: sc.scrollHeight, behavior: "smooth" }); _lastAutoScrollTaskId = cur.id; }
         }
       }
     }
-  } catch (e) { document.getElementById("tasks").innerHTML = '<div class="empty">任务列表加载失败：' + esc(e.message || String(e)) + '</div>'; pulseLiveBadge("err"); }
+  } catch (e) { document.getElementById("chat").innerHTML = '<div class="empty">任务列表加载失败：' + esc(e.message || String(e)) + '</div>'; pulseLiveBadge("err"); }
   // 后台无条件持续轮询——修复"全部任务终态后页面僵死"问题。节奏：活跃 3s，idle 5s。
   setTimeout(pollTasks, hadActive ? 3000 : 5000);
 }
 
-// 清除终态任务（done/cancelled/failed），只保留活跃与待审批任务，然后刷新列表
+// ── 气泡流渲染（方案C）：任务按 conversationId 分组，组间分隔线；组内按 id 顺序成对展示 ──
+// 用户消息 → 右对齐蓝色气泡；AI 结果/操作/步骤 → 左对齐白色气泡
+const LLM_NAME = { deepseek: "DeepSeek", qwen: "通义千问", kimi: "Kimi", keyword: "关键词" };
+function renderChat(tasks) {
+  // 分组：有 conversationId 按会话；无 id 的老任务（旧数据）归入 "legacy" 一组
+  const groups = new Map();
+  for (const t of tasks) {
+    const key = t.conversationId || "legacy";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  // 组按最新任务 id 倒序（新会话在上）；组内保持 tasks 原序（旧→新）
+  const arr = [...groups.entries()];
+  arr.sort((a, b) => b[1][b[1].length - 1].id - a[1][a[1].length - 1].id);
+  let html = "";
+  for (const [convId, list] of arr) {
+    const label = convId === "legacy" ? "📁 早期任务（未分组历史）" : "💬 会话 · " + fmtConvTime(list[0].createdAt);
+    html += '<div class="conv-divider"><b>' + label + '</b><span>' + list.length + ' 条</span></div>';
+    // 组内折叠：>12 条时中间折叠（localStorage 记忆展开状态），避免超长会话撑爆页面
+    if (list.length > 12 && !convExpanded(convId)) {
+      html += list.slice(0, 3).map(renderTaskMessages).join("");
+      html += '<div class="conv-collapse" onclick="expandConv(\'' + convId + '\')">▾ 该话题中间还有 ' + (list.length - 6) + ' 条消息 · 点击展开全部</div>';
+      html += list.slice(-3).map(renderTaskMessages).join("");
+    } else {
+      html += list.map(renderTaskMessages).join("");
+    }
+  }
+  if (!html) html = '<div class="empty" style="text-align:center;padding:26px 0">暂无任务 · 从下方输入栏发起第一个任务</div>';
+  return html;
+}
+function convExpanded(id) {
+  try { return localStorage.getItem("convOpen_" + id) === "1"; } catch (e) { return false; }
+}
+function expandConv(id) {
+  try { localStorage.setItem("convOpen_" + id, "1"); } catch (e) {}
+  pollTasks();
+}
+function fmtConvTime(createdAt) {
+  const d = new Date(String(createdAt || "").replace(/\//g, "-"));
+  if (isNaN(d)) return "";
+  const hm = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  return d.toDateString() === new Date().toDateString() ? "今天 " + hm : (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
+}
+
+// 复制任务结果文本到剪贴板（失败静默降级）
+async function copyTaskText(id) {
+  const t = _taskCache.find((x) => x.id === id);
+  if (!t) return;
+  let txt = t.input + "\n";
+  if (t.result) {
+    if (t.result.answer) txt += t.result.answer;
+    if (t.result.summary) txt += "【分析】" + t.result.summary;
+    if (t.result.verdict) txt += "【根因】" + t.result.verdict + "\n【建议】" + (t.result.recommendation || "");
+  }
+  try { await navigator.clipboard.writeText(txt); } catch (e) {
+    const ta = document.createElement("textarea"); ta.value = txt; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e2) {}
+    ta.remove();
+  }
+  const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "✅ 已复制任务 #" + id + " 结果";
+  pulseLiveBadge("ok");
+}
+let _taskCache = []; // copyTaskText 用：记录最近一次 pollTasks 的任务数组
+
+// 清除终态任务（done/cancelled/failed），只保留活跃与待审批任务，然后刷新气泡流
 async function cleanAndRefresh() {
   try {
     const r = await fetch("/api/tasks/clean", { method: "POST" });
     const d = await r.json();
     if (d.removed > 0) {
-      const box = document.getElementById("tasks");
-      box.innerHTML = '<div class="empty" style="color:var(--green)">🧹 已清除 ' + d.removed + ' 条已完成/已取消任务，保留 ' + d.remain + ' 条活跃任务</div>';
-      setTimeout(pollTasks, 600);
-    } else {
-      pollTasks();
+      const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "🧹 已清除 " + d.removed + " 条终态任务，保留 " + d.remain + " 条活跃任务";
+      pulseLiveBadge("ok");
     }
+    pollTasks();
   } catch (e) {
     pollTasks();
-    document.getElementById("tasks").innerHTML = '<div class="empty">清除失败：' + esc(e.message || String(e)) + '</div>';
+    const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "清除失败：" + (e.message || String(e));
+    pulseLiveBadge("err");
   }
 }
 
-function renderTask(t) {
-  // LLM 标签：显示该任务被处理时使用的 LLM（≠当前下拉选中，那是"下一次任务"用的）
+// ── 气泡消息渲染（方案C）：一个任务 = 用户气泡（右蓝）+ AI 气泡（左白，含结果/操作/步骤）──
+function renderTaskMessages(t) {
+  const LIVE = ["pending", "running", "executing", "committing"];
+  const isLive = LIVE.includes(t.status);
+  const stHtml = '<span class="st ' + t.status + '">' + statusText(t.status) + '</span>' + (isLive ? '<span style="color:#dc2626;font-size:10px;font-weight:700;animation:liveBlink 1.4s infinite"> ● LIVE</span>' : "");
+  // 用户气泡（右对齐蓝）：输入 + 状态徽章 + 时间
+  let h = '<div class="msg-row user"><div class="msg-bubble">' +
+    '<div class="msg-input">' + esc(t.input) + '</div>' +
+    '<div class="msg-meta">' + stHtml + '<span>' + esc(t.createdAt || "") + '</span></div>' +
+    '</div></div>';
+  // AI 气泡（左对齐）：结果/操作/步骤 + 悬停操作条（↩ 追问这条 / ⧉ 复制 / 取消）
+  h += '<div class="msg-row ai"><div class="msg-avatar">🤖</div><div class="msg-bubble">' +
+    renderAiBody(t) +
+    '<div class="msg-actions">' +
+      '<button onclick="replyToTask(' + t.id + ')" title="针对这条结果继续追问（输入框将填入 @#N 前缀）">↩ 追问这条</button>' +
+      '<button onclick="copyTaskText(' + t.id + ')">⧉ 复制结果</button>' +
+      (isLive || ["awaiting_approval", "awaiting_selection", "awaiting_commit"].includes(t.status) ? '<button onclick="act(' + t.id + ",'cancel')\">✕ 取消任务</button>" : "") +
+    '</div></div></div>';
+  return h;
+}
+
+// AI 气泡内容：来源/追问/LLM 标签 + 状态操作 + 结果渲染 + 步骤时间线
+function renderAiBody(t) {
   const LLM_TAG = { deepseek: { c: "#1d4ed8", b: "rgba(29,78,216,.1)", label: "DeepSeek", icon: "🟦" }, qwen: { c: "#c2410c", b: "rgba(194,65,12,.1)", label: "通义千问", icon: "🟧" }, kimi: { c: "#6d28d9", b: "rgba(109,40,217,.1)", label: "Kimi", icon: "🟪" } };
   const llm = LLM_TAG[t.llm];
-  const llmTag = llm ? '<span title="📌 历史记录：该任务创建/处理时使用的 LLM。最新任务会用当前选中（见命令中心右上的 🟦DeepSeek/🟧Qwen/🟪Kimi 标记）。" style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;background:' + llm.b + ';color:' + llm.c + '">' + llm.icon + ' 历史: ' + llm.label + '</span>' : "";
-  // 来源徽章：飞书端发的任务在 WebUI 上明确标识，方便 Web 用户区分任务来源
-  const sourceTag = t.source === "feishu" ? '<span title="此任务由飞书移动端发起，AI 回答已回传飞书" style="display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:11px;font-size:10.5px;font-weight:600;background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc">📱 飞书端</span>' : (t.source === "web" ? '<span title="此任务由 Web 控制台发起" style="display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:11px;font-size:10.5px;font-weight:600;background:#f1f5f9;color:#475569;border:1px solid #cbd5e1">🌐 Web 端</span>' : "");
-  // 多轮追问标识：此任务是基于上一轮结果的追问（方案A）
-  const followUpTag = t.followUpOf ? '<span title="此任务是针对上一轮结果的继续追问" style="display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:11px;font-size:10.5px;font-weight:600;background:#fef3c7;color:#92400e;border:1px solid #fcd34d">↩ 追问自 #' + t.followUpOf + '</span>' : "";
-  let h = '<div class="task' + (["pending", "running", "executing", "committing"].includes(t.status) ? " live" : "") + '"><div class="task-head"><span class="t-id">#' + t.id + '</span><span class="st ' + t.status + '">' + statusText(t.status) + '</span>' + (["pending", "running", "executing", "committing"].includes(t.status) ? '<span class="live-badge">🔴 LIVE</span>' : "") + '<span class="t-input">' + esc(t.input) + '</span>' + sourceTag + followUpTag + llmTag + '<span class="t-time">' + esc(t.createdAt || "") + "</span></div>";
+  const llmTag = llm ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:600;background:' + llm.b + ';color:' + llm.c + '">' + llm.icon + ' ' + llm.label + '</span>' : "";
+  const sourceTag = t.source === "feishu" ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:600;background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc">📱 飞书端</span>' : "";
+  const followUpTag = (t.replyTo || t.followUpOf) ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:600;background:#fef3c7;color:#92400e;border:1px solid #fcd34d">↩ 追问自 #' + (t.replyTo || t.followUpOf) + '</span>' : "";
+  let h = (sourceTag || followUpTag || llmTag) ? '<div class="msg-meta">' + sourceTag + followUpTag + llmTag + '</div>' : "";
   h += '<div class="task-body">';
 
   if (t.status === "awaiting_approval") {
@@ -928,13 +1078,11 @@ function renderTask(t) {
   } else if (t.status === "awaiting_commit") {
     h += '<div class="plan">candidate 已就绪，确认 commit？</div>';
     h += '<button class="btn" style="background:var(--green);color:#04121a;border:none" onclick="act(' + t.id + ",'confirm')\">确认 commit</button> <button class='btn' onclick=\"act(" + t.id + ",'cancel')\">取消</button>";
-  } else if (["pending", "running", "executing", "committing"].includes(t.status)) {
-    h += '<button class="btn" style="float:right" onclick="act(' + t.id + ",'cancel')\">取消任务</button>";
   }
 
   if (t.status === "done" && t.type === "query" && t.result) {
     if (t.result.summary) {
-      // LLM 语义匹配分析（绿色高亮"建议"风格，但用蓝色强调"分析结论"）
+      // LLM 语义匹配分析（蓝色强调"分析结论"）
       h += '<div style="background:rgba(29,78,216,.06);border:1px solid rgba(29,78,216,.3);border-left:3px solid var(--accent);border-radius:8px;padding:11px 13px;margin:8px 0;font-size:13.5px;color:#1d4ed8;line-height:1.7;white-space:pre-wrap;word-break:break-word"><b>🎯 匹配分析（基于你的问句）：</b>' + esc(t.result.summary) + '</div>';
     }
     h += '<div style="font-size:11.5px;color:var(--muted);margin:10px 0 4px;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:3px;height:11px;background:var(--accent);border-radius:2px"></span>📋 原始数据（工具调用结果）</div>';
@@ -942,15 +1090,13 @@ function renderTask(t) {
     let totalFieldCount = 0;
     for (const r of (t.result.results || [])) {
       if (r.data && typeof r.data === "object") {
-        // 扁平对象（get_firewall_info 这种）：直接计 key 数
         if (Array.isArray(r.data)) totalFieldCount += r.data.length;
         else if (r.data.entry && Array.isArray(r.data.entry)) totalFieldCount += r.data.entry.length;
         else if (r.data.rules && r.data.rules.entry) totalFieldCount += r.data.rules.entry.length;
-        else totalFieldCount += Object.keys(r.data).length; // 扁平 key-value 对象
+        else totalFieldCount += Object.keys(r.data).length;
       }
     }
-    // 原始数据默认折叠：避免像"设备清单"这种 14+ 字段长表格撑爆任务卡片，导致用户无法滚动页面去看下方其他任务/footer
-    // 用户点标题展开完整表格；状态持久化到 localStorage（参考 tlPref_<id> 模式）
+    // 原始数据默认折叠：避免长表格撑爆气泡，用户点标题展开完整表格；状态持久化到 localStorage
     {
       const rawId = "raw-body-" + t.id;
       let rawOpen = false;
@@ -967,11 +1113,9 @@ function renderTask(t) {
       h += '<div id="' + rawId + '" style="' + (rawOpen ? '' : 'display:none') + ';margin-top:6px;padding:2px;background:#fbfcfe;border:1px solid rgba(226,232,240,.8);border-radius:8px">' + renderResult(t.result.results) + "</div>";
     }
   } else if (t.status === "done" && t.type === "chat" && t.result) {
-    // 自由问答兜底：飞书端发起的任务默认折叠展示（完整答案已回传飞书，点击展开可查看）
-    // Web 端发起的任务正常显示 AI 回答（用户需要看到结果）
+    // 自由问答：飞书端折叠展示（完整答案已回传飞书），Web 端正常显示
     const answerText = t.result.answer || "";
     if (t.source === "feishu") {
-      // 折叠条：点击展开完整答案（与原始数据表格同款交互，localStorage 持久化）
       let chatOpen = false;
       try {
         const pref = localStorage.getItem("chatPref_" + t.id);
@@ -985,7 +1129,6 @@ function renderTask(t) {
       h += '</div>';
       h += '<div id="' + chatId + '" style="' + (chatOpen ? '' : 'display:none') + ';margin-top:6px;background:rgba(109,40,217,.05);border:1px solid rgba(109,40,217,.28);border-left:3px solid #6d28d9;border-radius:8px;padding:12px 14px;font-size:13.5px;color:#3c3489;line-height:1.75;white-space:pre-wrap;word-break:break-word">' + esc(answerText) + '</div>';
     } else {
-      // Web 端发起：显示紫色 AI 思考框
       h += '<div style="background:rgba(109,40,217,.05);border:1px solid rgba(109,40,217,.28);border-left:3px solid #6d28d9;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:13.5px;color:#3c3489;line-height:1.75;white-space:pre-wrap;word-break:break-word">' + esc(answerText) + '</div>';
     }
   } else if (t.status === "done" && t.type === "inspect" && t.result) {
@@ -1005,10 +1148,10 @@ function renderTask(t) {
     // LLM 参与标识：正常综合 = 🤖 LLM 推理；fallback = ⚠️ 程序模板（LLM 未参与/超时）
     const isFallback = t.result.confidence && String(t.result.confidence).includes("fallback");
     if (t.result.verdict) {
-      const llmTag = isFallback
+      const llmTag2 = isFallback
         ? ' <span style="background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">⚠️ fallback（LLM 未参与，程序模板）</span>'
         : ' <span style="background:#f3e8ff;color:#6b21a8;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">🤖 LLM 推理</span>';
-      h += '<div class="plan"><b>📌 根因：</b>' + esc(t.result.verdict) + "（置信度 " + esc(t.result.confidence || "-") + (t.result.confidenceReason ? " · " + esc(t.result.confidenceReason) : "") + "）" + llmTag + "</div>";
+      h += '<div class="plan"><b>📌 根因：</b>' + esc(t.result.verdict) + "（置信度 " + esc(t.result.confidence || "-") + (t.result.confidenceReason ? " · " + esc(t.result.confidenceReason) : "") + "）" + llmTag2 + "</div>";
     }
     if (Array.isArray(t.result.evidence) && t.result.evidence.length) {
       h += '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:13px"><b>🔍 证据链：</b><ol style="margin:6px 0 0;padding-left:22px">' + t.result.evidence.map(function(e){return "<li style='margin:2px 0'>" + esc(e) + "</li>";}).join("") + "</ol></div>";
@@ -1025,14 +1168,12 @@ function renderTask(t) {
   }
 
   if (t.steps && t.steps.length) {
-    // 实时任务分解时间线：每步一个节点，当前执行步骤高亮，展示意图→计划→工具调用的完整链路
-    // 默认折叠（避免步数过多时挤压用户操作第二个任务），状态文字展示进度摘要；用户主动点击展开完整步骤
+    // 实时任务分解时间线：每步一个节点，当前执行步骤高亮；默认折叠（步数<=3 或非 live 直接展开）
     const total = t.steps.length;
     const runningIdx = t.steps.findIndex(s => typeof s === "object" && s.status === "running");
     const isLive = ["pending", "running", "executing", "committing"].includes(t.status);
     const stepHtml = t.steps.map((s, i) => {
       if (typeof s === "string") {
-        // 意图/计划节点（LLM 决策、变更计划等）
         const isDecision = /LLM 规划|关键词匹配|变更计划|诊断类型|匹配到|已生成/.test(s);
         return '<div class="tl-node tl-dec' + (isDecision ? "" : "") + '"><span class="tl-dot" style="background:var(--accent)"></span><div class="tl-card"><span class="tl-msg">' + esc(s) + "</span></div></div>";
       }
@@ -1042,8 +1183,6 @@ function renderTask(t) {
       return '<div class="tl-node"><span class="tl-dot ' + cls + (isCur ? " pulse" : "") + '">' + icon + '</span><div class="tl-card ' + (isCur ? "tl-cur" : "") + '"><div class="tl-tool">' + (isCur ? "▶ " : "") + esc(s.tool || "") + (s.ms ? ' <span class="tl-ms">' + s.ms + "ms</span>" : "") + '</div>' + (s.msg ? '<div class="tl-msg">' + esc(s.msg) + "</div>" : "") + "</div></div>";
     }).join("");
     const tlId = "tl-body-" + t.id;
-    // 默认折叠（非 live 任务或步数<=3 时直接展开，否则折叠以节省视觉空间）
-    // 但用户手动 toggle 过的优先级最高（持久化到 localStorage，否则 pollTasks 重建 DOM 会被冲掉）
     let expandByDefault = t.steps.length <= 3 || !isLive;
     try {
       const pref = localStorage.getItem("tlPref_" + t.id);
@@ -1053,7 +1192,6 @@ function renderTask(t) {
     const headStyle = "display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:5px 8px;border-radius:6px;background:rgba(22,104,220,.05);border:1px solid rgba(22,104,220,.18);user-select:none;font-size:12px;color:#3b4a66;font-weight:600;transition:background .15s";
     const progressLabel = runningIdx >= 0 ? (runningIdx + 1) + "/" + total + " 进行中" : (isLive ? "执行中 · " + total + " 步" : total + " 步已完成");
     h += '<div class="tl-block" id="tl-' + t.id + '">';
-    // 用 this.nextElementSibling 引用兄弟节点，避免把带 ' 的 ID 嵌入 HTML 属性（解析歧义导致 JS 全面中断）
     h += '<div class="tl-head" data-task-id="' + t.id + '" onclick="toggleTLBlock(this)" style="' + headStyle + '" onmouseover="this.style.background=\'rgba(22,104,220,.1)\'" onmouseout="this.style.background=\'rgba(22,104,220,.05)\'">';
     h += '<span>🔧 实时任务分解 · <span style="color:' + (isLive ? '#1d4ed8' : '#6b7280') + '">' + progressLabel + '</span></span>';
     h += '<span class="tl-toggle" style="color:#9ca3af;font-weight:400;margin-left:8px">' + (expandByDefault ? '▾' : '▸') + '</span>';
@@ -1061,7 +1199,7 @@ function renderTask(t) {
     h += '<div id="' + tlId + '" style="' + (expandByDefault ? '' : 'display:none') + ';margin-top:4px;padding:2px;background:#fbfcfe;border:1px solid rgba(226,232,240,.8);border-radius:8px">' + stepHtml + "</div>";
     h += "</div>";
   }
-  return h + "</div></div>";
+  return h + "</div>";
 }
 
 // 实时任务分解时间线折叠/展开：用 nextElementSibling 避免把字符串嵌入 HTML 属性（解析歧义）
@@ -1267,16 +1405,25 @@ function renderKv(kv) {
 
 function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
+// 折叠式飞书集成面板展开/收起
+function toggleFsFold() {
+  const f = document.getElementById("fsFold");
+  if (!f) return;
+  f.classList.toggle("open");
+}
+
 async function loadFeishuStatus() {
   try {
     const d = await fjs("/api/feishu/status", { timeout: 4000 });
     const dot = document.getElementById("fsDot");
-    dot.className = "dot " + (d.running ? "green" : "red");
-    document.getElementById("fsTxt").textContent = d.running ? "飞书在线" : "飞书离线";
-    document.getElementById("feishuStatus").textContent = (d.running ? "🟢 轮询 daemon 运行中 · 群: " : "🔴 轮询 daemon 未运行 · 群: ") + esc(d.chat || "-");
+    if (dot) dot.className = "dot " + (d.running ? "green" : "red");
+    const txt = document.getElementById("fsTxt");
+    if (txt) txt.textContent = d.running ? "飞书在线" : "飞书离线";
+    const head = document.querySelector("#fsFold .fs-fold-head span:last-child");
+    if (head) head.textContent = d.running ? ("🟢 daemon 运行中 · 群: " + esc(d.chat || "-")) : ("🔴 daemon 未运行 · 群: " + esc(d.chat || "-"));
   } catch (e) {
-    document.getElementById("fsTxt").textContent = "飞书加载失败";
-    document.getElementById("feishuStatus").textContent = "🔴 接口异常: " + esc(e.message || String(e));
+    const txt = document.getElementById("fsTxt");
+    if (txt) txt.textContent = "飞书加载失败";
     pulseLiveBadge("err");
   }
   // 飞书状态每 5s 轮询一次（之前只查一次，daemon 异常 UI 不会刷新）
