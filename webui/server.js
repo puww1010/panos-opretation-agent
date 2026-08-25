@@ -165,6 +165,8 @@ try {
 // 不做定时器重置——避免连续发任务时每个任务结束后被意外重置。
 
 let client = null;
+// MCP 子进程信息：connect() 时记录 PID/启动时间，避开 pgrep EPERM
+let mcpInfo = { pid: null, startedAt: null, status: "unknown" };
 const tasks = [];        // 任务列表
 const history = [];      // 查询历史
 const llmLogs = [];      // LLM 决策日志（证明 LLM 规划起作用）
@@ -287,7 +289,14 @@ async function connect() {
   });
   client = new Client({ name: "panos-agent", version: "4.0.0" });
   await client.connect(transport);
-  console.log("[agent] MCP connected");
+  // 记录 MCP 子进程 PID/启动时间（避开 pgrep EPERM；不同 SDK 版本 process 字段名不同）
+  mcpInfo.startedAt = Date.now();
+  mcpInfo.status = "online";
+  try {
+    const proc = transport && (transport.process || transport._process || null);
+    if (proc && proc.pid) mcpInfo.pid = proc.pid;
+  } catch {}
+  console.log("[agent] MCP connected, child pid:", mcpInfo.pid);
 }
 
 // ── 直接调防火墙 API（绕开 MCP server 故障 + Node fetch 代理干扰）──
@@ -1799,7 +1808,7 @@ function parseInterfaces(raw) {
   }).filter((x) => x.name);
 }
 
-// 平台 loading：管理面（webui server 自身）+ 数据面（mcp-panos-server 子进程）
+// 平台 loading：管理面（Agent 控制台 webui-console 自身 Node 进程）+ 数据面（MCP 桥接 panos-mcp 子进程）
 async function getPlatformLoading() {
   // 管理面：server.js 自身 Node 进程指标
   const mu = process.memoryUsage();
@@ -1815,37 +1824,57 @@ async function getPlatformLoading() {
     cpuSystemSec: Math.round(cu.system / 1e6),
     status: "online",
   };
-  // 数据面：优先通过 pgrep 找 panos-mcp 子进程拿 PID/RSS/CPU/etime；
-  // 若被宿主 macOS 限权（EPERM，如 supervisor 启动的子进程）则降级为 MCP 客户端状态
-  let dataPlane = { name: "panos-mcp", status: "unknown" };
-  try {
-    const { execFile } = require("child_process");
-    const pidOut = await new Promise((res) => execFile("pgrep", ["-f", "panos-mcp"], (e, stdout) => res(e ? null : stdout)));
-    const pids = (pidOut || "").trim().split(/\s+/).map(Number).filter(Boolean);
-    if (pids.length) {
-      const psOut = await new Promise((res) => execFile("ps", ["-p", String(pids[0]), "-o", "pid=,rss=,pcpu=,etime="], (e, stdout) => res(e ? null : stdout)));
+  // 数据面（Agent 的 MCP 桥接子进程，不是防火墙的数据面）：
+  // 1) 优先用 connect() 时记录的 mcpInfo（避免 pgrep EPERM）
+  // 2) fallback：尝试 pgrep（宿主机允许时拿 RSS/CPU）
+  // 3) 全失败：仅展示 PID + 状态
+  const dp = { name: "panos-mcp", status: mcpInfo.status || (client ? "online" : "offline") };
+  dp.pid = mcpInfo.pid;
+  dp.uptimeStr = mcpInfo.startedAt ? formatUptimeSec((Date.now() - mcpInfo.startedAt) / 1000) : null;
+  let gotResource = false;
+  if (mcpInfo.pid) {
+    try {
+      const { execFile } = require("child_process");
+      const psOut = await new Promise((res) => execFile("ps", ["-p", String(mcpInfo.pid), "-o", "pid=,rss=,pcpu=,etime="], (e, stdout) => res(e ? null : stdout)));
       const m = (psOut || "").trim().split(/\s+/).map((s) => s.trim()).filter(Boolean);
       if (m.length >= 4) {
-        dataPlane = {
-          name: "panos-mcp",
-          pid: Number(m[0]),
-          rssMB: Math.round(Number(m[1]) / 1024),
-          cpuPct: parseFloat(m[2]) || 0,
-          uptimeStr: m[3],
-          status: "online",
-        };
-      } else {
-        dataPlane = { name: "panos-mcp", pid: pids[0], status: "online" };
+        dp.rssMB = Math.round(Number(m[1]) / 1024);
+        dp.cpuPct = parseFloat(m[2]) || 0;
+        gotResource = true;
       }
-    } else {
-      // pgrep 找不到 → 降级用 MCP 客户端状态
-      dataPlane = { name: "panos-mcp", status: client ? "online" : "offline", note: "未找到 panos-mcp 进程" };
-    }
-  } catch (e) {
-    // EPERM 等：降级为 MCP 客户端状态判断
-    dataPlane = { name: "panos-mcp", status: client ? "online" : "offline", note: "PID 不可用：" + (e.code || e.message) };
+    } catch (e) { /* EPERM 等，忽略 */ }
   }
-  return { controlPlane, dataPlane };
+  if (!gotResource) {
+    try {
+      const { execFile } = require("child_process");
+      const pidOut = await new Promise((res) => execFile("pgrep", ["-f", "panos-mcp"], (e, stdout) => res(e ? null : stdout)));
+      const pids = (pidOut || "").trim().split(/\s+/).map(Number).filter(Boolean);
+      if (pids.length) {
+        dp.pid = dp.pid || pids[0];
+        const psOut = await new Promise((res) => execFile("ps", ["-p", String(pids[0]), "-o", "pid=,rss=,pcpu=,etime="], (e, stdout) => res(e ? null : stdout)));
+        const m = (psOut || "").trim().split(/\s+/).map((s) => s.trim()).filter(Boolean);
+        if (m.length >= 4) {
+          dp.rssMB = Math.round(Number(m[1]) / 1024);
+          dp.cpuPct = parseFloat(m[2]) || 0;
+          gotResource = true;
+        }
+      }
+    } catch (e) { /* EPERM */ }
+  }
+  if (!gotResource) {
+    dp.note = mcpInfo.pid ? "PID 已捕获；RSS/CPU 需宿主机 pgrep 权限" : "PID 不可用";
+  }
+  return { controlPlane, dataPlane: dp };
+}
+
+function formatUptimeSec(sec) {
+  sec = Math.max(0, parseInt(sec, 10) || 0);
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d) return d + "d " + h + "h";
+  if (h) return h + "h " + m + "m";
+  return m + "m " + (sec % 60) + "s";
 }
 
 async function runDiagTask(t, firewall) {

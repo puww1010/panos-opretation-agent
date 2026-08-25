@@ -646,12 +646,12 @@
               <div class="dash-card-head"><svg class="ic sm"><use href="#i-list"/></svg>接口流量<span class="pill" id="ifCount">—</span></div>
               <div id="dashInterfaces"><div class="empty">接口信息加载中…</div></div>
             </div>
-            <!-- 平台 Loading -->
+            <!-- 平台 Loading（Agent 自身的两个子进程：webui-console + panos-mcp；非 PA-440 控制/数据面） -->
             <div class="dash-card">
-              <div class="dash-card-head"><svg class="ic sm"><use href="#i-gauge"/></svg>平台 Loading</div>
+              <div class="dash-card-head"><svg class="ic sm"><use href="#i-gauge"/></svg>Agent 平台 Loading<span class="pill" style="font-size:10px;font-weight:400">webui-console · panos-mcp</span></div>
               <div class="platform-grid">
                 <div class="platform-row" id="platControl">
-                  <div class="pr-head"><span class="pr-dot" id="platCpDot"></span><b id="platCpName">管理面</b><span class="pr-status" id="platCpStatus">—</span></div>
+                  <div class="pr-head"><span class="pr-dot" id="platCpDot"></span><b id="platCpName">Agent 控制台</b><span class="pr-status" id="platCpStatus">—</span></div>
                   <div class="pr-body">
                     <div class="pr-kv"><span class="k">PID</span><span class="v" id="platCpPid">—</span></div>
                     <div class="pr-kv"><span class="k">Node</span><span class="v" id="platCpNode">—</span></div>
@@ -662,7 +662,7 @@
                   </div>
                 </div>
                 <div class="platform-row" id="platData">
-                  <div class="pr-head"><span class="pr-dot" id="platDpDot"></span><b id="platDpName">数据面</b><span class="pr-status" id="platDpStatus">—</span></div>
+                  <div class="pr-head"><span class="pr-dot" id="platDpDot"></span><b id="platDpName">MCP 桥接</b><span class="pr-status" id="platDpStatus">—</span></div>
                   <div class="pr-body">
                     <div class="pr-kv"><span class="k">PID</span><span class="v" id="platDpPid">—</span></div>
                     <div class="pr-kv"><span class="k">RSS</span><span class="v" id="platDpMem">—</span></div>
@@ -1218,13 +1218,13 @@ function renderInterfaces(list) {
   }).join("") + (list.length > 12 ? '<div class="empty" style="margin-top:6px">仅显示前 12 / ' + list.length + ' 个接口</div>' : "");
 }
 
-// 概览：平台 loading（管理面 webui-console + 数据面 panos-mcp）
+// 概览：平台 loading（Agent 自身的两个子进程：webui-console Node 服务 + panos-mcp MCP 桥接）
 function renderPlatform(p) {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  // 管理面
+  // 管理面：固定显示"Agent 控制台"，避免与防火墙术语混淆
   const cp = p && p.controlPlane || null;
   if (cp) {
-    set("platCpName", cp.name || "管理面");
+    set("platCpName", "Agent 控制台");
     set("platCpStatus", cp.status || "—");
     set("platCpPid", cp.pid != null ? String(cp.pid) : "—");
     set("platCpNode", cp.node || "—");
@@ -1235,10 +1235,10 @@ function renderPlatform(p) {
     const cpDot = document.getElementById("platCpDot");
     if (cpDot) cpDot.className = "pr-dot " + (cp.status || "");
   }
-  // 数据面
+  // 数据面：固定显示"MCP 桥接"
   const dp = p && p.dataPlane || null;
   if (dp) {
-    set("platDpName", dp.name || "数据面");
+    set("platDpName", "MCP 桥接");
     set("platDpStatus", dp.status || "—");
     set("platDpPid", dp.pid != null ? String(dp.pid) : "—");
     set("platDpMem", dp.rssMB != null ? (dp.rssMB + " MB") : "—");
