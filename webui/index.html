@@ -324,19 +324,21 @@
   .reply-chip button { border:none; background:transparent; color:var(--warn-fg); cursor:pointer; font-size:12px; padding:0 2px; }
   /* ══ 侧边栏布局（方案C 混合模型）══ */
   .shell { display:flex; height:100vh; overflow:hidden; }
-  .sidebar { width:212px; flex-shrink:0; background:var(--card); border-right:1px solid var(--border);
+  .sidebar { width:232px; flex-shrink:0; background:var(--card); border-right:1px solid var(--border);
     display:flex; flex-direction:column; transition:width .18s ease; overflow:hidden; }
   body.side-collapsed .sidebar { width:56px; }
-  .side-logo { display:flex; align-items:center; gap:9px; padding:11px 12px 10px; border-bottom:1px solid var(--border); min-height:54px; }
+  .side-logo { display:flex; align-items:center; gap:9px; padding:11px 12px 12px; border-bottom:1px solid var(--border); min-height:58px; }
   .side-logo .logo { width:30px; height:30px; border-radius:8px; box-shadow:0 2px 10px rgba(22,104,220,.28); }
-  .side-logo .side-title { font-size:12.5px; font-weight:700; color:var(--title); white-space:nowrap; letter-spacing:.2px; }
+  .side-title { display:flex; flex-direction:column; gap:1px; line-height:1.22; }
+  .side-title .t1 { font-size:13px; font-weight:700; color:var(--title); letter-spacing:.2px; }
+  .side-title .t2 { font-size:11px; font-weight:500; color:var(--muted); }
   body.side-collapsed .side-title { display:none; }
   .side-fold { margin-left:auto; padding:3px 7px; font-size:12px; }
   body.side-collapsed .side-fold { margin-left:0; }
-  .side-nav { flex:1; overflow-y:auto; padding:10px 8px; }
-  .side-sep { font-size:10px; color:var(--dim); letter-spacing:1.2px; padding:14px 10px 6px; white-space:nowrap; }
+  .side-nav { flex:1; overflow-y:auto; padding:8px 8px 12px; }
+  .side-sep { font-size:10px; color:var(--dim); letter-spacing:1.2px; padding:12px 10px 4px; white-space:nowrap; }
   body.side-collapsed .side-sep { display:none; }
-  .side-item { display:flex; align-items:center; gap:9px; width:100%; padding:8px 10px; border:none; background:none;
+  .side-item { display:flex; align-items:center; gap:9px; width:calc(100% - 4px); margin:0 2px; padding:8px 10px; border:none; background:none;
     border-radius:8px; color:var(--muted); font-size:13px; cursor:pointer; text-align:left; transition:all .15s; white-space:nowrap; }
   .side-item:hover { background:var(--run-bg); color:var(--text); }
   .side-item.on { background:var(--run-bg); color:var(--run-fg); font-weight:600; }
@@ -481,7 +483,10 @@
   <aside class="sidebar" id="sidebar">
     <div class="side-logo">
       <img class="logo" src="assets/agent-logo.png" alt="agent logo">
-      <span class="side-title">PAN-OS防火墙监控运维机器人</span>
+      <div class="side-title">
+        <span class="t1">PAN-OS 防火墙</span>
+        <span class="t2">监控运维机器人</span>
+      </div>
       <button class="side-fold btn" onclick="toggleSidebar()" title="折叠 / 展开菜单"><svg class="ic sm" id="foldIcon"><use href="#i-left"/></svg></button>
     </div>
     <nav class="side-nav">
