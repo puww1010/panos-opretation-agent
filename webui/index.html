@@ -400,6 +400,11 @@
   .pr-kv .k { color:var(--dim); }
   .pr-kv .v { color:var(--text); font-family:var(--mono); }
   .pr-note { grid-column:1/-1; font-size:11px; color:var(--dim); padding-top:3px; }
+  /* CPU 使用率进度条（MP/DP） */
+  .pr-bar { grid-column:1/-1; height:6px; border-radius:3px; background:var(--border); overflow:hidden; margin:2px 0 5px; }
+  .pr-bar > i { display:block; height:100%; border-radius:3px; background:linear-gradient(90deg,#22c55e,#16a34a); transition:width .5s ease; }
+  .pr-bar.warn > i { background:linear-gradient(90deg,#f59e0b,#f97316); }
+  .pr-bar.crit > i { background:linear-gradient(90deg,#ef4444,#dc2626); }
   /* 接口流量行 */
   .if-row { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px dashed var(--border); font-size:12.5px; }
   .if-row:last-child { border-bottom:none; }
@@ -646,28 +651,28 @@
               <div class="dash-card-head"><svg class="ic sm"><use href="#i-list"/></svg>接口流量<span class="pill" id="ifCount">—</span></div>
               <div id="dashInterfaces"><div class="empty">接口信息加载中…</div></div>
             </div>
-            <!-- 平台 Loading（Agent 自身的两个子进程：webui-console + panos-mcp；非 PA-440 控制/数据面） -->
+            <!-- 平台 CPU Loading（防火墙自身的 Management Plane / Data Plane） -->
             <div class="dash-card">
-              <div class="dash-card-head"><svg class="ic sm"><use href="#i-gauge"/></svg>Agent 平台 Loading<span class="pill" style="font-size:10px;font-weight:400">webui-console · panos-mcp</span></div>
+              <div class="dash-card-head"><svg class="ic sm"><use href="#i-gauge"/></svg>平台 CPU Loading<span class="pill" style="font-size:10px;font-weight:400">防火墙 MP / DP</span></div>
               <div class="platform-grid">
                 <div class="platform-row" id="platControl">
-                  <div class="pr-head"><span class="pr-dot" id="platCpDot"></span><b id="platCpName">Agent 控制台</b><span class="pr-status" id="platCpStatus">—</span></div>
+                  <div class="pr-head"><span class="pr-dot" id="platCpDot"></span><b id="platCpName">Management Plane</b><span class="pr-status" id="platCpStatus">—</span></div>
                   <div class="pr-body">
-                    <div class="pr-kv"><span class="k">PID</span><span class="v" id="platCpPid">—</span></div>
-                    <div class="pr-kv"><span class="k">Node</span><span class="v" id="platCpNode">—</span></div>
-                    <div class="pr-kv"><span class="k">内存 (RSS)</span><span class="v" id="platCpMem">—</span></div>
-                    <div class="pr-kv"><span class="k">Heap</span><span class="v" id="platCpHeap">—</span></div>
-                    <div class="pr-kv"><span class="k">CPU user</span><span class="v" id="platCpCpuU">—</span></div>
-                    <div class="pr-kv"><span class="k">运行时长</span><span class="v" id="platCpUp">—</span></div>
+                    <div class="pr-kv"><span class="k">CPU 使用率</span><span class="v" id="platCpUsage">—</span></div>
+                    <div class="pr-bar" id="platCpBar"><i id="platCpBarI"></i></div>
+                    <div class="pr-kv"><span class="k">Load (1/5/15m)</span><span class="v" id="platCpLoad">—</span></div>
+                    <div class="pr-kv"><span class="k">内存</span><span class="v" id="platCpMem">—</span></div>
                   </div>
                 </div>
                 <div class="platform-row" id="platData">
-                  <div class="pr-head"><span class="pr-dot" id="platDpDot"></span><b id="platDpName">MCP 桥接</b><span class="pr-status" id="platDpStatus">—</span></div>
+                  <div class="pr-head"><span class="pr-dot" id="platDpDot"></span><b id="platDpName">Data Plane</b><span class="pr-status" id="platDpStatus">—</span></div>
                   <div class="pr-body">
-                    <div class="pr-kv"><span class="k">PID</span><span class="v" id="platDpPid">—</span></div>
-                    <div class="pr-kv"><span class="k">RSS</span><span class="v" id="platDpMem">—</span></div>
-                    <div class="pr-kv"><span class="k">CPU%</span><span class="v" id="platDpCpu">—</span></div>
-                    <div class="pr-kv"><span class="k">运行时长</span><span class="v" id="platDpUp">—</span></div>
+                    <div class="pr-kv"><span class="k">CPU 使用率</span><span class="v" id="platDpUsage">—</span></div>
+                    <div class="pr-bar" id="platDpBar"><i id="platDpBarI"></i></div>
+                    <div class="pr-kv"><span class="k">最近 5s</span><span class="v" id="platDp5s">—</span></div>
+                    <div class="pr-kv"><span class="k">峰值</span><span class="v" id="platDpPeak">—</span></div>
+                    <div class="pr-kv"><span class="k">核心数</span><span class="v" id="platDpCores">—</span></div>
+                    <div class="pr-kv"><span class="k">Pkt Buf</span><span class="v" id="platDpBuf">—</span></div>
                     <div class="pr-kv pr-note" id="platDpNote"></div>
                   </div>
                 </div>
@@ -1218,32 +1223,40 @@ function renderInterfaces(list) {
   }).join("") + (list.length > 12 ? '<div class="empty" style="margin-top:6px">仅显示前 12 / ' + list.length + ' 个接口</div>' : "");
 }
 
-// 概览：平台 loading（Agent 自身的两个子进程：webui-console Node 服务 + panos-mcp MCP 桥接）
+// 概览：平台 CPU Loading（防火墙自身的 Management Plane / Data Plane）
 function renderPlatform(p) {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  // 管理面：固定显示"Agent 控制台"，避免与防火墙术语混淆
-  const cp = p && p.controlPlane || null;
-  if (cp) {
-    set("platCpName", "Agent 控制台");
-    set("platCpStatus", cp.status || "—");
-    set("platCpPid", cp.pid != null ? String(cp.pid) : "—");
-    set("platCpNode", cp.node || "—");
-    set("platCpMem", cp.rssMB != null ? (cp.rssMB + " MB") : "—");
-    set("platCpHeap", cp.heapUsedMB != null ? (cp.heapUsedMB + " MB") : "—");
-    set("platCpCpuU", cp.cpuUserSec != null ? (cp.cpuUserSec + " s") : "—");
-    set("platCpUp", cp.uptimeSec != null ? formatUptime(cp.uptimeSec) : "—");
+  // CPU 进度条：百分比 → 宽度 + 阈值变色（绿/琥珀/红）
+  const setBar = (barId, pct) => {
+    const bar = document.getElementById(barId);
+    if (!bar) return;
+    const i = bar.querySelector("i");
+    if (i) i.style.width = Math.max(2, Math.min(100, Number(pct) || 0)) + "%";
+    bar.className = "pr-bar" + (pct >= 80 ? " crit" : pct >= 60 ? " warn" : "");
+  };
+  // Management Plane（管理面）：show system resources
+  const mp = p && p.managementPlane || null;
+  if (mp) {
+    set("platCpName", mp.name || "Management Plane");
+    set("platCpStatus", mp.status || "—");
+    set("platCpUsage", mp.usagePct != null ? mp.usagePct + "%" : "—");
+    setBar("platCpBar", mp.usagePct);
+    set("platCpLoad", (mp.load1 != null && mp.load5 != null && mp.load15 != null) ? (mp.load1 + " / " + mp.load5 + " / " + mp.load15) : "—");
+    set("platCpMem", (mp.memUsedMB != null && mp.memTotalMB != null) ? (mp.memUsedMB + " / " + mp.memTotalMB + " MiB") : "—");
     const cpDot = document.getElementById("platCpDot");
-    if (cpDot) cpDot.className = "pr-dot " + (cp.status || "");
+    if (cpDot) cpDot.className = "pr-dot " + (mp.status || "");
   }
-  // 数据面：固定显示"MCP 桥接"
+  // Data Plane（数据面）：show running resource-monitor
   const dp = p && p.dataPlane || null;
   if (dp) {
-    set("platDpName", "MCP 桥接");
+    set("platDpName", dp.name || "Data Plane");
     set("platDpStatus", dp.status || "—");
-    set("platDpPid", dp.pid != null ? String(dp.pid) : "—");
-    set("platDpMem", dp.rssMB != null ? (dp.rssMB + " MB") : "—");
-    set("platDpCpu", dp.cpuPct != null ? (dp.cpuPct + "%") : "—");
-    set("platDpUp", dp.uptimeStr || (dp.uptimeSec != null ? formatUptime(dp.uptimeSec) : "—"));
+    set("platDpUsage", dp.cpuPct != null ? dp.cpuPct + "%" : "—");
+    setBar("platDpBar", dp.cpuPct);
+    set("platDp5s", dp.cpu5sPct != null ? dp.cpu5sPct + "%" : "—");
+    set("platDpPeak", dp.cpuPeakPct != null ? dp.cpuPeakPct + "%" : "—");
+    set("platDpCores", dp.cores != null ? (dp.cores + " 核") : "—");
+    set("platDpBuf", dp.pktBufPct != null ? dp.pktBufPct + "%" : "—");
     const dpDot = document.getElementById("platDpDot");
     if (dpDot) dpDot.className = "pr-dot " + (dp.status || "");
     const note = document.getElementById("platDpNote");

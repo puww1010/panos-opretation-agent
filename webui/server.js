@@ -1808,63 +1808,89 @@ function parseInterfaces(raw) {
   }).filter((x) => x.name);
 }
 
-// 平台 loading：管理面（Agent 控制台 webui-console 自身 Node 进程）+ 数据面（MCP 桥接 panos-mcp 子进程）
+// ── 防火墙平台 CPU Loading（用户要求：展示防火墙自身的 Management Plane 与 Data Plane CPU）──
+// Management Plane：show system resources → load average(1/5/15min) + %Cpu(s) 使用率 + 内存
+// Data Plane：show running resource-monitor → dp0 各 core 的 cpu-load-average 采样（0-100%）
 async function getPlatformLoading() {
-  // 管理面：server.js 自身 Node 进程指标
-  const mu = process.memoryUsage();
-  const cu = process.cpuUsage();
-  const controlPlane = {
-    name: "webui-console",
-    pid: process.pid,
-    node: process.version,
-    uptimeSec: Math.round(process.uptime()),
-    rssMB: Math.round(mu.rss / 1024 / 1024),
-    heapUsedMB: Math.round(mu.heapUsed / 1024 / 1024),
-    cpuUserSec: Math.round(cu.user / 1e6),
-    cpuSystemSec: Math.round(cu.system / 1e6),
-    status: "online",
-  };
-  // 数据面（Agent 的 MCP 桥接子进程，不是防火墙的数据面）：
-  // 1) 优先用 connect() 时记录的 mcpInfo（避免 pgrep EPERM）
-  // 2) fallback：尝试 pgrep（宿主机允许时拿 RSS/CPU）
-  // 3) 全失败：仅展示 PID + 状态
-  const dp = { name: "panos-mcp", status: mcpInfo.status || (client ? "online" : "offline") };
-  dp.pid = mcpInfo.pid;
-  dp.uptimeStr = mcpInfo.startedAt ? formatUptimeSec((Date.now() - mcpInfo.startedAt) / 1000) : null;
-  let gotResource = false;
-  if (mcpInfo.pid) {
-    try {
-      const { execFile } = require("child_process");
-      const psOut = await new Promise((res) => execFile("ps", ["-p", String(mcpInfo.pid), "-o", "pid=,rss=,pcpu=,etime="], (e, stdout) => res(e ? null : stdout)));
-      const m = (psOut || "").trim().split(/\s+/).map((s) => s.trim()).filter(Boolean);
-      if (m.length >= 4) {
-        dp.rssMB = Math.round(Number(m[1]) / 1024);
-        dp.cpuPct = parseFloat(m[2]) || 0;
-        gotResource = true;
-      }
-    } catch (e) { /* EPERM 等，忽略 */ }
+  const [mpTxt, dpTxt] = await Promise.allSettled([
+    directOp("<show><system><resources></resources></system></show>"),
+    directOp("<show><running><resource-monitor></resource-monitor></running></show>"),
+  ]);
+  const mp = parseMgmtPlane(mpTxt.status === "fulfilled" ? String(mpTxt.value || "") : "");
+  const dp = parseDataPlane(dpTxt.status === "fulfilled" ? String(dpTxt.value || "") : "");
+  return { managementPlane: mp, dataPlane: dp };
+}
+
+// 解析管理面：show system resources（top 文本）
+function parseMgmtPlane(txt) {
+  const out = { name: "Management Plane", status: "offline" };
+  if (!txt || !txt.includes("<result>")) return out;
+  out.status = "online";
+  // load average: 4.93, 5.08, 5.27（1/5/15 分钟）
+  const lm = txt.match(/load average:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/);
+  if (lm) { out.load1 = parseFloat(lm[1]); out.load5 = parseFloat(lm[2]); out.load15 = parseFloat(lm[3]); }
+  // %Cpu(s): 12.4 us, 1.5 sy, 0.0 ni, 17.9 id → 使用率 = 100 - id（top 格式为"值 标签"，值在 id 前面）
+  const cm = txt.match(/%Cpu\(s\):[\s\S]*?([\d.]+)\s+id\b/);
+  if (cm) {
+    const id = parseFloat(cm[1]);
+    if (!isNaN(id)) out.usagePct = Math.max(0, Math.min(100, Math.round((100 - id) * 10) / 10));
   }
-  if (!gotResource) {
-    try {
-      const { execFile } = require("child_process");
-      const pidOut = await new Promise((res) => execFile("pgrep", ["-f", "panos-mcp"], (e, stdout) => res(e ? null : stdout)));
-      const pids = (pidOut || "").trim().split(/\s+/).map(Number).filter(Boolean);
-      if (pids.length) {
-        dp.pid = dp.pid || pids[0];
-        const psOut = await new Promise((res) => execFile("ps", ["-p", String(pids[0]), "-o", "pid=,rss=,pcpu=,etime="], (e, stdout) => res(e ? null : stdout)));
-        const m = (psOut || "").trim().split(/\s+/).map((s) => s.trim()).filter(Boolean);
-        if (m.length >= 4) {
-          dp.rssMB = Math.round(Number(m[1]) / 1024);
-          dp.cpuPct = parseFloat(m[2]) || 0;
-          gotResource = true;
-        }
-      }
-    } catch (e) { /* EPERM */ }
+  // MiB Mem : 15875.5 total, 704.1 free, 7348.8 used
+  const mm = txt.match(/MiB Mem\s*:\s*([\d.]+) total,\s*([\d.]+) free,\s*([\d.]+) used/);
+  if (mm) { out.memTotalMB = Math.round(parseFloat(mm[1])); out.memUsedMB = Math.round(parseFloat(mm[3])); }
+  return out;
+}
+
+// 解析数据面：show running resource-monitor
+// <dp0><second><cpu-load-average><entry><coreid>N</coreid><value>a,b,c,...(60 采样)</value></entry>...
+function parseDataPlane(txt) {
+  const out = { name: "Data Plane", status: "offline" };
+  if (!txt || !txt.includes("<resource-monitor>")) return out;
+  out.status = "online";
+  // 数据处理器数（dp0/dp1/...）
+  const dps = txt.match(/<dp\d+>/g) || [];
+  out.processors = dps.length;
+  // 取所有 dp 的 second.cpu-load-average 采样
+  const avgBlocks = [...txt.matchAll(/<second>([\s\S]*?)<\/second>/g)].map((m) => m[1]);
+  const secondBlock = avgBlocks[0] || "";
+  const cpuAvgEntries = secondBlock.match(/<cpu-load-average>([\s\S]*?)<\/cpu-load-average>/)?.[1] || "";
+  const entries = [...cpuAvgEntries.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((m) => m[1]);
+  const coreVals = [];
+  for (const e of entries) {
+    const coreId = e.match(/<coreid>(\d+)<\/coreid>/)?.[1];
+    const valStr = e.match(/<value>([\s\S]*?)<\/value>/)?.[1];
+    if (coreId != null && valStr) {
+      const samples = valStr.split(",").map((s) => parseFloat(s)).filter((n) => !isNaN(n));
+      if (samples.length) coreVals.push({ core: parseInt(coreId, 10), samples, avg: samples.reduce((a, b) => a + b, 0) / samples.length, last: samples[samples.length - 1] });
+    }
   }
-  if (!gotResource) {
-    dp.note = mcpInfo.pid ? "PID 已捕获；RSS/CPU 需宿主机 pgrep 权限" : "PID 不可用";
+  if (coreVals.length) {
+    out.cores = coreVals.length;
+    // 各核平均使用率（60 个采样取均值），整体 = 各核再平均
+    out.cpuPct = Math.round(coreVals.reduce((a, c) => a + c.avg, 0) / coreVals.length * 10) / 10;
+    // 峰值：任一核任一秒的最大值（直观反映突发）
+    out.cpuPeakPct = Math.round(Math.max(...coreVals.map((c) => Math.max(...c.samples))) * 10) / 10;
+    // 最近 5 秒使用率（更贴近"当前"）
+    const recent5 = coreVals.map((c) => {
+      const s = c.samples.slice(-5);
+      return s.reduce((a, b) => a + b, 0) / s.length;
+    });
+    out.cpu5sPct = Math.round(recent5.reduce((a, b) => a + b, 0) / recent5.length * 10) / 10;
   }
-  return { controlPlane, dataPlane: dp };
+  // resource-utilization：packet buffer / session 等资源利用率（可选展示）
+  const utilEntries = secondBlock.match(/<resource-utilization>([\s\S]*?)<\/resource-utilization>/)?.[1] || "";
+  for (const u of [...utilEntries.matchAll(/<entry>([\s\S]*?)<\/entry>/g)]) {
+    const name = u[1].match(/<name>([^<]+)<\/name>/)?.[1];
+    const valStr = u[1].match(/<value>([\s\S]*?)<\/value>/)?.[1];
+    if (!name || !valStr) continue;
+    const samples = valStr.split(",").map((s) => parseFloat(s)).filter((n) => !isNaN(n));
+    if (!samples.length) continue;
+    const avg = Math.round(samples.reduce((a, b) => a + b, 0) / samples.length * 10) / 10;
+    if (/packet buffer/.test(name)) out.pktBufPct = avg;
+    else if (/^session$/.test(name)) out.sessionUtilPct = avg;
+    else if (/packet descriptor/.test(name)) out.pktDescPct = avg;
+  }
+  return out;
 }
 
 function formatUptimeSec(sec) {
