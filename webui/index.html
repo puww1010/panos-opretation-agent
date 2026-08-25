@@ -212,6 +212,9 @@
   .msg-row.user .msg-meta { justify-content:flex-end; color:#bfdbfe; }
   .msg-row.ai .msg-meta { color:var(--dim); }
   .msg-bubble .st { font-size:10.5px; padding:1px 8px; }
+  /* 用户气泡内状态徽章：反色（白底半透 + 白字 + 白点），原 .st.done 绿底在深蓝气泡上看不清 */
+  .msg-row.user .msg-bubble .st { background:rgba(255,255,255,.18) !important; color:#fff !important; }
+  .msg-row.user .msg-bubble .st::before { background:#fff !important; }
   /* AI 气泡操作条（悬停显示） */
   .msg-actions { display:flex; gap:6px; margin-top:8px; padding-top:7px; border-top:1px dashed var(--border); opacity:0; transition:opacity .15s; flex-wrap:wrap; }
   .msg-row.ai:hover .msg-actions { opacity:1; }
