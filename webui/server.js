@@ -1759,8 +1759,10 @@ async function getOverview() {
     getActiveSessions().catch(() => null),
     callTool("get_system_resources", {}, null).catch(() => null),
     callTool("get_licenses", {}, null).catch(() => null),
+    callTool("get_interfaces", {}, null).catch(() => null),
+    getPlatformLoading().catch(() => null),
   ]);
-  const [fw, ha, sess, res, lic] = fast.map((x) => (x.status === "fulfilled" ? x.value : null));
+  const [fw, ha, sess, res, lic, ifc, plat] = fast.map((x) => (x.status === "fulfilled" ? x.value : null));
   if (fw) { kpi.device = { hostname: fw.hostname, model: fw.model, sw: fw["sw-version"], uptime: fw.uptime, serial: fw.serial }; }
   if (ha) kpi.ha = { enabled: ha.enabled === "yes" || ha.enabled === true };
   if (sess) kpi.session = { active: sess.num_active, max: sess.num_max, kbps: sess.kbps, pps: sess.pps };
@@ -1769,13 +1771,81 @@ async function getOverview() {
     const arr = lic.entry || [];
     kpi.license = { total: arr.length, expired: arr.filter((e) => String(e.expired).toLowerCase() === "yes").length };
   }
-  const out = { ts: Date.now(), kpi, health: kpi.device.hostname ? "ok" : "degraded" };
+  // 接口信息（PA-440 物理/逻辑接口：名称/状态/速率/IP/MAC/角色）
+  const interfaces = ifc ? parseInterfaces(ifc) : [];
+  const out = { ts: Date.now(), kpi, interfaces, platform: plat || null, health: kpi.device.hostname ? "ok" : "degraded" };
   overviewCache = out; overviewTs = Date.now();
   // 指标采样（报表预留）：每次 getOverview 计算完成后把 KPI 快照写入环形缓冲，
   // 未来切 SQLite/PG 时按 spec 第 12 章 metrics 表落库；现在提供 /api/metrics 供前端可视化。
   metricsBuffer.push({ ts: out.ts, kpi: JSON.parse(JSON.stringify(kpi)), health: out.health });
   if (metricsBuffer.length > MAX_METRICS) metricsBuffer.shift();
   return out;
+}
+
+// 解析 get_interfaces 输出（directRunOp 返回 {entry:[...]}，MCP 路径返回 {hw:{entry:[...]}}，两种都兼容）
+function parseInterfaces(raw) {
+  const arr = raw && raw.hw && Array.isArray(raw.hw.entry) ? raw.hw.entry
+           : raw && Array.isArray(raw.entry) ? raw.entry
+           : Array.isArray(raw) ? raw
+           : [];
+  return arr.map((it) => {
+    const name = it.name || it["@_name"] || "";
+    const state = String(it.state || it["admin-status"] || it.link || "").toLowerCase();
+    const speed = it.speed || it["link-speed"] || "";
+    const mac = it.mac || it["mac-address"] || "";
+    const ip = it.ip || it["ip-address"] || "";
+    const role = (it["logical-interface"] && it["logical-interface"].name) || it.type || it.zone || "";
+    return { name, state, speed, mac, ip, role };
+  }).filter((x) => x.name);
+}
+
+// 平台 loading：管理面（webui server 自身）+ 数据面（mcp-panos-server 子进程）
+async function getPlatformLoading() {
+  // 管理面：server.js 自身 Node 进程指标
+  const mu = process.memoryUsage();
+  const cu = process.cpuUsage();
+  const controlPlane = {
+    name: "webui-console",
+    pid: process.pid,
+    node: process.version,
+    uptimeSec: Math.round(process.uptime()),
+    rssMB: Math.round(mu.rss / 1024 / 1024),
+    heapUsedMB: Math.round(mu.heapUsed / 1024 / 1024),
+    cpuUserSec: Math.round(cu.user / 1e6),
+    cpuSystemSec: Math.round(cu.system / 1e6),
+    status: "online",
+  };
+  // 数据面：优先通过 pgrep 找 panos-mcp 子进程拿 PID/RSS/CPU/etime；
+  // 若被宿主 macOS 限权（EPERM，如 supervisor 启动的子进程）则降级为 MCP 客户端状态
+  let dataPlane = { name: "panos-mcp", status: "unknown" };
+  try {
+    const { execFile } = require("child_process");
+    const pidOut = await new Promise((res) => execFile("pgrep", ["-f", "panos-mcp"], (e, stdout) => res(e ? null : stdout)));
+    const pids = (pidOut || "").trim().split(/\s+/).map(Number).filter(Boolean);
+    if (pids.length) {
+      const psOut = await new Promise((res) => execFile("ps", ["-p", String(pids[0]), "-o", "pid=,rss=,pcpu=,etime="], (e, stdout) => res(e ? null : stdout)));
+      const m = (psOut || "").trim().split(/\s+/).map((s) => s.trim()).filter(Boolean);
+      if (m.length >= 4) {
+        dataPlane = {
+          name: "panos-mcp",
+          pid: Number(m[0]),
+          rssMB: Math.round(Number(m[1]) / 1024),
+          cpuPct: parseFloat(m[2]) || 0,
+          uptimeStr: m[3],
+          status: "online",
+        };
+      } else {
+        dataPlane = { name: "panos-mcp", pid: pids[0], status: "online" };
+      }
+    } else {
+      // pgrep 找不到 → 降级用 MCP 客户端状态
+      dataPlane = { name: "panos-mcp", status: client ? "online" : "offline", note: "未找到 panos-mcp 进程" };
+    }
+  } catch (e) {
+    // EPERM 等：降级为 MCP 客户端状态判断
+    dataPlane = { name: "panos-mcp", status: client ? "online" : "offline", note: "PID 不可用：" + (e.code || e.message) };
+  }
+  return { controlPlane, dataPlane };
 }
 
 async function runDiagTask(t, firewall) {

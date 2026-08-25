@@ -381,7 +381,35 @@
   .view-feishu-active .fs-fold { background:var(--card); }
   .view-feishu-active .fs-fold-head { cursor:default; }
   .dash-scroll { flex:1; overflow-y:auto; padding:16px 22px 30px; }
-  .dash-inner { max-width:1120px; margin:0 auto; }
+  .dash-inner { max-width:1200px; margin:0 auto; }
+  .dash-monitor { display:grid; grid-template-columns:1.45fr 1fr; gap:14px; margin-top:14px; }
+  @media (max-width:960px) { .dash-monitor { grid-template-columns:1fr; } }
+  .platform-grid { display:flex; flex-direction:column; gap:8px; }
+  .platform-row { border:1px solid var(--border); border-radius:9px; padding:8px 10px; background:var(--card2); }
+  .pr-head { display:flex; align-items:center; gap:8px; padding-bottom:6px; border-bottom:1px dashed var(--border); margin-bottom:6px; }
+  .pr-head b { font-size:13px; font-weight:600; }
+  .pr-dot { width:9px; height:9px; border-radius:50%; background:var(--dim); flex-shrink:0; }
+  .pr-dot.online { background:var(--green); box-shadow:0 0 6px rgba(22,163,74,.55); animation:dotPulse 2.2s infinite; }
+  .pr-dot.offline { background:var(--red); }
+  .pr-dot.error { background:var(--amber); }
+  .pr-dot.unknown { background:var(--dim); }
+  @keyframes dotPulse { 0%,100% { opacity:1; } 50% { opacity:.55; } }
+  .pr-status { margin-left:auto; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .pr-body { display:grid; grid-template-columns:1fr 1fr; gap:2px 14px; }
+  .pr-kv { display:flex; justify-content:space-between; align-items:center; font-size:11.5px; padding:2px 0; }
+  .pr-kv .k { color:var(--dim); }
+  .pr-kv .v { color:var(--text); font-family:var(--mono); }
+  .pr-note { grid-column:1/-1; font-size:11px; color:var(--dim); padding-top:3px; }
+  /* 接口流量行 */
+  .if-row { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px dashed var(--border); font-size:12.5px; }
+  .if-row:last-child { border-bottom:none; }
+  .if-name { font-family:var(--mono); font-weight:600; min-width:120px; color:var(--text); }
+  .if-state { font-size:10.5px; padding:1px 8px; border-radius:9px; font-weight:600; letter-spacing:.3px; }
+  .if-state.up { background:var(--ok-bg); color:var(--ok-fg); }
+  .if-state.down { background:var(--err-bg); color:var(--err-fg); }
+  .if-state.unknown { background:rgba(100,116,139,.12); color:var(--muted); }
+  .if-ip { color:var(--text); font-family:var(--mono); font-size:11.5px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .if-meta { color:var(--dim); font-size:11px; font-family:var(--mono); min-width:90px; text-align:right; }
   .dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }
   .dash-card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px 16px;
     box-shadow:0 1px 3px rgba(15,23,42,.05); }
@@ -597,7 +625,7 @@
       </div>
     </div>
 
-    <!-- 视图：概览（KPI + 最近任务 + 快捷操作 + 空态引导） -->
+    <!-- 视图：概览（KPI + 接口流量 + 平台 Loading + 最近任务 + 快捷操作） -->
     <div class="view" id="view-dashboard" hidden>
       <div class="dash-scroll">
         <div class="dash-inner">
@@ -609,6 +637,42 @@
             <div class="kpi" id="kpiSession"><div class="label"><svg class="ic sm"><use href="#i-plug"/></svg>活跃会话</div><div class="value">--</div><div class="bar"><i></i></div><div class="extra">--</div></div>
             <div class="kpi" id="kpiResource"><div class="label"><svg class="ic sm"><use href="#i-gauge"/></svg>负载 / 内存</div><div class="value">--</div><div class="extra">--</div></div>
             <div class="kpi" id="kpiLicense"><div class="label"><svg class="ic sm"><use href="#i-license"/></svg>许可证</div><div class="value">--</div><div class="extra">--</div></div>
+          </div>
+
+          <!-- 主监控区：接口流量 + 平台 Loading 双列 -->
+          <div class="dash-monitor">
+            <!-- 接口流量 -->
+            <div class="dash-card">
+              <div class="dash-card-head"><svg class="ic sm"><use href="#i-list"/></svg>接口流量<span class="pill" id="ifCount">—</span></div>
+              <div id="dashInterfaces"><div class="empty">接口信息加载中…</div></div>
+            </div>
+            <!-- 平台 Loading -->
+            <div class="dash-card">
+              <div class="dash-card-head"><svg class="ic sm"><use href="#i-gauge"/></svg>平台 Loading</div>
+              <div class="platform-grid">
+                <div class="platform-row" id="platControl">
+                  <div class="pr-head"><span class="pr-dot" id="platCpDot"></span><b id="platCpName">管理面</b><span class="pr-status" id="platCpStatus">—</span></div>
+                  <div class="pr-body">
+                    <div class="pr-kv"><span class="k">PID</span><span class="v" id="platCpPid">—</span></div>
+                    <div class="pr-kv"><span class="k">Node</span><span class="v" id="platCpNode">—</span></div>
+                    <div class="pr-kv"><span class="k">内存 (RSS)</span><span class="v" id="platCpMem">—</span></div>
+                    <div class="pr-kv"><span class="k">Heap</span><span class="v" id="platCpHeap">—</span></div>
+                    <div class="pr-kv"><span class="k">CPU user</span><span class="v" id="platCpCpuU">—</span></div>
+                    <div class="pr-kv"><span class="k">运行时长</span><span class="v" id="platCpUp">—</span></div>
+                  </div>
+                </div>
+                <div class="platform-row" id="platData">
+                  <div class="pr-head"><span class="pr-dot" id="platDpDot"></span><b id="platDpName">数据面</b><span class="pr-status" id="platDpStatus">—</span></div>
+                  <div class="pr-body">
+                    <div class="pr-kv"><span class="k">PID</span><span class="v" id="platDpPid">—</span></div>
+                    <div class="pr-kv"><span class="k">RSS</span><span class="v" id="platDpMem">—</span></div>
+                    <div class="pr-kv"><span class="k">CPU%</span><span class="v" id="platDpCpu">—</span></div>
+                    <div class="pr-kv"><span class="k">运行时长</span><span class="v" id="platDpUp">—</span></div>
+                    <div class="pr-kv pr-note" id="platDpNote"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="dash-grid">
@@ -1126,8 +1190,75 @@ async function loadOverview() {
     setHTML("kpiLicense", ".value", lic.total === undefined ? "--" : String(lic.total));
     setText("kpiLicense", ".extra", lic.expired ? lic.expired + " 项已过期" : (lic.total ? "全部有效" : ""));
     const licEl = document.getElementById("kpiLicense"); if (licEl) licEl.className = "kpi" + (lic.expired ? " warn" : "");
+    // 接口流量渲染
+    renderInterfaces(d.interfaces || []);
+    // 平台 loading 渲染
+    renderPlatform(d.platform || null);
   } catch (e) { console.warn("[loadOverview]", e.message); }
   setTimeout(loadOverview, 5000);
+}
+
+// 概览：接口流量列表
+function renderInterfaces(list) {
+  const box = document.getElementById("dashInterfaces");
+  const count = document.getElementById("ifCount");
+  if (!box) return;
+  if (count) count.textContent = list.length + " 个";
+  if (!list.length) { box.innerHTML = '<div class="empty">接口信息暂不可用</div>'; return; }
+  box.innerHTML = list.slice(0, 12).map((it) => {
+    const st = String(it.state || "").toLowerCase();
+    const stateCls = st === "up" ? "up" : (st === "down" ? "down" : "unknown");
+    const stateTxt = st === "up" ? "UP" : (st === "down" ? "DOWN" : (st || "—").toUpperCase());
+    return '<div class="if-row">' +
+      '<span class="if-name">' + esc(it.name) + '</span>' +
+      '<span class="if-state ' + stateCls + '">' + esc(stateTxt) + '</span>' +
+      '<span class="if-ip">' + esc(it.ip || "—") + '</span>' +
+      '<span class="if-meta">' + esc((it.speed || "") + (it.role ? " · " + it.role : "")) + '</span>' +
+      '</div>';
+  }).join("") + (list.length > 12 ? '<div class="empty" style="margin-top:6px">仅显示前 12 / ' + list.length + ' 个接口</div>' : "");
+}
+
+// 概览：平台 loading（管理面 webui-console + 数据面 panos-mcp）
+function renderPlatform(p) {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  // 管理面
+  const cp = p && p.controlPlane || null;
+  if (cp) {
+    set("platCpName", cp.name || "管理面");
+    set("platCpStatus", cp.status || "—");
+    set("platCpPid", cp.pid != null ? String(cp.pid) : "—");
+    set("platCpNode", cp.node || "—");
+    set("platCpMem", cp.rssMB != null ? (cp.rssMB + " MB") : "—");
+    set("platCpHeap", cp.heapUsedMB != null ? (cp.heapUsedMB + " MB") : "—");
+    set("platCpCpuU", cp.cpuUserSec != null ? (cp.cpuUserSec + " s") : "—");
+    set("platCpUp", cp.uptimeSec != null ? formatUptime(cp.uptimeSec) : "—");
+    const cpDot = document.getElementById("platCpDot");
+    if (cpDot) cpDot.className = "pr-dot " + (cp.status || "");
+  }
+  // 数据面
+  const dp = p && p.dataPlane || null;
+  if (dp) {
+    set("platDpName", dp.name || "数据面");
+    set("platDpStatus", dp.status || "—");
+    set("platDpPid", dp.pid != null ? String(dp.pid) : "—");
+    set("platDpMem", dp.rssMB != null ? (dp.rssMB + " MB") : "—");
+    set("platDpCpu", dp.cpuPct != null ? (dp.cpuPct + "%") : "—");
+    set("platDpUp", dp.uptimeStr || (dp.uptimeSec != null ? formatUptime(dp.uptimeSec) : "—"));
+    const dpDot = document.getElementById("platDpDot");
+    if (dpDot) dpDot.className = "pr-dot " + (dp.status || "");
+    const note = document.getElementById("platDpNote");
+    if (note) { note.textContent = dp.note || ""; note.style.display = dp.note ? "" : "none"; }
+  }
+}
+
+function formatUptime(sec) {
+  sec = Math.max(0, parseInt(sec, 10) || 0);
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d) return d + "d " + h + "h";
+  if (h) return h + "h " + m + "m";
+  return m + "m " + (sec % 60) + "s";
 }
 
 // ── 气泡式对话提交（方案C）：支持 @#N 前缀追问指定任务 ──
