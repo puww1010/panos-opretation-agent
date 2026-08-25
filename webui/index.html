@@ -84,9 +84,10 @@
   .task-body ::-webkit-scrollbar-thumb:hover { background:var(--border); }
   .task-body::-webkit-scrollbar-thumb { background:var(--border2); }
 
-  .topbar { position:sticky; top:0; z-index:100; display:flex; align-items:center; gap:16px;
-    padding:12px 24px; background:color-mix(in srgb, var(--card) 88%, transparent); backdrop-filter:blur(10px);
+  .topbar { display:flex; align-items:center; gap:16px; flex-shrink:0;
+    padding:10px 20px; background:color-mix(in srgb, var(--card) 88%, transparent); backdrop-filter:blur(10px);
     border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .view-title { font-size:16px; font-weight:700; color:var(--title); margin:0; letter-spacing:.2px; }
   .brand { display:flex; align-items:center; gap:12px; }
   .logo { width:44px; height:44px; border-radius:12px; object-fit:cover;
     box-shadow:0 2px 14px rgba(22,104,220,.28); background:transparent; }
@@ -320,6 +321,56 @@
   /* 回复目标 chip（@#N 回显） */
   .reply-chip { display:inline-flex; align-items:center; gap:6px; background:var(--warn-bg2); border:1px solid var(--warn-border2); color:var(--warn-fg); font-size:12px; font-weight:600; padding:3px 10px; border-radius:12px; margin-bottom:6px; }
   .reply-chip button { border:none; background:transparent; color:var(--warn-fg); cursor:pointer; font-size:12px; padding:0 2px; }
+  /* ══ 侧边栏布局（方案C 混合模型）══ */
+  .shell { display:flex; height:100vh; overflow:hidden; }
+  .sidebar { width:212px; flex-shrink:0; background:var(--card); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; transition:width .18s ease; overflow:hidden; }
+  body.side-collapsed .sidebar { width:56px; }
+  .side-logo { display:flex; align-items:center; gap:9px; padding:11px 12px 10px; border-bottom:1px solid var(--border); min-height:54px; }
+  .side-logo .logo { width:30px; height:30px; border-radius:8px; box-shadow:0 2px 10px rgba(22,104,220,.28); }
+  .side-logo .side-title { font-size:14px; font-weight:700; color:var(--title); white-space:nowrap; }
+  body.side-collapsed .side-title { display:none; }
+  .side-fold { margin-left:auto; padding:3px 7px; font-size:12px; }
+  body.side-collapsed .side-fold { margin-left:0; }
+  .side-nav { flex:1; overflow-y:auto; padding:10px 8px; }
+  .side-sep { font-size:10px; color:var(--dim); letter-spacing:1.2px; padding:14px 10px 6px; white-space:nowrap; }
+  body.side-collapsed .side-sep { display:none; }
+  .side-item { display:flex; align-items:center; gap:9px; width:100%; padding:8px 10px; border:none; background:none;
+    border-radius:8px; color:var(--muted); font-size:13px; cursor:pointer; text-align:left; transition:all .15s; white-space:nowrap; }
+  .side-item:hover { background:var(--run-bg); color:var(--text); }
+  .side-item.on { background:var(--run-bg); color:var(--run-fg); font-weight:600; }
+  .side-item .ic { flex-shrink:0; }
+  body.side-collapsed .side-item .txt { display:none; }
+  .side-badge { margin-left:auto; background:var(--accent); color:#fff; font-size:10px; font-weight:600; padding:1px 7px; border-radius:10px; }
+  body.side-collapsed .side-badge { display:none; }
+  .side-foot { padding:8px; border-top:1px solid var(--border); }
+  /* 主区 + 视图 */
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .view { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .view[hidden] { display:none; }
+  #view-chat .chat-scroll { flex:1; overflow-y:auto; padding:14px 20px 6px; }
+  /* 概览视图 */
+  .dash-scroll { flex:1; overflow-y:auto; padding:16px 22px 30px; }
+  .dash-inner { max-width:1120px; margin:0 auto; }
+  .dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }
+  .dash-card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px 16px;
+    box-shadow:0 1px 3px rgba(15,23,42,.05); }
+  .dash-card-head { font-size:13px; font-weight:600; color:var(--text); margin-bottom:10px; display:flex; align-items:center; gap:7px; }
+  .dash-card-head .pill { margin-left:auto; background:var(--chat-panel-head-bg); border-color:transparent; color:var(--run-fg); }
+  .dash-event { display:flex; gap:8px; padding:7px 0; border-bottom:1px dashed var(--border); font-size:12.5px; }
+  .dash-event:last-child { border-bottom:none; }
+  .dash-event .t { color:var(--dim); font-family:var(--mono); font-size:11px; width:70px; flex-shrink:0; padding-top:1px; }
+  .dash-event .st-dot { width:7px; height:7px; border-radius:50%; margin-top:6px; flex-shrink:0; }
+  .dash-event .msg { color:var(--muted); flex:1; line-height:1.55; word-break:break-word; }
+  .dash-event .msg b { color:var(--text); font-weight:600; }
+  .dash-quick { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+  .dash-quick button { display:flex; align-items:center; gap:8px; padding:10px 12px; border:1px solid var(--border2);
+    border-radius:10px; background:var(--card2); color:var(--text); font-size:13px; cursor:pointer; transition:all .15s; text-align:left; }
+  .dash-quick button:hover { border-color:var(--accent); color:var(--accent); background:var(--run-bg); }
+  .dash-try { margin-top:14px; padding-top:12px; border-top:1px dashed var(--border); }
+  .dash-try .try-tip { font-size:11.5px; color:var(--dim); margin-bottom:7px; }
+  .dash-try .chips { margin-top:0; }
+  @media (max-width:960px) { .sidebar { width:56px; } .sidebar .side-title, .sidebar .txt, .sidebar .side-sep { display:none; } .dash-grid { grid-template-columns:1fr; } }
   @media (max-width:720px) { .topbar{padding:10px 14px} .wrap{padding:14px} .cmd-row{flex-direction:column} .cmd .btn{padding:12px} .msg-bubble{max-width:92%} .chat-scroll{padding:10px 10px 4px} .cmdbar{padding:8px 10px 12px} .kpis-compact{grid-template-columns:repeat(2,1fr)} }
 </style>
 </head>
@@ -360,6 +411,11 @@
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4m0 4h.01"/></symbol>
     <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></symbol>
   </defs>
 </svg>
 
@@ -379,31 +435,6 @@
   <span id="liveBack" style="margin-left:10px;font-size:11px;opacity:.85"></span>
 </div>
 
-<div class="topbar">
-  <div class="brand">
-    <img class="logo" src="assets/agent-logo.png" alt="agent logo">
-    <div>
-      <h1>Palo Alto Networks&nbsp;防火墙监控运维数字员工</h1>
-    </div>
-  </div>
-  <div class="spacer"></div>
-  <div class="top-ctrl">
-    <button class="btn" onclick="showLLMConfig()"><svg class="ic-btn"><use href="#i-settings"/></svg>模型配置</button>
-    <button class="btn primary" onclick="focusInput()" title="快速回到底部输入框（快捷键 Ctrl/Cmd+K）" style="padding:3px 12px;font-size:12px"><svg class="ic-btn"><use href="#i-pencil"/></svg>输入任务</button>
-    <button class="btn" id="themeBtn" onclick="toggleTheme()" title="切换深色 / 浅色模式" style="padding:3px 10px;font-size:12px"><svg class="ic-btn" id="themeIcon"><use href="#i-moon"/></svg><span id="themeTxt">深色</span></button>
-    <!-- 网络诊断条（后端地址 + 强刷 + 测网络），与模型配置同一行 -->
-    <span id="diagBar" style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;
-      background:color-mix(in srgb, var(--card) 90%, transparent);border:1px solid var(--border2);border-radius:8px;padding:3px 8px;
-      font-family:var(--mono,monospace);white-space:nowrap;">
-      <span style="color:var(--muted)">后端→</span><code id="backendUrl" style="color:var(--accent)">http://localhost:8080</code>
-      <button class="btn" style="padding:2px 8px;font-size:11px" onclick="location.reload(true)"><svg class="ic sm"><use href="#i-refresh"/></svg>强刷</button>
-      <button class="btn" style="padding:2px 8px;font-size:11px" onclick="testBackend()"><svg class="ic sm"><use href="#i-pulse"/></svg>测网络</button>
-    </span>
-    <button class="btn" onclick="showChangePwd()" title="修改登录密码（首次登录建议立即修改）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-key"/></svg>改密</button>
-    <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-lock"/></svg>退出</button>
-  </div>
-</div>
-
 <!-- 登录覆盖层：未认证时阻止整个控制台操作（保护防火墙管理入口） -->
 <div id="loginMask" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.55);backdrop-filter:blur(6px);align-items:center;justify-content:center">
   <div style="background:var(--card);border-radius:16px;padding:32px 36px;width:360px;max-width:92vw;box-shadow:0 24px 80px rgba(15,23,42,.3);text-align:center">
@@ -417,71 +448,161 @@
   </div>
 </div>
 
-<div class="app">
+<div class="shell">
 
-  <!-- 气泡对话流：KPI 紧凑行 + 折叠式飞书面板 + 会话气泡 -->
-  <div class="chat-scroll" id="chatScroll">
-    <div class="chat-inner">
-
-      <!-- KPI 概览卡（loadOverview 用 getElementById 找这些 ID；紧凑样式） -->
-      <div class="kpis kpis-compact">
-        <div class="kpi" id="kpiDevice"><div class="label"><svg class="ic sm"><use href="#i-device"/></svg>设备</div><div class="value">--</div><div class="extra">--</div></div>
-        <div class="kpi" id="kpiHa"><div class="label"><svg class="ic sm"><use href="#i-ha"/></svg>HA 高可用</div><div class="value">--</div><div class="extra">PA 高可用对</div></div>
-        <div class="kpi" id="kpiSession"><div class="label"><svg class="ic sm"><use href="#i-plug"/></svg>活跃会话</div><div class="value">--</div><div class="bar"><i></i></div><div class="extra">--</div></div>
-        <div class="kpi" id="kpiResource"><div class="label"><svg class="ic sm"><use href="#i-gauge"/></svg>负载 / 内存</div><div class="value">--</div><div class="extra">--</div></div>
-        <div class="kpi" id="kpiLicense"><div class="label"><svg class="ic sm"><use href="#i-license"/></svg>许可证</div><div class="value">--</div><div class="extra">--</div></div>
-      </div>
-
-      <!-- 飞书集成面板（默认折叠，点击标题展开） -->
-      <div class="fs-fold" id="fsFold">
-        <div class="fs-fold-head" onclick="toggleFsFold()">
-          <span><svg class="ic sm"><use href="#i-chat"/></svg>飞书集成</span>
-          <span class="pill"><span class="dot green" id="fsDot"></span><span id="fsTxt">飞书检测中</span></span>
-          <span style="font-size:11px;color:var(--dim)">▾ 展开</span>
-        </div>
-        <div class="fs-fold-body">
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <input class="input" id="feishuMsg" placeholder="输入要发送到飞书群的消息...（回车发送）" style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();feishuSend();}">
-            <button class="btn primary" onclick="feishuSend()">发送</button>
-            <button class="btn" onclick="feishuPushReport()">推送最新巡检报告</button>
-          </div>
-          <div id="feishuResult" class="empty"></div>
-        </div>
-      </div>
-
-      <!-- 任务对话颜色框：消息流 + 输入栏都在框内，位于飞书集成下方 -->
-      <div class="chat-panel">
-        <div class="chat-panel-head">
-          <svg class="ic sm"><use href="#i-chat"/></svg>
-          <span>任务对话</span>
-          <span class="pill" id="chatCount">—</span>
-        </div>
-        <!-- 气泡流主体（pollTasks → renderChat 填充） -->
-        <div id="chat"><div class="empty" style="text-align:center;padding:30px 0">⏳ 加载任务…</div></div>
-        <!-- 对话框内输入栏：快捷 chips + 回复目标 + 输入框 + LLM 选择 + 发送 -->
-        <div class="cmdbar">
-          <div class="cmdbar-inner">
-            <div class="chips-bar">
-              <div class="chips" id="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin:0;padding:0;border:none;background:none"></div>
-              <button class="btn" onclick="cleanAndRefresh()" title="清除所有已完成/已取消任务（保留活跃与待审批），历史消息将被移除" style="margin-left:auto;padding:4px 12px;font-size:12px"><svg class="ic sm"><use href="#i-broom"/></svg>清除已完成</button>
-            </div>
-            <div id="replyChipWrap"></div>
-            <div class="input-row">
-              <textarea id="q" rows="1" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 封禁 1.2.3.4 …（Shift+Enter 换行，Enter 发送）"
-                oninput="autoGrow(this)"
-                onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();submit()}"></textarea>
-              <select class="select" id="llmSel" title="当前 LLM（新提交的任务会由它处理）">
-                <option value="keyword">关键词模式（免费）</option>
-              </select>
-              <button class="btn primary" id="submitBtn" onclick="submit()" title="发送（⌘/Ctrl+Enter）"><svg class="ic-btn" style="margin-right:0"><use href="#i-zap"/></svg>发送</button>
-            </div>
-            <div class="trouble" id="troublePanel"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="foot">Palo Alto Networks · PAN-OS 安全运维监控 · 数字员工平台</div>
+  <!-- 左侧菜单栏（可折叠窄条，方案C 混合模型） -->
+  <aside class="sidebar" id="sidebar">
+    <div class="side-logo">
+      <img class="logo" src="assets/agent-logo.png" alt="agent logo">
+      <span class="side-title">PAN-OS 运维</span>
+      <button class="side-fold btn" onclick="toggleSidebar()" title="折叠 / 展开菜单"><svg class="ic sm" id="foldIcon"><use href="#i-left"/></svg></button>
     </div>
+    <nav class="side-nav">
+      <button class="side-item" data-view="dashboard" onclick="showView('dashboard')"><svg class="ic"><use href="#i-grid"/></svg><span class="txt">概览</span></button>
+      <button class="side-item on" data-view="chat" onclick="showView('chat')"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">任务对话</span><b class="side-badge" id="sideTaskBadge" style="display:none">0</b></button>
+      <div class="side-sep">快捷入口</div>
+      <button class="side-item" onclick="quickTask('设备状态')"><svg class="ic"><use href="#i-device"/></svg><span class="txt">设备状态</span></button>
+      <button class="side-item" onclick="quickTask('安全策略')"><svg class="ic"><use href="#i-shield"/></svg><span class="txt">安全策略</span></button>
+      <button class="side-item" onclick="quickTask('流量日志')"><svg class="ic"><use href="#i-list"/></svg><span class="txt">流量日志</span></button>
+      <button class="side-item" onclick="quickTask('威胁日志')"><svg class="ic"><use href="#i-alert"/></svg><span class="txt">威胁日志</span></button>
+      <button class="side-item" onclick="quickTask('审计记录')"><svg class="ic"><use href="#i-clock"/></svg><span class="txt">审计记录</span></button>
+      <button class="side-item" onclick="quickTask('完整巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">完整巡检</span></button>
+      <div class="side-sep">系统</div>
+      <button class="side-item" onclick="openFeishu()"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">飞书对接</span></button>
+      <button class="side-item" onclick="showLLMConfig()"><svg class="ic"><use href="#i-settings"/></svg><span class="txt">设置</span></button>
+    </nav>
+    <div class="side-foot">
+      <button class="side-item" onclick="toggleTheme()"><svg class="ic" id="sideThemeIcon"><use href="#i-moon"/></svg><span class="txt" id="sideThemeTxt">深色模式</span></button>
+    </div>
+  </aside>
+
+  <!-- 主区：顶栏 + 视图 -->
+  <div class="main">
+    <header class="topbar">
+      <h2 class="view-title" id="viewTitle">任务对话</h2>
+      <div class="spacer"></div>
+      <div class="top-ctrl">
+        <button class="btn" onclick="showLLMConfig()"><svg class="ic-btn"><use href="#i-settings"/></svg>模型配置</button>
+        <button class="btn primary" onclick="focusInput()" title="快速回到底部输入框（快捷键 Ctrl/Cmd+K）" style="padding:3px 12px;font-size:12px"><svg class="ic-btn"><use href="#i-pencil"/></svg>输入任务</button>
+        <button class="btn" id="themeBtn" onclick="toggleTheme()" title="切换深色 / 浅色模式" style="padding:3px 10px;font-size:12px"><svg class="ic-btn" id="themeIcon"><use href="#i-moon"/></svg><span id="themeTxt">深色</span></button>
+        <!-- 网络诊断条（后端地址 + 强刷 + 测网络），与模型配置同一行 -->
+        <span id="diagBar" style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;
+          background:color-mix(in srgb, var(--card) 90%, transparent);border:1px solid var(--border2);border-radius:8px;padding:3px 8px;
+          font-family:var(--mono,monospace);white-space:nowrap;">
+          <span style="color:var(--muted)">后端→</span><code id="backendUrl" style="color:var(--accent)">http://localhost:8080</code>
+          <button class="btn" style="padding:2px 8px;font-size:11px" onclick="location.reload(true)"><svg class="ic sm"><use href="#i-refresh"/></svg>强刷</button>
+          <button class="btn" style="padding:2px 8px;font-size:11px" onclick="testBackend()"><svg class="ic sm"><use href="#i-pulse"/></svg>测网络</button>
+        </span>
+        <button class="btn" onclick="showChangePwd()" title="修改登录密码（首次登录建议立即修改）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-key"/></svg>改密</button>
+        <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-lock"/></svg>退出</button>
+      </div>
+    </header>
+
+    <!-- 视图：任务对话（气泡流 + 输入栏） -->
+    <div class="view" id="view-chat">
+      <div class="chat-scroll" id="chatScroll">
+        <div class="chat-inner">
+
+          <!-- 飞书对接面板（默认折叠，点击标题展开） -->
+          <div class="fs-fold" id="fsFold">
+            <div class="fs-fold-head" onclick="toggleFsFold()">
+              <span><svg class="ic sm"><use href="#i-chat"/></svg>飞书对接</span>
+              <span class="pill"><span class="dot green" id="fsDot"></span><span id="fsTxt">飞书检测中</span></span>
+              <span style="font-size:11px;color:var(--dim)">▾ 展开</span>
+            </div>
+            <div class="fs-fold-body">
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input class="input" id="feishuMsg" placeholder="输入要发送到飞书群的消息...（回车发送）" style="flex:1" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();feishuSend();}">
+                <button class="btn primary" onclick="feishuSend()">发送</button>
+                <button class="btn" onclick="feishuPushReport()">推送最新巡检报告</button>
+              </div>
+              <div id="feishuResult" class="empty"></div>
+            </div>
+          </div>
+
+          <!-- 任务对话颜色框：消息流 + 输入栏都在框内 -->
+          <div class="chat-panel">
+            <div class="chat-panel-head">
+              <svg class="ic sm"><use href="#i-chat"/></svg>
+              <span>任务对话</span>
+              <span class="pill" id="chatCount">—</span>
+            </div>
+            <!-- 气泡流主体（pollTasks → renderChat 填充） -->
+            <div id="chat"><div class="empty" style="text-align:center;padding:30px 0">⏳ 加载任务…</div></div>
+            <!-- 对话框内输入栏：快捷 chips + 回复目标 + 输入框 + LLM 选择 + 发送 -->
+            <div class="cmdbar">
+              <div class="cmdbar-inner">
+                <div class="chips-bar">
+                  <div class="chips" id="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin:0;padding:0;border:none;background:none"></div>
+                  <button class="btn" onclick="cleanAndRefresh()" title="清除所有已完成/已取消任务（保留活跃与待审批），历史消息将被移除" style="margin-left:auto;padding:4px 12px;font-size:12px"><svg class="ic sm"><use href="#i-broom"/></svg>清除已完成</button>
+                </div>
+                <div id="replyChipWrap"></div>
+                <div class="input-row">
+                  <textarea id="q" rows="1" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 封禁 1.2.3.4 …（Shift+Enter 换行，Enter 发送）"
+                    oninput="autoGrow(this)"
+                    onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();submit()}"></textarea>
+                  <select class="select" id="llmSel" title="当前 LLM（新提交的任务会由它处理）">
+                    <option value="keyword">关键词模式（免费）</option>
+                  </select>
+                  <button class="btn primary" id="submitBtn" onclick="submit()" title="发送（⌘/Ctrl+Enter）"><svg class="ic-btn" style="margin-right:0"><use href="#i-zap"/></svg>发送</button>
+                </div>
+                <div class="trouble" id="troublePanel"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="foot">Palo Alto Networks · PAN-OS 安全运维监控 · 数字员工平台</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 视图：概览（KPI + 最近任务 + 快捷操作 + 空态引导） -->
+    <div class="view" id="view-dashboard" hidden>
+      <div class="dash-scroll">
+        <div class="dash-inner">
+
+          <!-- KPI 概览卡（loadOverview 用 getElementById 找这些 ID） -->
+          <div class="kpis">
+            <div class="kpi" id="kpiDevice"><div class="label"><svg class="ic sm"><use href="#i-device"/></svg>设备</div><div class="value">--</div><div class="extra">--</div></div>
+            <div class="kpi" id="kpiHa"><div class="label"><svg class="ic sm"><use href="#i-ha"/></svg>HA 高可用</div><div class="value">--</div><div class="extra">PA 高可用对</div></div>
+            <div class="kpi" id="kpiSession"><div class="label"><svg class="ic sm"><use href="#i-plug"/></svg>活跃会话</div><div class="value">--</div><div class="bar"><i></i></div><div class="extra">--</div></div>
+            <div class="kpi" id="kpiResource"><div class="label"><svg class="ic sm"><use href="#i-gauge"/></svg>负载 / 内存</div><div class="value">--</div><div class="extra">--</div></div>
+            <div class="kpi" id="kpiLicense"><div class="label"><svg class="ic sm"><use href="#i-license"/></svg>许可证</div><div class="value">--</div><div class="extra">--</div></div>
+          </div>
+
+          <div class="dash-grid">
+            <!-- 最近任务流 -->
+            <div class="dash-card">
+              <div class="dash-card-head"><svg class="ic sm"><use href="#i-list"/></svg>最近任务<span class="pill" id="dashTaskCount">—</span></div>
+              <div id="dashEventList"><div class="empty">暂无任务记录</div></div>
+            </div>
+            <!-- 快捷操作 + 空态引导 -->
+            <div class="dash-card">
+              <div class="dash-card-head"><svg class="ic sm"><use href="#i-zap"/></svg>快捷操作</div>
+              <div class="dash-quick">
+                <button onclick="quickTask('完整巡检')"><svg class="ic sm"><use href="#i-check"/></svg>完整巡检</button>
+                <button onclick="quickTask('设备状态')"><svg class="ic sm"><use href="#i-device"/></svg>设备状态</button>
+                <button onclick="quickTask('安全策略')"><svg class="ic sm"><use href="#i-shield"/></svg>安全策略</button>
+                <button onclick="quickTask('威胁日志')"><svg class="ic sm"><use href="#i-alert"/></svg>威胁日志</button>
+                <button onclick="quickTask('流量日志')"><svg class="ic sm"><use href="#i-list"/></svg>流量日志</button>
+                <button onclick="quickTask('审计记录')"><svg class="ic sm"><use href="#i-clock"/></svg>审计记录</button>
+              </div>
+              <div class="dash-try">
+                <div class="try-tip">试试这样问：</div>
+                <div class="chips">
+                  <button class="chip" onclick="quickTask('封禁 1.1.1.1')">封禁 1.1.1.1</button>
+                  <button class="chip" onclick="quickTask('查最近10分钟被阻止的连接')">查最近10分钟被阻止的连接</button>
+                  <button class="chip" onclick="quickTask('192.168.1.2 不能访问外网')">192.168.1.2 不能访问外网</button>
+                  <button class="chip" onclick="quickTask('谁在10分钟前修改了策略')">谁在10分钟前修改了策略</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -493,6 +614,10 @@ function applyTheme(dark) {
   const txt = document.getElementById("themeTxt");
   if (icon) icon.innerHTML = dark ? '<use href="#i-sun"/>' : '<use href="#i-moon"/>';
   if (txt) txt.textContent = dark ? "浅色" : "深色";
+  const sIcon = document.getElementById("sideThemeIcon");
+  const sTxt = document.getElementById("sideThemeTxt");
+  if (sIcon) sIcon.innerHTML = dark ? '<use href="#i-sun"/>' : '<use href="#i-moon"/>';
+  if (sTxt) sTxt.textContent = dark ? "浅色模式" : "深色模式";
 }
 function toggleTheme() {
   const dark = !document.body.classList.contains("dark");
@@ -505,6 +630,64 @@ function toggleTheme() {
   if (dark === null) dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   applyTheme(dark);
 })();
+// ── 视图切换 + 侧边栏（方案C 混合模型）──
+const VIEW_NAMES = { dashboard: "概览", chat: "任务对话" };
+function showView(name) {
+  document.querySelectorAll(".view").forEach(v => { v.hidden = v.id !== "view-" + name; });
+  document.querySelectorAll(".side-item[data-view]").forEach(b => { b.classList.toggle("on", b.getAttribute("data-view") === name); });
+  const t = document.getElementById("viewTitle");
+  if (t) t.textContent = VIEW_NAMES[name] || name;
+  try { localStorage.setItem("panos_view", name); } catch (e) {}
+  if (name === "chat") {
+    const sc = document.getElementById("chatScroll");
+    if (sc) sc.scrollTop = sc.scrollHeight;
+  }
+}
+function toggleSidebar() {
+  document.body.classList.toggle("side-collapsed");
+  const fi = document.getElementById("foldIcon");
+  if (fi) fi.innerHTML = document.body.classList.contains("side-collapsed") ? '<use href="#i-right"/>' : '<use href="#i-left"/>';
+  try { localStorage.setItem("panos_side", document.body.classList.contains("side-collapsed") ? "1" : "0"); } catch (e) {}
+}
+// 快捷入口：切到对话视图并直接发起任务
+function quickTask(text) {
+  showView("chat");
+  const q = document.getElementById("q");
+  if (q) { q.value = text; autoGrow(q); }
+  submit();
+}
+// 飞书对接：切到对话视图并展开飞书面板
+function openFeishu() {
+  showView("chat");
+  const f = document.getElementById("fsFold");
+  if (f) { f.classList.add("open"); setTimeout(() => f.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60); }
+}
+// 恢复视图/侧栏状态（登录后 init 前调用；窄屏默认折叠）
+function initShell() {
+  let v = null; try { v = localStorage.getItem("panos_view"); } catch (e) {}
+  showView(v === "dashboard" ? "dashboard" : "chat");
+  let side = null; try { side = localStorage.getItem("panos_side"); } catch (e) {}
+  const collapsed = side === "1" || (window.innerWidth < 960 && side !== "0");
+  if (collapsed) {
+    document.body.classList.add("side-collapsed");
+    const fi = document.getElementById("foldIcon");
+    if (fi) fi.innerHTML = '<use href="#i-right"/>';
+  }
+}
+// ── 概览视图：最近任务流渲染（复用 _taskCache）──
+function renderDashEvents() {
+  const list = document.getElementById("dashEventList");
+  const count = document.getElementById("dashTaskCount");
+  const tasks = _taskCache || [];
+  if (count) count.textContent = tasks.length + " 条";
+  if (!list) return;
+  if (!tasks.length) { list.innerHTML = '<div class="empty">暂无任务记录 · 从任务对话发起第一个任务</div>'; return; }
+  list.innerHTML = tasks.slice(-8).reverse().map(t => {
+    const dot = ({ done: "var(--green)", running: "var(--accent)", executing: "var(--accent)", committing: "var(--accent)", pending: "var(--dim)", failed: "var(--red)", cancelled: "var(--dim)", awaiting_approval: "var(--amber)", awaiting_selection: "var(--amber)", awaiting_commit: "var(--amber)" })[t.status] || "var(--dim)";
+    const sum = t.result ? String(t.result.summary || t.result.answer || t.result.detail || t.result.verdict || "").slice(0, 42) : "";
+    return '<div class="dash-event"><span class="t">' + esc(fmtConvTime(t.createdAt)) + '</span><span class="st-dot" style="background:' + dot + '"></span><span class="msg"><b>#' + t.id + ' ' + esc(t.input) + '</b> · ' + statusText(t.status) + (sum ? ' — ' + esc(sum) : '') + '</span></div>';
+  }).join("");
+}
 // ── 全局错误捕获：任何 JS 异常都不让页面僵死，必须在状态条告知 ──
 window.addEventListener("error", (ev) => {
   console.error("[page-error]", ev.error || ev.message);
@@ -738,6 +921,7 @@ async function init() {
     const chk = await fetch("/api/auth/check", { cache: "no-store" });
     if (!chk.ok) { showLogin(); return; }
   } catch (e) { /* 后端不可达时继续初始化，让其他请求的 401/错误自然展示 */ }
+  initShell(); // 恢复上次视图 + 侧栏折叠状态
   // 容错三件套：每个 fetch 独立 try/catch，单个挂掉不影响整体渲染
   // 页面加载/刷新时先回到默认 LLM（llm-config.json 的 _default=deepseek），再读取当前状态显示。
   // 会话内手动切换（selectLLM）立即生效且不写盘；只有刷新/重新加载页面才回默认。
@@ -1083,6 +1267,11 @@ async function pollTasks() {
     _taskCache = tasks; // 供 copyTaskText 读取结果
     const cc = document.getElementById("chatCount");
     if (cc) cc.textContent = tasks.length + " 条消息";
+    // 侧栏任务徽章：活跃任务数（含待审批）
+    const activeN = tasks.filter(t => ["pending", "running", "executing", "committing", "awaiting_approval", "awaiting_selection", "awaiting_commit"].includes(t.status)).length;
+    const badge = document.getElementById("sideTaskBadge");
+    if (badge) { badge.style.display = activeN ? "" : "none"; badge.textContent = activeN; }
+    renderDashEvents();
     const chat = document.getElementById("chat");
     // 重建前记录滚动位置（瞬时恢复，配合已移除的 scroll-behavior:smooth，
     // 避免每次轮询重建触发平滑滚动回弹 → 新旧消息都"震动"）
