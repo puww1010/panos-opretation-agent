@@ -343,6 +343,9 @@
   .side-item:hover { background:var(--run-bg); color:var(--text); }
   .side-item.on { background:var(--run-bg); color:var(--run-fg); font-weight:600; }
   .side-item .ic { flex-shrink:0; }
+  .side-item .txt { display:flex; flex-direction:column; line-height:1.25; min-width:0; }
+  .side-item .side-item-sub { font-size:10.5px; font-weight:400; color:var(--dim); line-height:1.3; margin-top:1px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   body.side-collapsed .side-item .txt { display:none; }
   .side-badge { margin-left:auto; background:var(--accent); color:#fff; font-size:10px; font-weight:600; padding:1px 7px; border-radius:10px; }
   body.side-collapsed .side-badge { display:none; }
@@ -490,7 +493,7 @@
     </div>
     <nav class="side-nav">
       <button class="side-item" data-view="dashboard" onclick="showView('dashboard')"><svg class="ic"><use href="#i-grid"/></svg><span class="txt">概览</span></button>
-      <button class="side-item on" data-view="chat" onclick="showView('chat')"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">任务对话</span><b class="side-badge" id="sideTaskBadge" style="display:none">0</b></button>
+      <button class="side-item" data-view="chat" onclick="showView('chat')"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">任务对话<span class="side-item-sub">用自然语言发起任务请求</span></span><b class="side-badge" id="sideTaskBadge" style="display:none">0</b></button>
       <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-phone"/></svg><span class="txt">飞书移动端</span></button>
       <div class="side-sep">快捷入口</div>
       <button class="side-item" onclick="quickTask('设备状态')"><svg class="ic"><use href="#i-device"/></svg><span class="txt">设备状态</span></button>
