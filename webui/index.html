@@ -234,6 +234,9 @@
   .input-row { display:flex; gap:10px; align-items:flex-end; }
   .input-row textarea { flex:1; border:1px solid var(--border2); border-radius:12px; padding:11px 14px; font:inherit; font-size:14.5px; resize:none; min-height:44px; max-height:160px; outline:none; line-height:1.5; background:var(--panel-bg); transition:border-color .15s; }
   .input-row textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(22,104,220,.12); }
+  /* 输入框聚焦闪烁提示（顶部 ✏️ 输入任务 点击后） */
+  .input-row textarea.flash-focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(22,104,220,.28), 0 0 0 7px rgba(22,104,220,.10); animation:flashIn 1.2s ease; }
+  @keyframes flashIn { 0% { box-shadow:0 0 0 3px rgba(22,104,220,.45), 0 0 0 10px rgba(22,104,220,.2); } 100% { box-shadow:0 0 0 3px rgba(22,104,220,.28), 0 0 0 7px rgba(22,104,220,.10); } }
   .input-row .select { border-radius:10px; padding:10px 12px; font-size:13px; }
   .input-row .btn { border-radius:12px; padding:0 22px; height:44px; font-size:14px; }
   /* 回复目标 chip（@#N 回显） */
@@ -270,6 +273,7 @@
   <div class="spacer"></div>
   <div class="top-ctrl">
     <button class="btn" onclick="showLLMConfig()">⚙️ 模型配置</button>
+    <button class="btn primary" onclick="focusInput()" title="快速回到底部输入框（快捷键 Ctrl/Cmd+K）" style="padding:3px 12px;font-size:12px">✏️ 输入任务</button>
     <!-- 网络诊断条（后端地址 + 强刷 + 测网络），与模型配置同一行 -->
     <span id="diagBar" style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;
       background:rgba(255,255,255,.92);border:1px solid var(--border2);border-radius:8px;padding:3px 8px;
@@ -338,7 +342,10 @@
   <!-- 底部固定输入栏：快捷 chips + 回复目标 + 输入框 + LLM 选择 + 发送 -->
   <div class="cmdbar">
     <div class="cmdbar-inner">
-      <div class="chips-bar" id="btns"></div>
+      <div class="chips-bar">
+        <div class="chips" id="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin:0;padding:0;border:none;background:none"></div>
+        <button class="btn" onclick="cleanAndRefresh()" title="清除所有已完成/已取消任务（保留活跃与待审批），历史消息将被移除" style="margin-left:auto;padding:4px 12px;font-size:12px">🧹 清除已完成</button>
+      </div>
       <div id="replyChipWrap"></div>
       <div class="input-row">
         <textarea id="q" rows="1" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 封禁 1.2.3.4 …（Shift+Enter 换行，Enter 发送）"
@@ -749,6 +756,23 @@ function clearReplyChip() {
   if (q) { q.value = q.value.replace(/^@#\d+\s*/, ""); autoGrow(q); }
   renderReplyChip();
 }
+// 快速回到底部输入框（顶部 ✏️ 按钮 / Ctrl/Cmd+K 快捷键）
+function focusInput() {
+  const q = document.getElementById("q");
+  if (!q) return;
+  const sc = document.getElementById("chatScroll");
+  if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: "smooth" });
+  q.focus();
+  // 闪烁高亮提示用户输入位已就绪
+  q.classList.add("flash-focus");
+  setTimeout(() => q.classList.remove("flash-focus"), 1400);
+}
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    focusInput();
+  }
+});
 async function submit() {
   const qEl = document.getElementById("q");
   let raw = qEl.value;
@@ -1004,6 +1028,7 @@ let _taskCache = []; // copyTaskText 用：记录最近一次 pollTasks 的任�
 
 // 清除终态任务（done/cancelled/failed），只保留活跃与待审批任务，然后刷新气泡流
 async function cleanAndRefresh() {
+  if (!confirm("确定清除所有已完成/已取消任务？\n活跃任务与待审批任务会保留，但历史会话消息将被移除。")) return;
   try {
     const r = await fetch("/api/tasks/clean", { method: "POST" });
     const d = await r.json();
