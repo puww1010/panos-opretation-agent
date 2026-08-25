@@ -1191,8 +1191,8 @@ async function copyTaskText(id) {
 let _taskCache = []; // copyTaskText 用：记录最近一次 pollTasks 的任务数组
 
 // 清除终态任务（done/cancelled/failed），只保留活跃与待审批任务，然后刷新气泡流
+// 按用户要求：不弹确认框，直接清除历史任务
 async function cleanAndRefresh() {
-  if (!confirm("确定清除所有已完成/已取消任务？\n活跃任务与待审批任务会保留，但历史会话消息将被移除。")) return;
   try {
     const r = await fetch("/api/tasks/clean", { method: "POST" });
     const d = await r.json();
