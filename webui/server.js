@@ -1791,6 +1791,79 @@ async function getOverview() {
   return out;
 }
 
+// ── 网络拓扑（用户要求：根据设备/IP/路由画带 IP 的拓扑图）──
+// 数据：防火墙自身 + 接口(IP/zone) + 路由表(网段/网关) + ARP 表(二层邻居 IP+MAC) + 命名表(cfgs/topology.json)
+let topologyCache = null, topologyTs = 0;
+const TOPOLOGY_TTL = 20000; // 20s 缓存（ARP/路由不至于变化太快）
+function loadTopologyNames() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "../cfgs/topology.json"), "utf-8")) || { devices: {} }; }
+  catch (e) { return { devices: {} }; }
+}
+async function getTopology() {
+  if (topologyCache && Date.now() - topologyTs < TOPOLOGY_TTL) return topologyCache;
+  const names = loadTopologyNames();
+  const [fwR, ifcR, routeR, arpR, zoneR] = await Promise.allSettled([
+    callTool("get_firewall_info", {}, null).catch(() => null),
+    callTool("get_interfaces", {}, null).catch(() => null),
+    callTool("get_routing_table", {}, null).catch(() => null),
+    callTool("get_arp_table", {}, null).catch(() => null),
+    callTool("get_zones", {}, null).catch(() => null),
+  ]);
+  const fw = fwR.status === "fulfilled" && fwR.value ? fwR.value : null;
+  const ifc = ifcR.status === "fulfilled" && ifcR.value ? ifcR.value : null;
+  const routeVal = routeR.status === "fulfilled" && routeR.value ? routeR.value : null;
+  const arpVal = arpR.status === "fulfilled" && arpR.value ? arpR.value : null;
+  const zonesRaw = zoneR.status === "fulfilled" && zoneR.value ? zoneR.value : null;
+  const routes = (routeVal && Array.isArray(routeVal.entry)) ? routeVal.entry
+               : Array.isArray(routeVal) ? routeVal : [];
+  const arp = (arpVal && Array.isArray(arpVal.entry)) ? arpVal.entry
+            : Array.isArray(arpVal) ? arpVal : [];
+  const zones = (zonesRaw && (zonesRaw.zone?.entry || zonesRaw.entry)) || [];
+  // 防火墙中心节点
+  const fwNode = {
+    type: "firewall",
+    ip: DIRECT_FW.host || fw?.["ip-address"] || "",
+    name: "PA-440 防火墙",
+    hostname: fw?.hostname || "",
+    model: fw?.model || "",
+    swVersion: fw?.["sw-version"] || "",
+    serial: fw?.serial || "",
+  };
+  // 接口节点 + zone 映射
+  const ifs = ifc ? parseInterfaces(ifc) : [];
+  const ifZones = {};
+  for (const z of zones) {
+    const n = z.network || {};
+    const toArr = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
+    for (const i of [...toArr(n.layer2?.member), ...toArr(n.layer3?.member), ...toArr(n["virtual-wire"]?.member)]) ifZones[i] = z["@_name"];
+  }
+  const ifNodes = ifs.map((i) => ({ type: "interface", name: i.name, ip: i.ip, state: i.state, speed: i.speed, mac: i.mac, zone: ifZones[i.name] || i.role || "" }));
+  // 网关节点：路由表 nexthop 去重（0.0.0.0 是默认路由 → Internet 网关）
+  const gwMap = new Map();
+  for (const r of routes) {
+    const dest = r.destination || "";
+    const nh = r.nexthop || r["ip-address"] || "";
+    if (!nh || nh === "0.0.0.0") continue;
+    if (!gwMap.has(nh)) gwMap.set(nh, { ip: nh, isInternet: dest.includes("0.0.0.0"), viaIf: r.interface || "", dest });
+  }
+  const gwNodes = [...gwMap.values()];
+  // ARP 设备：按 IP 去重，挂接口 + 命名表
+  const devMap = new Map();
+  for (const a of arp) {
+    const ip = a.ip || a["ip-address"] || "";
+    if (!ip) continue;
+    const mac = a.mac || a["mac-address"] || "";
+    const iface = a.interface || a.ifname || "";
+    if (devMap.has(ip)) { if (!devMap.get(ip).mac) devMap.get(ip).mac = mac; continue; }
+    const cfg = names.devices[ip] || {};
+    devMap.set(ip, { ip, mac, iface, name: cfg.name || ip, icon: cfg.icon || "pc" });
+  }
+  devMap.delete(fwNode.ip); // 防火墙自身不算邻居
+  const out = { ts: Date.now(), fw: fwNode, interfaces: ifNodes, gateways: gwNodes, devices: [...devMap.values()], hasDefault: gwNodes.some((g) => g.isInternet), ok: !!(fwNode.hostname || fwNode.ip) };
+  topologyCache = out; topologyTs = Date.now();
+  return out;
+}
+
 // 解析 get_interfaces 输出（directRunOp 返回 {entry:[...]}，MCP 路径返回 {hw:{entry:[...]}}，两种都兼容）
 function parseInterfaces(raw) {
   const arr = raw && raw.hw && Array.isArray(raw.hw.entry) ? raw.hw.entry
@@ -2610,6 +2683,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url === "/api/overview") {
       send(200, await getOverview());
+      return;
+    }
+    // 网络拓扑（概览侧栏「网络拓扑」视图数据源）
+    if (req.method === "GET" && req.url === "/api/topology") {
+      send(200, await getTopology());
       return;
     }
     // 报表接口预留（spec §12.1 metrics）：返回 KPI 指标采样序列，支持 ?minutes= 过滤

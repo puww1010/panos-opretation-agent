@@ -381,6 +381,30 @@
   .view-feishu-active .fs-fold { background:var(--card); }
   .view-feishu-active .fs-fold-head { cursor:default; }
   .dash-scroll { flex:1; overflow-y:auto; padding:16px 22px 30px; }
+  /* 网络拓扑视图 */
+  .topo-scroll { flex:1; overflow-y:auto; padding:16px 22px 30px; }
+  .topo-inner { max-width:1200px; margin:0 auto; }
+  .topo-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+  .topo-canvas { position:relative; background:var(--card); border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; box-shadow:0 1px 3px rgba(15,23,42,.05); }
+  .topo-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:13px; }
+  .topo-tip { position:absolute; top:12px; right:12px; max-width:300px; background:var(--card); border:1px solid var(--border2);
+    border-radius:10px; padding:10px 13px; font-size:12px; color:var(--text); box-shadow:0 8px 24px rgba(15,23,42,.14);
+    line-height:1.6; z-index:5; }
+  .topo-tip b { display:block; margin-bottom:3px; }
+  .topo-tip .kv { display:flex; justify-content:space-between; gap:12px; }
+  .topo-tip .kv span:first-child { color:var(--dim); }
+  .topo-legend { display:flex; gap:18px; flex-wrap:wrap; margin-top:10px; font-size:11.5px; color:var(--muted); }
+  .topo-legend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:-1px; }
+  .topo-n { cursor:pointer; }
+  .topo-n:hover .tn-box { filter:brightness(.94); }
+  .topo-n .tn-label { font-size:11px; fill:var(--text); font-weight:600; }
+  .topo-n .tn-sub { font-size:9.5px; fill:var(--muted); font-family:var(--mono); }
+  .topo-edge { stroke:#cbd5e1; stroke-width:1.5; }
+  .topo-edge-label { font-size:9px; fill:#94a3b8; font-family:var(--mono); }
+  .topo-zone { font-size:10px; font-weight:600; letter-spacing:1px; }
+  .topo-if-state { font-size:8.5px; font-weight:700; }
+  .topo-fw-box { filter:drop-shadow(0 4px 10px rgba(22,104,220,.25)); }
   .dash-inner { max-width:1200px; margin:0 auto; }
   .dash-monitor { display:grid; grid-template-columns:1.45fr 1fr; gap:14px; margin-top:14px; }
   @media (max-width:960px) { .dash-monitor { grid-template-columns:1fr; } }
@@ -482,6 +506,7 @@
     <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></symbol>
     <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-network" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M5 8.5v2a3 3 0 0 0 3 3h2"/><path d="M19 8.5v2a3 3 0 0 1-3 3h-2"/><path d="M12 12v3.5"/></symbol>
   </defs>
 </svg>
 
@@ -532,6 +557,7 @@
       <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-phone"/></svg><span class="txt">飞书移动端</span></button>
       <div class="side-sep">快捷入口</div>
       <button class="side-item" onclick="quickTask('设备状态')"><svg class="ic"><use href="#i-device"/></svg><span class="txt">设备状态</span></button>
+      <button class="side-item" data-view="topology" onclick="showView('topology')"><svg class="ic"><use href="#i-network"/></svg><span class="txt">网络拓扑</span></button>
       <button class="side-item" onclick="quickTask('安全策略')"><svg class="ic"><use href="#i-shield"/></svg><span class="txt">安全策略</span></button>
       <button class="side-item" onclick="quickTask('流量日志')"><svg class="ic"><use href="#i-list"/></svg><span class="txt">流量日志</span></button>
       <button class="side-item" onclick="quickTask('威胁日志')"><svg class="ic"><use href="#i-alert"/></svg><span class="txt">威胁日志</span></button>
@@ -627,6 +653,31 @@
                 在飞书群里 <code style="background:var(--panel-bg);padding:1px 6px;border-radius:4px;color:var(--accent)">@机器人</code> 提问同样会触发本系统执行任务，结果回传群消息。
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 视图：网络拓扑（设备/IP/路由可视化） -->
+    <div class="view" id="view-topology" hidden>
+      <div class="topo-scroll">
+        <div class="topo-inner">
+          <div class="topo-toolbar">
+            <span class="pill" id="topoCount">—</span>
+            <span style="font-size:11.5px;color:var(--dim)">滚轮缩放 · 拖拽平移 · 悬停看详情 · 点击节点查流量</span>
+            <button class="btn" onclick="loadTopology(true)" style="margin-left:auto;padding:4px 12px;font-size:12px"><svg class="ic sm"><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+          <div class="topo-canvas" id="topoCanvas">
+            <svg id="topoSvg" viewBox="0 0 1000 620" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;cursor:grab"></svg>
+            <div class="topo-empty" id="topoEmpty">拓扑加载中…</div>
+            <div class="topo-tip" id="topoTip" hidden></div>
+          </div>
+          <div class="topo-legend">
+            <span><i class="tl-dot" style="background:#1668dc"></i>防火墙</span>
+            <span><i class="tl-dot" style="background:#059669"></i>接口</span>
+            <span><i class="tl-dot" style="background:#f59e0b"></i>网关/路由</span>
+            <span><i class="tl-dot" style="background:#64748b"></i>主机/设备</span>
+            <span><i class="tl-dot" style="background:#94a3b8"></i>Internet</span>
           </div>
         </div>
       </div>
@@ -753,7 +804,7 @@ function toggleTheme() {
   applyTheme(dark);
 })();
 // ── 视图切换 + 侧边栏（方案C 混合模型）──
-const VIEW_NAMES = { dashboard: "概览", chat: "任务对话", feishu: "飞书移动端" };
+const VIEW_NAMES = { dashboard: "概览", chat: "任务对话", feishu: "飞书移动端", topology: "网络拓扑" };
 function showView(name) {
   document.querySelectorAll(".view").forEach(v => { v.hidden = v.id !== "view-" + name; });
   document.querySelectorAll(".side-item[data-view]").forEach(b => { b.classList.toggle("on", b.getAttribute("data-view") === name); });
@@ -764,6 +815,7 @@ function showView(name) {
     const sc = document.getElementById("chatScroll");
     if (sc) sc.scrollTop = sc.scrollHeight;
   }
+  if (name === "topology") loadTopology();
 }
 function toggleSidebar() {
   document.body.classList.toggle("side-collapsed");
@@ -1304,12 +1356,205 @@ function renderPlatform(p) {
   }
 }
 
+// ── 网络拓扑（纯 SVG 渲染，零依赖）──
+let _topoTimer = null, _topoZoom = 1, _topoPan = { x: 0, y: 0 }, _topoDrag = null;
+function loadTopology(force) {
+  fetch("/api/topology")
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.error) throw new Error(d.error);
+      renderTopology(d);
+      const empty = document.getElementById("topoEmpty");
+      if (empty) empty.style.display = "none";
+    })
+    .catch((e) => {
+      const svg = document.getElementById("topoSvg");
+      if (svg) svg.innerHTML = "";
+      const empty = document.getElementById("topoEmpty");
+      if (empty) { empty.textContent = "拓扑加载失败：" + (e.message || e); empty.style.display = "flex"; }
+    });
+  if (_topoTimer) clearTimeout(_topoTimer);
+  // 30s 自动刷新（仅拓扑视图可见时）
+  _topoTimer = setTimeout(() => {
+    const v = document.getElementById("view-topology");
+    if (v && !v.hidden) loadTopology();
+  }, 30000);
+}
+
+// 生成拓扑 SVG：防火墙中心 + 接口分 zone 左右列 + 设备挂接口 + Internet/网关
+function renderTopology(d) {
+  const svg = document.getElementById("topoSvg");
+  if (!svg) return;
+  const W = 1000, H = 620;
+  const fw = d.fw || {};
+  const ifs = d.interfaces || [];
+  const gws = d.gateways || [];
+  const devs = d.devices || [];
+  // 接口分列：untrust/wan 左，其余右
+  const isLeft = (z) => /untrust|wan|internet|outside/i.test(z || "");
+  const leftIfs = ifs.filter((i) => isLeft(i.zone));
+  const rightIfs = ifs.filter((i) => !isLeft(i.zone));
+  // 设备 → 接口归属：arp iface 匹配 or IP 网段匹配
+  const devByIf = {};
+  const loneDevs = [];
+  const normIf = (n) => String(n || "").toLowerCase().replace(/[.\/]/g, "-");
+  for (const dv of devs) {
+    let hit = null;
+    if (dv.iface) hit = ifs.find((i) => normIf(i.name) === normIf(dv.iface));
+    if (!hit && dv.ip) {
+      hit = ifs.find((i) => i.ip && (i.ip.split(".")[2] === dv.ip.split(".")[2]) && (i.ip.split(".")[3] || "").startsWith("0") === false) || ifs.find((i) => i.ip && i.ip.split(".").slice(0, 2).join(".") === dv.ip.split(".").slice(0, 2).join("."));
+    }
+    if (hit) { (devByIf[hit.name] = devByIf[hit.name] || []).push(dv); }
+    else loneDevs.push(dv);
+  }
+  const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  let h = "";
+  // 区域色带
+  h += '<rect x="24" y="34" width="432" height="560" rx="14" fill="#f1f5f9" opacity=".55"/>';
+  h += '<text x="40" y="56" class="topo-zone" fill="#64748b">UNTRUST / WAN</text>';
+  h += '<rect x="544" y="34" width="432" height="560" rx="14" fill="#ecfdf5" opacity=".6"/>';
+  h += '<text x="560" y="56" class="topo-zone" fill="#059669">TRUST / LAN</text>';
+  // Internet（默认路由）
+  const defGw = (d.hasDefault && gws.find((g) => g.isInternet)) || null;
+  const internet = { x: 500, y: 84 };
+  if (d.hasDefault) {
+    h += '<line x1="500" y1="108" x2="500" y2="238" class="topo-edge"/>';
+    h += '<text x="512" y="176" class="topo-edge-label">默认路由 via ' + esc(defGw ? defGw.ip : "?") + "</text>";
+    h += topoNode(internet.x, internet.y, { id: "topo-internet", cls: "topo-n", w: 120, h: 46,
+      body: '<circle cx="60" cy="23" r="17" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/><text x="60" y="28" text-anchor="middle" font-size="15">☁</text>',
+      label: "Internet", labelY: 47, sub: "0.0.0.0/0", tip: "Internet / 外网<br/>默认路由 " + (defGw ? "via " + defGw.ip : "未解析") });
+  }
+  // 防火墙中心
+  h += '<line x1="500" y1="260" x2="500" y2="238" class="topo-edge"/>';
+  h += topoNode(500, 300, { id: "topo-fw", cls: "topo-n", w: 220, h: 92, fx: 8,
+    body: '<rect x="0" y="0" width="220" height="92" rx="14" fill="url(#topoFwG)" stroke="#0b4ea8" stroke-width="2" class="topo-fw-box"/>' +
+      '<text x="110" y="30" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">PA-440 防火墙</text>' +
+      '<text x="110" y="50" text-anchor="middle" font-size="11" fill="#dbeafe" font-family="var(--mono)">' + esc(fw.ip || "—") + "</text>" +
+      '<text x="110" y="66" text-anchor="middle" font-size="9.5" fill="#bfdbfe">' + esc(fw.hostname || fw.model || "") + "</text>" +
+      '<text x="110" y="81" text-anchor="middle" font-size="9" fill="#93c5fd">' + esc(fw.swVersion || "") + "</text>",
+    label: "", tip: "<b>防火墙</b>" + (fw.hostname ? fw.hostname + "<br/>" : "") + "型号 " + (fw.model || "—") + "<br/>序列号 " + (fw.serial || "—") + "<br/>PAN-OS " + (fw.swVersion || "—"),
+    onClick: "quickTask('设备状态')" });
+  // 接口列：左右各一列
+  const colL = { x: 260 }, colR = { x: 760 };
+  let lY = 170, rY = 170;
+  const ifPos = {};
+  const drawIf = (i, x, y, side) => {
+    ifPos[i.name] = { x, y };
+    h += '<line x1="' + (side === "L" ? 410 : 590) + '" y1="' + (side === "L" ? y + 16 : y + 16) + '" x2="' + (side === "L" ? 500 : 500) + '" y2="292" class="topo-edge"/>';
+    const st = /up|admin-up/i.test(i.state || "") ? "up" : "down";
+    h += topoNode(x, y, { id: "topo-if-" + normIf(i.name), cls: "topo-n", w: 190, h: 46,
+      body: '<rect x="0" y="0" width="190" height="46" rx="9" fill="#fff" stroke="#059669" stroke-width="1.5"/>' +
+        '<circle cx="14" cy="23" r="4" fill="' + (st === "up" ? "#16a34a" : "#dc2626") + '"/>' +
+        '<text x="26" y="19" font-size="11.5" font-weight="600" fill="#0f766e" font-family="var(--mono)">' + esc(i.name) + "</text>" +
+        '<text x="26" y="36" font-size="9.5" fill="#475569" font-family="var(--mono)">' + esc(i.ip || "未配置 IP") + (i.zone ? " · " + esc(i.zone) : "") + "</text>",
+      label: "", tip: "<b>接口 " + esc(i.name) + "</b><br/>IP " + (i.ip || "—") + "<br/>Zone " + (i.zone || "—") + "<br/>状态 " + (st === "up" ? "UP" : "DOWN") + (i.speed ? " · " + esc(i.speed) : ""),
+      onClick: i.ip ? "quickTask('查一下 IP " + i.ip + " 最近 1 小时流量')" : "" });
+    // 挂设备
+    const subs = devByIf[i.name] || [];
+    subs.slice(0, 8).forEach((dv, k) => {
+      const dx = x + (k % 2 === 0 ? -78 : 78);
+      const dy = y + 86 + Math.floor(k / 2) * 74;
+      h += '<line x1="' + (x + 95) + '" y1="' + (y + 46) + '" x2="' + (x + 95) + '" y2="' + (dy - 22) + '" class="topo-edge" stroke-dasharray="3 3"/>';
+      h += topoNode(dx, dy, { id: "topo-dev-" + normIf(dv.ip), cls: "topo-n", w: 150, h: 48,
+        body: '<rect x="0" y="0" width="150" height="48" rx="9" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>' +
+          '<text x="10" y="20" font-size="11" font-weight="600" fill="#334155">' + esc(dv.name) + "</text>" +
+          '<text x="10" y="38" font-size="9.5" fill="#64748b" font-family="var(--mono)">' + esc(dv.ip) + "</text>",
+        label: "", tip: "<b>" + esc(dv.name) + "</b><br/>IP " + esc(dv.ip) + "<br/>MAC " + esc(dv.mac || "—") + "<br/>接口 " + esc(dv.iface || i.name),
+        onClick: "quickTask('查一下 IP " + dv.ip + " 最近 1 小时流量')" });
+    });
+  };
+  leftIfs.forEach((i) => { drawIf(i, colL.x, lY, "L"); lY += 100; });
+  rightIfs.forEach((i) => { drawIf(i, colR.x, rY, "R"); rY += 100; });
+  // 未归属设备（无接口匹配）：右带底部
+  loneDevs.slice(0, 10).forEach((dv, k) => {
+    const dx = 760 + (k % 2 === 0 ? -78 : 78);
+    const dy = 540 - Math.floor(k / 2) * 74;
+    if (dy < 120) return;
+    h += '<line x1="500" y1="380" x2="' + (dx + 75) + '" y2="' + (dy - 20) + '" class="topo-edge" stroke-dasharray="3 3"/>';
+    h += topoNode(dx, dy, { id: "topo-lone-" + normIf(dv.ip), cls: "topo-n", w: 150, h: 48,
+      body: '<rect x="0" y="0" width="150" height="48" rx="9" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>' +
+        '<text x="10" y="20" font-size="11" font-weight="600" fill="#334155">' + esc(dv.name) + "</text>" +
+        '<text x="10" y="38" font-size="9.5" fill="#64748b" font-family="var(--mono)">' + esc(dv.ip) + "</text>",
+      label: "", tip: "<b>" + esc(dv.name) + "</b><br/>IP " + esc(dv.ip) + "<br/>MAC " + esc(dv.mac || "—") + "<br/>未匹配接口（跨网段/非直连）",
+      onClick: "quickTask('查一下 IP " + dv.ip + " 最近 1 小时流量')" });
+  });
+  // 非 Internet 网关（有特定路由）
+  const gwExtra = gws.filter((g) => !g.isInternet).slice(0, 4);
+  gwExtra.forEach((g, k) => {
+    const gx = 260, gy = 500 - k * 70;
+    if (gy < 160) return;
+    h += '<line x1="500" y1="360" x2="' + (gx + 90) + '" y2="' + (gy - 20) + '" class="topo-edge"/>';
+    h += topoNode(gx, gy, { id: "topo-gw-" + normIf(g.ip), cls: "topo-n", w: 180, h: 50,
+      body: '<rect x="0" y="0" width="180" height="50" rx="10" fill="#fff" stroke="#f59e0b" stroke-width="1.5"/>' +
+        '<text x="12" y="21" font-size="11.5" font-weight="600" fill="#b45309">路由网关</text>' +
+        '<text x="12" y="39" font-size="10" fill="#475569" font-family="var(--mono)">' + esc(g.ip) + "</text>",
+      label: "", tip: "<b>路由网关 " + esc(g.ip) + "</b><br/>下一跳（" + (g.dest || "默认") + "）<br/>出接口 " + esc(g.viaIf || "—"),
+      onClick: "quickTask('查一下 IP " + g.ip + " 最近 1 小时流量')" });
+  });
+  // 渐变定义
+  svg.innerHTML = '<defs><linearGradient id="topoFwG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1668dc"/><stop offset="1" stop-color="#0b4ea8"/></linearGradient></defs>' +
+    '<g id="topoG" transform="translate(' + _topoPan.x + "," + _topoPan.y + ") scale(" + _topoZoom + ')"' + ">" + h + "</g>";
+  // 计数
+  const cnt = document.getElementById("topoCount");
+  if (cnt) cnt.textContent = ifs.length + " 接口 · " + devs.length + " 设备 · " + gws.length + " 路由";
+  const empty = document.getElementById("topoEmpty");
+  if (empty) empty.style.display = "none";
+  // 空态
+  if (!ifs.length && !devs.length) {
+    if (empty) { empty.textContent = "未获取到拓扑数据（防火墙不可达？）"; empty.style.display = "flex"; }
+  }
+}
+
+// SVG 节点模板：body 为节点内部内容（坐标相对节点左上角）
+function topoNode(x, y, o) {
+  const click = o.onClick ? ' onclick="' + o.onClick + '"' : "";
+  const tip = o.tip ? ' onmouseover="topoTipShow(this,\'' + o.tip.replace(/'/g, "\\'") + '\')" onmouseout="topoTipHide()"' : "";
+  const label = o.label ? '<text x="' + (o.w / 2) + '" y="' + (o.labelY || o.h + 14) + '" text-anchor="middle" class="tn-label">' + o.label + "</text>" : "";
+  const sub = o.sub ? '<text x="' + (o.w / 2) + '" y="' + ((o.labelY || o.h + 14) + 12) + '" text-anchor="middle" class="tn-sub">' + o.sub + "</text>" : "";
+  return '<g class="' + o.cls + '" transform="translate(' + x + "," + y + ")\"" + click + tip + ">" + o.body + label + sub + "</g>";
+}
+function topoTipShow(el, html) {
+  const tip = document.getElementById("topoTip");
+  if (!tip) return;
+  tip.innerHTML = html;
+  tip.hidden = false;
+}
+function topoTipHide() {
+  const tip = document.getElementById("topoTip");
+  if (tip) tip.hidden = true;
+}
+
+// 拓扑画布交互：滚轮缩放 + 拖拽平移
+(function initTopoInteractions() {
+  const canvas = document.getElementById("topoCanvas");
+  if (!canvas) return;
+  canvas.addEventListener("wheel", (e) => {
+    if (!document.getElementById("topoG")) return;
+    e.preventDefault();
+    _topoZoom = Math.max(0.4, Math.min(2.5, _topoZoom * (e.deltaY < 0 ? 1.12 : 0.89)));
+    document.getElementById("topoG").setAttribute("transform", "translate(" + _topoPan.x + "," + _topoPan.y + ") scale(" + _topoZoom + ")");
+  }, { passive: false });
+  canvas.addEventListener("mousedown", (e) => {
+    if (e.target.closest && e.target.closest(".topo-n")) return; // 节点点击不拖画布
+    _topoDrag = { x: e.clientX, y: e.clientY };
+    canvas.style.cursor = "grabbing";
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!_topoDrag) return;
+    _topoPan.x += (e.clientX - _topoDrag.x) / _topoZoom;
+    _topoPan.y += (e.clientY - _topoDrag.y) / _topoZoom;
+    _topoDrag = { x: e.clientX, y: e.clientY };
+    const g = document.getElementById("topoG");
+    if (g) g.setAttribute("transform", "translate(" + _topoPan.x + "," + _topoPan.y + ") scale(" + _topoZoom + ")");
+  });
+  window.addEventListener("mouseup", () => { _topoDrag = null; canvas.style.cursor = "grab"; });
+})();
+
 function formatUptime(sec) {
   sec = Math.max(0, parseInt(sec, 10) || 0);
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (d) return d + "d " + h + "h";
+  const m = Math.floor((sec % 3600) / 60);  if (d) return d + "d " + h + "h";
   if (h) return h + "h " + m + "m";
   return m + "m " + (sec % 60) + "s";
 }
