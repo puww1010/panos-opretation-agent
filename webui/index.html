@@ -231,6 +231,11 @@
     white-space:nowrap; font-size:11.5px; letter-spacing:.5px; }
   td { padding:7px 9px; border-bottom:1px solid var(--border); vertical-align:top; word-break:break-all; color:var(--text); }
   tr:hover td { background:var(--hover-row); }
+  /* 原始日志表格：列宽 nowrap + 横向滚动（避免长 IP/数字换行挤成一团） */
+  .raw-table-wrap { overflow-x:auto; max-width:100%; border-radius:6px; -webkit-overflow-scrolling:touch; }
+  .raw-table-wrap table { min-width:max-content; font-size:11.5px; }
+  .raw-table-wrap th, .raw-table-wrap td { white-space:nowrap; padding:5px 9px; word-break:normal; overflow-wrap:normal; }
+  .raw-table-wrap td:nth-child(1) { font-family:var(--mono); color:var(--muted); } /* 第一列（时间）灰底等宽字体，更易扫读 */
   .kv { font-family:var(--mono); font-size:12px; color:var(--muted); }
   .tool-tag { display:inline-block; font-family:var(--mono); font-size:11px; background:var(--run-bg);
     color:var(--run-fg); border:1px solid var(--run-border, rgba(22,104,220,.22)); padding:2px 9px; border-radius:6px; margin:4px 6px 0 0; }
@@ -2091,8 +2096,9 @@ function renderAiBody(t) {
   } else if (t.status === "done" && t.type === "audit" && t.result) {
     h += '<div class="grade" style="font-size:14px">' + esc(t.result.title || "配置变更审计") + " · 共 " + t.result.total + " 条</div>";
     if (t.result.rows && t.result.rows.length) {
+      const auditRows = t.result.rows.slice().sort((a, b) => Date.parse(String(b.time || "").replace(/\//g, "-")) - Date.parse(String(a.time || "").replace(/\//g, "-")));
       h += "<table><tr><th>时间</th><th>操作人</th><th>命令</th><th>结果</th><th>来源</th><th>路径</th></tr>" +
-        t.result.rows.slice(0, 50).map(r => "<tr><td>" + esc(r.time) + "</td><td>" + esc(r.admin) + "</td><td>" + esc(r.cmd) + "</td><td>" + esc(r.result) + "</td><td>" + esc(r.client) + "</td><td style='font-size:11px'>" + esc(r.path) + "</td></tr>").join("") +
+        auditRows.slice(0, 100).map(r => "<tr><td>" + esc(r.time) + "</td><td>" + esc(r.admin) + "</td><td>" + esc(r.cmd) + "</td><td>" + esc(r.result) + "</td><td>" + esc(r.client) + "</td><td style='font-size:11px'>" + esc(r.path) + "</td></tr>").join("") +
         "</table>";
     } else {
       h += '<div class="empty">该时间窗口内无符合条件的变更记录</div>';
@@ -2336,12 +2342,29 @@ function renderTable(rows) {
     const rest = keys.filter(k => !PRIORITY.includes(k)).slice(0, 8);
     keys = ranked.concat(rest).slice(0, 14);
   }
-  let h = "<table><tr>" + keys.map(k => "<th>" + esc(k) + "</th>").join("") + "</tr>";
-  rows.slice(0, 50).forEach(r => {
+  // 按时间倒序排序（最新在顶部）：优先 receive_time > time > time_generated > create_time > high_res_timestamp
+  const TIME_KEYS = ["receive_time", "time", "time_generated", "create_time", "high_res_timestamp"];
+  const timeKey = TIME_KEYS.find(k => keys.includes(k));
+  const parseT = (r) => {
+    if (!timeKey) return NaN;
+    const v = flattenObj(r)[timeKey];
+    return v ? Date.parse(String(v).replace(/\//g, "-")) : NaN;
+  };
+  const sorted = rows.slice().sort((a, b) => {
+    const ta = parseT(a), tb = parseT(b);
+    if (!isNaN(ta) && !isNaN(tb)) return tb - ta;     // desc
+    if (!isNaN(ta)) return -1;
+    if (!isNaN(tb)) return 1;
+    return 0;
+  });
+  let h = '<div class="raw-table-wrap"><table><tr>' + keys.map(k => "<th>" + esc(k) + "</th>").join("") + "</tr>";
+  sorted.forEach(r => {
     const flat = flattenObj(r);
     h += "<tr>" + keys.map(k => "<td>" + esc(flat[k] || "") + "</td>").join("") + "</tr>";
   });
-  return h + "</table>" + (rows.length > 50 ? '<div class="empty">仅显示前 50 条 / 共 ' + rows.length + " 条</div>" : "");
+  h += "</table></div>";
+  h += '<div class="empty" style="margin-top:6px">共 ' + rows.length + " 条 · 已按" + (timeKey || "原始") + "降序</div>";
+  return h;
 }
 
 function renderKv(kv) {
