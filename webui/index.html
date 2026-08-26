@@ -1431,7 +1431,7 @@ function renderTopology(d) {
   const termW = { x: 120, y: 500, w: 140, h: 42 };     // WAN 终端 .1.7
   const agg = { x: 660, y: 510, w: 170, h: 46 };       // TPLINK 汇聚
   const gridTop = agg.y + 100;                         // 设备网格起点
-  const gridCols = 3, gridW = 160, gridH = 40, gapX = 14, gapY = 12;
+  const gridCols = 3, gridW = 120, gridH = 36, gapX = 10, gapY = 10;
   const gridWTotal = gridCols * gridW + (gridCols - 1) * gapX;
   const gridX0 = 660 + 85 - gridWTotal / 2;            // 网格左起点
   const gridDevs = terms.filter((x) => (x.iface || "").toLowerCase() === (lanIf ? lanIf.name.toLowerCase() : "ethernet1/4"));
