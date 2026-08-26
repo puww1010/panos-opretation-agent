@@ -1887,9 +1887,12 @@ function parseInterfaces(raw) {
 //      用 `100-id` 算使用率会永远 100%——必须改用 load average 换算。
 // Data Plane：show running resource-monitor → dp0 各 core 的 cpu-load-average 采样（0-100%）
 const MP_CORES = 4;   // PA-440 管理面 4 核（官方规格：Cortex-A72 x4）
-const PLATFORM_WINDOW = 5; // 采样平滑窗口：保留最近 5 次（25 秒平均），防单帧抖动
+const PLATFORM_WINDOW = 5; // 采样平滑窗口：保留最近 5 次（30s×5 = 2.5 分钟平均），防单帧抖动
+const PLATFORM_TTL = 30000; // 独立 30s 缓存：防止 overview 每 5s 触发一次 op 查询自激推高 MP CPU
 const platformBuf = { mp: [], dp: [] };
+let platformCache = null, platformCacheTs = 0;
 async function getPlatformLoading() {
+  if (platformCache && Date.now() - platformCacheTs < PLATFORM_TTL) return platformCache;
   const [mpR, dpR] = await Promise.allSettled([
     directOp("<show><system><resources></resources></system></show>"),
     directOp("<show><running><resource-monitor></resource-monitor></running></show>"),
@@ -1912,10 +1915,12 @@ async function getPlatformLoading() {
   } else {
     platformBuf.dp.length = 0;
   }
-  return {
+  const out = {
     managementPlane: smoothMgmt(platformBuf.mp, mpNew),
     dataPlane: smoothData(platformBuf.dp, dpNew),
   };
+  platformCache = out; platformCacheTs = Date.now();
+  return out;
 }
 
 // MP 平滑：last 离线 → 立即返回 offline（不让历史 online 样本冒充当前状态）；online 才取缓冲平均

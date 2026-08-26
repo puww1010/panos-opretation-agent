@@ -711,9 +711,9 @@
                 <div class="platform-row" id="platControl">
                   <div class="pr-head"><span class="pr-dot" id="platCpDot"></span><b id="platCpName">Management Plane</b><span class="pr-status" id="platCpStatus">—</span></div>
                   <div class="pr-body">
-                    <div class="pr-kv"><span class="k">CPU 使用率</span><span class="v" id="platCpUsage">—</span></div>
-                    <div class="pr-bar" id="platCpBar"><i id="platCpBarI"></i></div>
                     <div class="pr-kv"><span class="k">Load (1/5/15m)</span><span class="v" id="platCpLoad">—</span></div>
+                    <div class="pr-kv"><span class="k">CPU 估算</span><span class="v" id="platCpUsage">—</span></div>
+                    <div class="pr-bar" id="platCpBar"><i id="platCpBarI"></i></div>
                     <div class="pr-kv"><span class="k">内存</span><span class="v" id="platCpMem">—</span></div>
                     <div class="pr-kv pr-note" id="platCpNote"></div>
                   </div>
@@ -1316,7 +1316,8 @@ function renderPlatform(p) {
         const n = mp.sampleN || 1;
         const us = mp.cpuUserPct != null ? "us=" + mp.cpuUserPct + "% " : "";
         const sys = mp.cpuSysPct != null ? "sy=" + mp.cpuSysPct + "% " : "";
-        cpNoteEl.textContent = "基于 " + n + " 次采样平均 · " + us + sys + "(us+sy 全核标准化)";
+        // Load 是 WebUI Dashboard 同款主指标；CPU 估算 = us+sy 全核标准化（PAN-OS 容器 top 的 id 缺失不可用 100-id）
+        cpNoteEl.textContent = "Load 与防火墙 WebUI 一致 · CPU 估算(" + n + " 次采样平均) " + us + sys;
         cpNoteEl.style.color = "";
       }
       cpNoteEl.style.display = "";
