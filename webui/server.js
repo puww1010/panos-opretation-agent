@@ -1809,31 +1809,128 @@ function parseInterfaces(raw) {
 }
 
 // ── 防火墙平台 CPU Loading（用户要求：展示防火墙自身的 Management Plane 与 Data Plane CPU）──
-// Management Plane：show system resources → load average(1/5/15min) + %Cpu(s) 使用率 + 内存
+// Management Plane：show system resources → load average(1/5/15min) + 内存
+//   ⚠️ PAN-OS 管理面的 `top` 输出在容器里 `id`（空闲率）永远为 0%（us 可超 100% 是多核累计），
+//      用 `100-id` 算使用率会永远 100%——必须改用 load average 换算。
 // Data Plane：show running resource-monitor → dp0 各 core 的 cpu-load-average 采样（0-100%）
+const MP_CORES = 4;   // PA-440 管理面 4 核（官方规格：Cortex-A72 x4）
+const PLATFORM_WINDOW = 5; // 采样平滑窗口：保留最近 5 次（25 秒平均），防单帧抖动
+const platformBuf = { mp: [], dp: [] };
 async function getPlatformLoading() {
-  const [mpTxt, dpTxt] = await Promise.allSettled([
+  const [mpR, dpR] = await Promise.allSettled([
     directOp("<show><system><resources></resources></system></show>"),
     directOp("<show><running><resource-monitor></resource-monitor></running></show>"),
   ]);
-  const mp = parseMgmtPlane(mpTxt.status === "fulfilled" ? String(mpTxt.value || "") : "");
-  const dp = parseDataPlane(dpTxt.status === "fulfilled" ? String(dpTxt.value || "") : "");
-  return { managementPlane: mp, dataPlane: dp };
+  const mpRaw = mpR.status === "fulfilled" ? String(mpR.value || "") : "";
+  const dpRaw = dpR.status === "fulfilled" ? String(dpR.value || "") : "";
+  // 解析原始样本
+  const mpNew = parseMgmtPlane(mpRaw);
+  const dpNew = parseDataPlane(dpRaw);
+  // 推入采样缓冲：仅在线样本入栈；离线时清空缓冲（避免下次恢复时混入老数据 + 不让旧 online 冒充"现在"）
+  if (mpNew.status === "online") {
+    platformBuf.mp.push(mpNew);
+    if (platformBuf.mp.length > PLATFORM_WINDOW) platformBuf.mp.shift();
+  } else {
+    platformBuf.mp.length = 0;
+  }
+  if (dpNew.status === "online") {
+    platformBuf.dp.push(dpNew);
+    if (platformBuf.dp.length > PLATFORM_WINDOW) platformBuf.dp.shift();
+  } else {
+    platformBuf.dp.length = 0;
+  }
+  return {
+    managementPlane: smoothMgmt(platformBuf.mp, mpNew),
+    dataPlane: smoothData(platformBuf.dp, dpNew),
+  };
+}
+
+// MP 平滑：last 离线 → 立即返回 offline（不让历史 online 样本冒充当前状态）；online 才取缓冲平均
+function smoothMgmt(samples, last) {
+  if (!last || last.status !== "online") {
+    return { name: "Management Plane", status: "offline", sampleN: 0 };
+  }
+  if (!samples.length) {
+    return { name: "Management Plane", status: "online", sampleN: 0, usagePct: null, load1: null, load5: null, load15: null };
+  }
+  const avg = (key) => {
+    const v = samples.filter((s) => s[key] != null).map((s) => s[key]);
+    if (!v.length) return null;
+    return Math.round(v.reduce((a, b) => a + b, 0) / v.length * 100) / 100;
+  };
+  const load1 = avg("load1"), load5 = avg("load5"), load15 = avg("load15");
+  const cpuUserPct = avg("cpuUserPct"), cpuSysPct = avg("cpuSysPct");
+  // usagePct：优先用 sample 内 parse 的 us+sy+ni（精确反映 CPU 占用），没有则用 load5/cores 兜底
+  let usagePct = avg("usagePct");
+  let usageMethod = "us+sy+ni";
+  if (usagePct == null && load5 != null) {
+    usagePct = Math.max(0, Math.min(100, Math.round(load5 / MP_CORES * 1000) / 10));
+    usageMethod = "load5/cores";
+  }
+  return {
+    name: last.name || "Management Plane",
+    status: "online",
+    load1, load5, load15,
+    cpuUserPct, cpuSysPct,
+    usagePct,
+    usageMethod,
+    memUsedMB: last.memUsedMB,
+    memTotalMB: last.memTotalMB,
+    sampleN: samples.length,    // 参与平均的样本数（前端展示"基于 N 次采样"）
+  };
+}
+
+// DP 平滑：同 MP 策略——last 离线立即返回 offline，不让历史 online 样本冒充当前
+function smoothData(samples, last) {
+  if (!last || last.status !== "online") {
+    return { name: "Data Plane", status: "offline", sampleN: 0 };
+  }
+  if (!samples.length) {
+    return { name: "Data Plane", status: "online", sampleN: 0, cpuPct: null, cores: null };
+  }
+  const avg = (key) => {
+    const v = samples.filter((s) => s[key] != null).map((s) => s[key]);
+    if (!v.length) return null;
+    return Math.round(v.reduce((a, b) => a + b, 0) / v.length * 10) / 10;
+  };
+  return {
+    name: last.name || "Data Plane",
+    status: "online",
+    processors: last.processors,
+    cores: last.cores,
+    cpuPct: avg("cpuPct"),
+    cpuPeakPct: avg("cpuPeakPct"),
+    cpu5sPct: avg("cpu5sPct"),
+    pktBufPct: avg("pktBufPct"),
+    sessionUtilPct: avg("sessionUtilPct"),
+    pktDescPct: avg("pktDescPct"),
+    sampleN: samples.length,
+  };
 }
 
 // 解析管理面：show system resources（top 文本）
+//   ⚠️ PAN-OS 管理面的 `top` 输出在容器里 `id`（空闲率）永远为 0%（us 可超 100% 是多核累计），
+//      用 `100-id` 算使用率会永远 100%——必须改用 `us+sy+ni`（全核标准化工作时间）。
 function parseMgmtPlane(txt) {
   const out = { name: "Management Plane", status: "offline" };
   if (!txt || !txt.includes("<result>")) return out;
   out.status = "online";
-  // load average: 4.93, 5.08, 5.27（1/5/15 分钟）
+  // load average: 4.93, 5.08, 5.27（1/5/15 分钟）—— 包含运行队列+I/O 等待（I/O 高时 load 高但 CPU% 不一定高）
   const lm = txt.match(/load average:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/);
   if (lm) { out.load1 = parseFloat(lm[1]); out.load5 = parseFloat(lm[2]); out.load15 = parseFloat(lm[3]); }
-  // %Cpu(s): 12.4 us, 1.5 sy, 0.0 ni, 17.9 id → 使用率 = 100 - id（top 格式为"值 标签"，值在 id 前面）
-  const cm = txt.match(/%Cpu\(s\):[\s\S]*?([\d.]+)\s+id\b/);
-  if (cm) {
-    const id = parseFloat(cm[1]);
-    if (!isNaN(id)) out.usagePct = Math.max(0, Math.min(100, Math.round((100 - id) * 10) / 10));
+  // %Cpu(s): 12.4 us, 1.5 sy, 0.0 ni, 17.9 id → 使用率 = us + sy + ni（多核平均标准化，全核 0-100%）
+  const cpuLine = txt.match(/%Cpu\(s\):([\s\S]*?)(?=MiB Mem|$)/);
+  if (cpuLine) {
+    const body = cpuLine[1];
+    const um = body.match(/([\d.]+)\s+us/);
+    const sm = body.match(/([\d.]+)\s+sy\b/);
+    const nim = body.match(/([\d.]+)\s+ni\b/);
+    if (um) {
+      const u = parseFloat(um[1]), s = sm ? parseFloat(sm[1]) : 0, n = nim ? parseFloat(nim[1]) : 0;
+      out.cpuUserPct = Math.round(u * 10) / 10;
+      out.cpuSysPct = Math.round(s * 10) / 10;
+      out.usagePct = Math.max(0, Math.min(100, Math.round((u + s + n) * 10) / 10));
+    }
   }
   // MiB Mem : 15875.5 total, 704.1 free, 7348.8 used
   const mm = txt.match(/MiB Mem\s*:\s*([\d.]+) total,\s*([\d.]+) free,\s*([\d.]+) used/);

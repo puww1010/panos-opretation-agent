@@ -405,6 +405,8 @@
   .pr-bar > i { display:block; height:100%; border-radius:3px; background:linear-gradient(90deg,#22c55e,#16a34a); transition:width .5s ease; }
   .pr-bar.warn > i { background:linear-gradient(90deg,#f59e0b,#f97316); }
   .pr-bar.crit > i { background:linear-gradient(90deg,#ef4444,#dc2626); }
+  .pr-bar.offline { background:rgba(220,38,38,.12); }
+  .pr-bar.offline > i { background:var(--red); opacity:.4; width:0% !important; }
   /* 接口流量行 */
   .if-row { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px dashed var(--border); font-size:12.5px; }
   .if-row:last-child { border-bottom:none; }
@@ -646,9 +648,9 @@
 
           <!-- 主监控区：接口流量 + 平台 Loading 双列 -->
           <div class="dash-monitor">
-            <!-- 接口流量 -->
+            <!-- 接口状态/信息 -->
             <div class="dash-card">
-              <div class="dash-card-head"><svg class="ic sm"><use href="#i-list"/></svg>接口流量<span class="pill" id="ifCount">—</span></div>
+              <div class="dash-card-head"><svg class="ic sm"><use href="#i-list"/></svg>接口状态/信息<span class="pill" id="ifCount">—</span></div>
               <div id="dashInterfaces"><div class="empty">接口信息加载中…</div></div>
             </div>
             <!-- 平台 CPU Loading（防火墙自身的 Management Plane / Data Plane） -->
@@ -662,6 +664,7 @@
                     <div class="pr-bar" id="platCpBar"><i id="platCpBarI"></i></div>
                     <div class="pr-kv"><span class="k">Load (1/5/15m)</span><span class="v" id="platCpLoad">—</span></div>
                     <div class="pr-kv"><span class="k">内存</span><span class="v" id="platCpMem">—</span></div>
+                    <div class="pr-kv pr-note" id="platCpNote"></div>
                   </div>
                 </div>
                 <div class="platform-row" id="platData">
@@ -1226,11 +1229,16 @@ function renderInterfaces(list) {
 // 概览：平台 CPU Loading（防火墙自身的 Management Plane / Data Plane）
 function renderPlatform(p) {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  // CPU 进度条：百分比 → 宽度 + 阈值变色（绿/琥珀/红）
-  const setBar = (barId, pct) => {
+  // CPU 进度条：百分比 → 宽度 + 阈值变色（绿/琥珀/红）；offline 时整体灰红
+  const setBar = (barId, pct, isOnline) => {
     const bar = document.getElementById(barId);
     if (!bar) return;
     const i = bar.querySelector("i");
+    if (!isOnline) {
+      if (i) i.style.width = "0%";
+      bar.className = "pr-bar offline";
+      return;
+    }
     if (i) i.style.width = Math.max(2, Math.min(100, Number(pct) || 0)) + "%";
     bar.className = "pr-bar" + (pct >= 80 ? " crit" : pct >= 60 ? " warn" : "");
   };
@@ -1239,28 +1247,60 @@ function renderPlatform(p) {
   if (mp) {
     set("platCpName", mp.name || "Management Plane");
     set("platCpStatus", mp.status || "—");
-    set("platCpUsage", mp.usagePct != null ? mp.usagePct + "%" : "—");
-    setBar("platCpBar", mp.usagePct);
-    set("platCpLoad", (mp.load1 != null && mp.load5 != null && mp.load15 != null) ? (mp.load1 + " / " + mp.load5 + " / " + mp.load15) : "—");
-    set("platCpMem", (mp.memUsedMB != null && mp.memTotalMB != null) ? (mp.memUsedMB + " / " + mp.memTotalMB + " MiB") : "—");
+    const isMpOnline = mp.status === "online";
+    set("platCpUsage", isMpOnline && mp.usagePct != null ? mp.usagePct + "%" : "—");
+    setBar("platCpBar", mp.usagePct, isMpOnline);
+    set("platCpLoad", isMpOnline && mp.load1 != null && mp.load5 != null && mp.load15 != null ? (mp.load1 + " / " + mp.load5 + " / " + mp.load15) : "—");
+    set("platCpMem", isMpOnline && mp.memUsedMB != null && mp.memTotalMB != null ? (mp.memUsedMB + " / " + mp.memTotalMB + " MiB") : "—");
     const cpDot = document.getElementById("platCpDot");
     if (cpDot) cpDot.className = "pr-dot " + (mp.status || "");
+    // 采样平滑注释：online 时显示算法来源；offline 时提示无数据
+    const cpNoteEl = document.getElementById("platCpNote");
+    if (cpNoteEl) {
+      if (!isMpOnline) {
+        cpNoteEl.textContent = "无法连接防火墙管理面（已 5s 轮询，等下次成功）";
+        cpNoteEl.style.color = "var(--red)";
+      } else {
+        const n = mp.sampleN || 1;
+        const us = mp.cpuUserPct != null ? "us=" + mp.cpuUserPct + "% " : "";
+        const sys = mp.cpuSysPct != null ? "sy=" + mp.cpuSysPct + "% " : "";
+        cpNoteEl.textContent = "基于 " + n + " 次采样平均 · " + us + sys + "(us+sy 全核标准化)";
+        cpNoteEl.style.color = "";
+      }
+      cpNoteEl.style.display = "";
+    }
   }
   // Data Plane（数据面）：show running resource-monitor
   const dp = p && p.dataPlane || null;
   if (dp) {
     set("platDpName", dp.name || "Data Plane");
     set("platDpStatus", dp.status || "—");
-    set("platDpUsage", dp.cpuPct != null ? dp.cpuPct + "%" : "—");
-    setBar("platDpBar", dp.cpuPct);
+    const isDpOnline = dp.status === "online";
+    set("platDpUsage", isDpOnline && dp.cpuPct != null ? dp.cpuPct + "%" : "—");
+    setBar("platDpBar", dp.cpuPct, isDpOnline);
+    set("platDp5s", isDpOnline && dp.cpu5sPct != null ? dp.cpu5sPct + "%" : "—");
+    set("platDpPeak", isDpOnline && dp.cpuPeakPct != null ? dp.cpuPeakPct + "%" : "—");
+    set("platDpCores", isDpOnline && dp.cores != null ? (dp.cores + " 核") : "—");
+    set("platDpBuf", isDpOnline && dp.pktBufPct != null ? dp.pktBufPct + "%" : "—");
     set("platDp5s", dp.cpu5sPct != null ? dp.cpu5sPct + "%" : "—");
     set("platDpPeak", dp.cpuPeakPct != null ? dp.cpuPeakPct + "%" : "—");
     set("platDpCores", dp.cores != null ? (dp.cores + " 核") : "—");
     set("platDpBuf", dp.pktBufPct != null ? dp.pktBufPct + "%" : "—");
     const dpDot = document.getElementById("platDpDot");
     if (dpDot) dpDot.className = "pr-dot " + (dp.status || "");
+    // DP 采样平滑注释
     const note = document.getElementById("platDpNote");
-    if (note) { note.textContent = dp.note || ""; note.style.display = dp.note ? "" : "none"; }
+    if (note) {
+      if (!isDpOnline) {
+        note.textContent = "无法连接防火墙数据面（已 5s 轮询，等下次成功）";
+        note.style.color = "var(--red)";
+      } else {
+        const n = dp.sampleN || 1;
+        note.textContent = "基于 " + n + " 次采样平均（每采样取 60 个 1s 数据点）";
+        note.style.color = "";
+      }
+      note.style.display = "";
+    }
   }
 }
 
