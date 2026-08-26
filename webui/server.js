@@ -1861,7 +1861,14 @@ async function getTopology() {
     const cfg = names.devices[ip] || {};
     devMap.set(ip, { ip, mac, iface, name: cfg.name || ip, icon: cfg.icon || "pc" });
   }
+  // 命名表 extra_nodes：ARP 未抓到但必须显示的节点（如 TPLINK 交换机 MAC 不响应 ARP）
+  const extras = names.extra_nodes || {};
+  for (const [ip, cfg] of Object.entries(extras)) {
+    if (!devMap.has(ip)) devMap.set(ip, { ip, mac: cfg.mac || "", iface: cfg.iface || "", name: cfg.name || ip, icon: cfg.icon || "pc" });
+  }
   devMap.delete(fwNode.ip); // 防火墙自身不算邻居
+  // 汇聚节点标记：icon 为 switch/router/ap 的设备提升为汇聚层（前端画中间层，其他设备挂其下）
+  for (const d of devMap.values()) d.agg = ["switch", "router", "ap"].includes(d.icon) ? 1 : 0;
   const out = { ts: Date.now(), fw: fwNode, interfaces: ifNodes, gateways: gwNodes, devices: [...devMap.values()], hasDefault: gwNodes.some((g) => g.isInternet), ok: !!(fwNode.hostname || fwNode.ip) };
   topologyCache = out; topologyTs = Date.now();
   return out;

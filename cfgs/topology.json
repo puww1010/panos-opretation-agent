@@ -1,21 +1,21 @@
 {
-  "_comment": "网络拓扑设备命名表（手工维护）。key = IP；icon: pc/phone/printer/router/server/unknown；name 为拓扑图中显示名称。仅用于展示，不影响防火墙配置。",
+  "_comment": "网络拓扑设备命名表（手工维护）。key = IP；icon: pc/phone/printer/router/switch/ap/server/unknown；name 为拓扑图中显示名称。extra_nodes：ARP 未抓到但必须显示的节点（如 TPLINK 交换机，MAC 不响应 ARP）。icon 为 switch/router/ap 的节点会被拓扑图自动提升为汇聚层，其他设备挂其下。",
   "devices": {
-    "192.168.0.1":   { "name": "核心网关", "icon": "router" },
-    "192.168.0.2":   { "name": "监控主机", "icon": "pc" },
+    "192.168.1.1":   { "name": "路由网关", "icon": "router" },
+    "192.168.1.7":   { "name": "192.168.1.7", "icon": "pc" },
+    "192.168.0.2":   { "name": "TPLINK-AP/交换机", "icon": "switch" },
     "192.168.0.12":  { "name": "手机", "icon": "phone" },
     "192.168.0.14":  { "name": "打印机", "icon": "printer" },
     "192.168.0.15":  { "name": "设备-15", "icon": "pc" },
     "192.168.0.16":  { "name": "设备-16", "icon": "pc" },
-    "192.168.0.17":  { "name": "设备-17", "icon": "pc" },
-    "192.168.0.18":  { "name": "设备-18", "icon": "pc" },
-    "192.168.0.19":  { "name": "设备-19", "icon": "pc" },
-    "192.168.0.25":  { "name": "设备-25", "icon": "pc" },
+    "192.168.0.31":  { "name": "设备-31", "icon": "pc" },
     "192.168.0.250": { "name": "防火墙管理口", "icon": "server" }
   },
+  "extra_nodes": {
+    "192.168.0.2": { "name": "TPLINK-AP/交换机", "icon": "switch", "iface": "ethernet1/4" }
+  },
   "groups": {
-    "untrust": { "label": "UNTRUST / WAN", "bg": "#f1f5f9" },
-    "trust":   { "label": "TRUST / LAN", "bg": "#ecfdf5" },
-    "dmz":     { "label": "DMZ", "bg": "#fff7ed" }
+    "wan":   { "label": "WAN 簇 · UNTRUST", "stroke": "#94a3b8" },
+    "lan":   { "label": "LAN 簇 · TRUST", "stroke": "#059669" }
   }
 }
