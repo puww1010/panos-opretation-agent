@@ -1802,22 +1802,25 @@ function loadTopologyNames() {
 async function getTopology() {
   if (topologyCache && Date.now() - topologyTs < TOPOLOGY_TTL) return topologyCache;
   const names = loadTopologyNames();
-  const [fwR, ifcR, routeR, arpR, zoneR] = await Promise.allSettled([
+  const [fwR, ifcR, zoneR] = await Promise.allSettled([
     callTool("get_firewall_info", {}, null).catch(() => null),
     callTool("get_interfaces", {}, null).catch(() => null),
-    callTool("get_routing_table", {}, null).catch(() => null),
-    callTool("get_arp_table", {}, null).catch(() => null),
     callTool("get_zones", {}, null).catch(() => null),
   ]);
   const fw = fwR.status === "fulfilled" && fwR.value ? fwR.value : null;
   const ifc = ifcR.status === "fulfilled" && ifcR.value ? ifcR.value : null;
-  const routeVal = routeR.status === "fulfilled" && routeR.value ? routeR.value : null;
-  const arpVal = arpR.status === "fulfilled" && arpR.value ? arpR.value : null;
   const zonesRaw = zoneR.status === "fulfilled" && zoneR.value ? zoneR.value : null;
-  const routes = (routeVal && Array.isArray(routeVal.entry)) ? routeVal.entry
-               : Array.isArray(routeVal) ? routeVal : [];
-  const arp = (arpVal && Array.isArray(arpVal.entry)) ? arpVal.entry
-            : Array.isArray(arpVal) ? arpVal : [];
+  // 路由表：直接 op 命令 + xmlEntries（PAN-OS 11.2.4 Advanced Routing 模式下 show routing 系列已弃用 →
+  // 拿不到就空数组，不影响拓扑主体：接口 + ARP 设备仍然完整展示）
+  let routes = [];
+  try {
+    routes = xmlEntries(await directOp("<show><routing><route></route></routing></show>"));
+  } catch (e) { routes = []; }
+  // ARP 表：直接 op 命令 + xmlEntries（返回 <entries><entry> 结构，MCP 路径解析不稳定，直连最稳）
+  let arp = [];
+  try {
+    arp = xmlEntries(await directOp("<show><arp><entry name='all'/></arp></show>"));
+  } catch (e) { arp = []; }
   const zones = (zonesRaw && (zonesRaw.zone?.entry || zonesRaw.entry)) || [];
   // 防火墙中心节点
   const fwNode = {
