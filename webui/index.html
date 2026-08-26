@@ -977,8 +977,10 @@ function _bumpUserActive() {
 ["mousemove", "mousedown", "keydown", "touchstart", "wheel"].forEach((ev) =>
   window.addEventListener(ev, _bumpUserActive, { passive: true })
 );
-// 空闲监控：每 15 秒检查一次；剩余 ≤60s 弹警告，剩余 ≤0 自动退出
+// 空闲监控：已停用（用户要求"先去掉，搞好以后再说"）。恢复时把下面 setInterval 打开，
+// 并把 server.js 的 IDLE_MINUTES 改回正数。
 function _checkIdle() {
+  return; // 空闲超时已停用：不再自动登出
   const lm = document.getElementById("loginMask");
   if (!lm || lm.style.display !== "none") return; // 未登录不监控
   const remain = _idleMinutes * 60000 - (Date.now() - _lastUserActiveAt);
@@ -989,7 +991,7 @@ function _checkIdle() {
     _showIdleWarning(Math.max(1, Math.ceil(remain / 1000)));
   }
 }
-setInterval(_checkIdle, 15000);
+// setInterval(_checkIdle, 15000); // 已停用（空闲超时）
 // 警告弹窗：60 秒倒计时，点"保持登录"续期，倒计时结束自动退出
 function _showIdleWarning(secs) {
   let left = Math.max(1, secs);

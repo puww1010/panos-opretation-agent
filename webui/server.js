@@ -22,8 +22,10 @@ const AUTH_FILE = path.join(__dirname, "..", "cfgs", "auth.json");
 const crypto = require("crypto");
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const AUTH_SESSION_DAYS = 7;               // 登录会话绝对有效期
-const IDLE_MINUTES = Math.max(1, parseInt(process.env.PANOS_WEB_IDLE_MINUTES || "10", 10)); // 空闲超时（分钟），默认 10
-const IDLE_MS = IDLE_MINUTES * 60 * 1000;
+// 空闲超时（分钟）：已停用（用户要求"先去掉，搞好以后再说"）。
+// 恢复方法：把 IDLE_MINUTES 改为正数即可重新启用，并同步打开前端 _checkIdle 轮询。
+const IDLE_MINUTES = 0;                    // 0 = 空闲超时停用（不再因空闲自动登出）
+const IDLE_MS = IDLE_MINUTES > 0 ? IDLE_MINUTES * 60 * 1000 : Infinity;
 let authData = null;                        // { username, password_hash, sessions:{token:{exp,lastSeen}}, internal_token }
 function loadAuth() {
   try {
