@@ -21,6 +21,25 @@ function tokenizeForMatch(text) {
     .filter((token) => token.length >= 2 && !stop.has(token.toLowerCase()) && !stop.has(token));
 }
 
+function ipv4ToInt(ip) {
+  const parts = String(ip || "").split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) return null;
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+}
+
+function ipMatchDest(destination, ip) {
+  if (!destination) return false;
+  const [network, bits] = String(destination).split("/");
+  if (network === ip) return true;
+  const prefix = Number.parseInt(bits, 10);
+  if (Number.isNaN(prefix) || prefix < 0 || prefix > 32) return false;
+  const ipNumber = ipv4ToInt(ip);
+  const networkNumber = ipv4ToInt(network);
+  if (ipNumber === null || networkNumber === null) return false;
+  const mask = prefix === 0 ? 0 : (~0 << (32 - prefix)) >>> 0;
+  return (ipNumber & mask) === (networkNumber & mask);
+}
+
 function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, diagnosticDependencies, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
@@ -274,6 +293,19 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     const ip = params.ip || "";
     const sections = [];
     task.status = "running";
+    const setFallback = () => {
+      const emptySections = sections.filter((section) => /\b(为空|空|无|未配置|未启用|不存在|未观测到|没有任何)\b/.test(section.result || ""));
+      const emptyKeys = emptySections.map((section) => section.step);
+      const positiveSections = sections.filter((section) => section.result && !emptyKeys.includes(section.step));
+      task.result.verdict = positiveSections.length
+        ? "（LLM 综合推理超时/失败，以下为已收集的关键事实）\n\n" +
+          "已采集 " + sections.length + " 段数据，其中 " + emptyKeys.length + " 段为空：" + (emptyKeys.join("、") || "（无）") + "。\n" +
+          "正面事实：\n" + positiveSections.map((section) => "• " + section.step + "：" + String(section.result).slice(0, 150)).join("\n") +
+          (emptyKeys.length ? "\n\n推断方向：观察到「" + emptyKeys.join("、") + "」为空，建议先核实关键组件（如 GP 配置、目标主机在线状态、路由配置）后再下定论。" : "")
+        : "LLM 综合推理未产出结论，请查看下方排查步骤表（" + sections.length + " 段原始数据已采集）。";
+      task.result.confidence = "低（fallback）";
+      task.result.recommendation = "1) 重跑此任务（可能是临时网络问题）；2) 若反复失败，可缩短时间窗口（minutes=30）减少 prompt 长度；3) 检查下方 sections 数据手动判断。";
+    };
     if (type === "connectivity") {
       task.steps.push("诊断类型: 连通性");
       const rules = (await toolCaller("get_security_rules", {}, task.firewall))?.rules?.entry || [];
@@ -302,20 +334,35 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
       sections.push({ step: "流量时间线", result: traffic.timeline?.length ? traffic.timeline.join("；") : "（无时间线数据）" });
       const routes = (await toolCaller("get_routing_table", {}, task.firewall))?.entry || [];
       const defaultRoute = routes.find((route) => String(route.destination || "").includes("0.0.0.0"));
-      sections.push({ step: "路由可达性", result: defaultRoute ? "存在默认路由 via " + (defaultRoute.nexthop || defaultRoute["ip-address"] || "?") : "未发现默认路由（可能影响出网）" });
+      const specificRoutes = ip ? routes.filter((route) => ipMatchDest(route.destination, ip)) : [];
+      sections.push({ step: "路由可达性", result: defaultRoute ? "存在默认路由 via " + (defaultRoute.nexthop || defaultRoute["ip-address"] || "?") + (ip ? (specificRoutes.length ? "；另有 " + specificRoutes.length + " 条指向 " + ip + " 的特定路由" : "；无该目标特定路由（走默认）") : "") : "未发现默认路由（可能影响出网）" });
       const optional = async (step, getResult) => { try { sections.push({ step, result: await getResult() }); } catch (error) { sections.push({ step, result: step + " 查询失败: " + String(error.message || error).slice(0, 120) }); } };
-      await optional("Zone 配置", async () => { const zoneData = await toolCaller("get_zones", {}, task.firewall); const zones = zoneData?.zone?.entry || zoneData?.entry || []; return "Zone 共 " + zones.length + " 个"; });
-      await optional("ARP 联动", async () => { const arp = (await toolCaller("get_arp_table", {}, task.firewall))?.entry || []; const match = arp.filter((entry) => entry.ip === ip || entry["ip-address"] === ip); return "ARP 表 " + (arp.length ? arp.length + " 条" : "为空") + (ip ? (match.length ? "；" + ip + " 已解析" : "；" + ip + " 无 ARP 记录（跨网段正常）") : ""); });
+      await optional("Zone 配置", async () => {
+        const zoneData = await toolCaller("get_zones", {}, task.firewall);
+        const zones = zoneData?.zone?.entry || zoneData?.entry || [];
+        await toolCaller("get_interfaces", {}, task.firewall);
+        const addressData = await toolCaller("get_address_objects", {}, task.firewall);
+        const addresses = addressData?.entry || addressData?.address?.entry || [];
+        const asList = (value) => value == null ? [] : (Array.isArray(value) ? value : [value]);
+        const zoneText = zones.map((zone) => {
+          const network = zone.network || {};
+          const members = [network.layer2?.member, network.layer3?.member, network["virtual-wire"]?.member].flatMap(asList).filter(Boolean);
+          return (zone["@_name"] || "?") + "(" + (members.length ? "接口=" + members.join(",") : "无接口") + ")";
+        }).join("; ");
+        const matches = addresses.filter((address) => [address["ip-range"], address.fqdn, address["ip-netmask"]].flatMap(asList).some((value) => String(value || "").includes(ip))).map((address) => address["@_name"]);
+        return "Zone 共 " + zones.length + " 个：" + (zoneText || "(空 list — 通常不该空，先看 interfaces 确认是否虚拟 wire)") + (ip ? (matches.length ? "；" + ip + " 命中地址对象: " + matches.join(", ") : "；" + ip + " 未匹配地址对象") : "");
+      });
+      await optional("ARP 联动", async () => { const arp = (await toolCaller("get_arp_table", {}, task.firewall))?.entry || []; const match = arp.filter((entry) => entry.ip === ip || entry["ip-address"] === ip); const detail = match.map((entry) => "MAC=" + (entry.mac || entry["mac-address"] || "?") + " 接口=" + (entry.interface || entry.ifname || "?")).join(", "); return "ARP 表 " + (arp.length ? arp.length + " 条" : "为空") + (ip ? (match.length ? "；" + ip + " 已解析 → " + detail : "；" + ip + " 无 ARP 记录（跨网段正常，需结合路由/zone 判定）") : ""); });
       await optional("会话联动", async () => { const sessions = await toolCaller("get_active_sessions", {}, task.firewall); const count = Number(sessions?.["num-active"] || 0); if (!ip || !count || !diagnosticDependencies.directOp) return count ? "活跃会话 " + count + " 个" : "无活跃会话"; const xml = await diagnosticDependencies.directOp("<show><session><filter><source>" + ip + "</source></filter></session></show>"); const matches = (String(xml).match(/<entry>/g) || []).length; return matches ? "活跃会话中 " + ip + " 作为源有 " + matches + " 条" : "活跃会话 " + count + " 个；" + ip + " 无作为源的活动会话"; });
-      if (ip) { const inbound = hits.filter((entry) => entry.src === ip); sections.push({ step: "源 IP 入接口", result: inbound.length ? ip + " 共 " + inbound.length + " 条入向流量" : "防火墙流量日志中 " + ip + " 没有任何入向记录" }); }
-      await optional("VPN/GP 状态", async () => { if (!diagnosticDependencies.rawToolCaller) return "原始工具调用不可用"; const gp = String((await diagnosticDependencies.rawToolCaller("get_globalprotect_config", {}, task.firewall))?.data || ""); const ipsec = (await diagnosticDependencies.rawToolCaller("get_ipsec_tunnels", {}, task.firewall))?.data || {}; return gp && gp !== "{}" ? "GP 配置存在；IPSec 隧道数 " + (ipsec.ntun || 0) : "GP 未配置或未启用；IPSec 隧道数 " + (ipsec.ntun || 0); });
+      if (ip) { const inbound = hits.filter((entry) => entry.src === ip); const counts = (items, field, fallback) => items.reduce((out, item) => { const value = item[field] || fallback; out[value] = (out[value] || 0) + 1; return out; }, {}); const render = (values) => Object.entries(values).map(([name, count]) => name + "×" + count).join(", "); const inboundIf = inbound.map((entry) => ({ ...entry, inbound_if: entry.inbound_if || entry["inbound-if"] })); sections.push({ step: "源 IP 入接口", result: inbound.length ? ip + " 共 " + inbound.length + " 条入向流量；入接口=" + render(counts(inboundIf, "inbound_if", "?")) + "；action=" + render(counts(inbound, "action", "?")) : "防火墙流量日志中 " + ip + " **没有任何入向记录**（可能是：源主机没发包到防火墙 / 包被前置网络丢弃 / 发包时段超出 " + minutes + " 分钟窗口）" }); }
+      await optional("VPN/GP 状态", async () => { if (!diagnosticDependencies.rawToolCaller) return "原始工具调用不可用"; const gpConfig = String((await diagnosticDependencies.rawToolCaller("get_globalprotect_config", {}, task.firewall))?.data ?? ""); const gpUser = String((await diagnosticDependencies.rawToolCaller("get_globalprotect_users", {}, task.firewall))?.data ?? ""); const ipsec = (await diagnosticDependencies.rawToolCaller("get_ipsec_tunnels", {}, task.firewall))?.data || {}; const configured = gpConfig && gpConfig !== '\"\"' && gpConfig.trim() !== "" && gpConfig !== "{}"; const users = gpUser && gpUser !== '\"\"' && gpUser.trim() !== "" && gpUser !== "{}"; const ipsecCount = Number.parseInt(ipsec.ntun || 0, 10) || 0; const entries = ipsec.entries || ""; const result = configured || users ? "GP 配置存在（" + gpConfig.length + " 字符）；用户列表 " + (users ? "有连接" : "为空") : "GP 未配置或未启用：get_globalprotect_config 配置为空，get_globalprotect_users 用户列表为空"; return result + "；IPSec 隧道数 " + ipsecCount + (entries && entries !== '\"\"' ? "（" + String(entries).slice(0, 200) + "）" : ""); });
       const probe = params.probe || (ip ? "ping" : null);
-      if (probe && ip) await optional("实时探测 " + probe, async () => { if (!diagnosticDependencies.rawToolCaller) return "原始工具调用不可用"; const command = probe === "traceroute" ? "<test><traceroute><destination>" + ip + "</destination></traceroute></test>" : "<test><ping><destination>" + ip + "</destination><count>3</count></ping></test>"; const text = String((await diagnosticDependencies.rawToolCaller("run_op_command", { command }, task.firewall))?.data || ""); const loss = text.match(/loss[^%]*(\d+(?:\.\d+)?)%/i); return (loss ? "丢包 " + loss[1] + "%" : text.slice(0, 200)) || "无探测输出"; });
+      if (probe && ip) await optional("实时探测 " + probe, async () => { if (!diagnosticDependencies.rawToolCaller) return "原始工具调用不可用"; const command = probe === "traceroute" ? "<test><traceroute><destination>" + ip + "</destination></traceroute></test>" : "<test><ping><destination>" + ip + "</destination><count>3</count></ping></test>"; const text = String((await diagnosticDependencies.rawToolCaller("run_op_command", { command }, task.firewall))?.data || ""); const loss = text.match(/loss[^%]*(\d+(?:\.\d+)?)%/i); const rtt = text.match(/min\/avg\/max[^=]*=\s*([\d.]+)\/([\d.]+)\/([\d.]+)/i); const unsupported = /Unsupported command|error/i.test(text); return (loss ? "丢包 " + loss[1] + "%" : "") + (rtt ? " RTT min/avg/max=" + rtt[1] + "/" + rtt[2] + "/" + rtt[3] + "ms" : "") + (unsupported ? "（防火墙不支持该探测命令或权限不足） 原始输出: " + text.slice(0, 200) : "") || "无探测输出"; });
       else sections.push({ step: "实时探测", result: ip ? "未指定 probe（可用 ping / traceroute）" : "未指定目标 IP，跳过实时探测" });
       task.result = { title: "连通性诊断" + (ip ? "（" + ip + (params.port ? ":" + params.port : "") + "）" : ""), sections };
       const synthesis = diagnosticDependencies.synthesize ? await diagnosticDependencies.synthesize(task.input, sections, traffic.top) : null;
       if (synthesis) Object.assign(task.result, { verdict: synthesis.verdict, confidence: synthesis.confidence, recommendation: synthesis.recommendation || "" });
-      if (!task.result.verdict) Object.assign(task.result, { verdict: "LLM 综合推理未产出结论，请查看下方排查步骤表（" + sections.length + " 段原始数据已采集）。", confidence: "低（fallback）", recommendation: "重跑任务或缩短时间窗口后复核各段数据。" });
+      if (!task.result.verdict) setFallback();
       task.result.logStats = traffic.top;
       task.status = "done";
       saveTask(task);
@@ -356,7 +403,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
       task.result = { title: "威胁源画像" + (ip ? "：" + ip : ""), sections };
       const synthesis = diagnosticDependencies.synthesize ? await diagnosticDependencies.synthesize(task.input, sections, threats.top) : null;
       if (synthesis) Object.assign(task.result, { verdict: synthesis.verdict, confidence: synthesis.confidence, recommendation: synthesis.recommendation || "" });
-      if (!task.result.verdict) Object.assign(task.result, { verdict: "LLM 综合推理未产出结论，请查看下方排查步骤表（" + sections.length + " 段原始数据已采集）。", confidence: "低（fallback）", recommendation: "重跑任务或缩短时间窗口后复核各段数据。" });
+      if (!task.result.verdict) setFallback();
       task.result.logStats = threats.top;
       task.status = "done";
       saveTask(task);
@@ -383,11 +430,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
       task.result.confidence = synthesis.confidence;
       task.result.recommendation = synthesis.recommendation || "";
     }
-    if (!task.result.verdict) {
-      task.result.verdict = "LLM 综合推理未产出结论，请查看下方排查步骤表（" + sections.length + " 段原始数据已采集）。";
-      task.result.confidence = "低（fallback）";
-      task.result.recommendation = "重跑任务或缩短时间窗口后复核各段数据。";
-    }
+    if (!task.result.verdict) setFallback();
     task.result.logStats = threatLog.top;
     task.status = "done";
     saveTask(task);

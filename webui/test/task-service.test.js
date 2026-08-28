@@ -403,6 +403,25 @@ test("generic diagnostics collect health evidence and synthesize a verdict", asy
   assert.equal(task.result.sections.length, 6);
 });
 
+test("generic diagnostic fallback uses the same legacy evidence summary", async () => {
+  const service = createTaskService({
+    toolCaller: async (tool) => ({
+      get_firewall_info: { hostname: "lab-fw", model: "PA-440", "sw-version": "11.2" },
+      get_system_resources: "load average: 1.0", get_active_sessions: { "num-active": "0", "num-max": "100" },
+      get_system_logs: { entry: [] },
+    })[tool],
+    diagnosticDependencies: {
+      deepLog: async () => ({ entries: [], top: { src: [] } }), filterByMinutes: (entries) => entries,
+      formatTop: () => "无", synthesize: async () => null,
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 35, type: "diag", status: "pending", input: "健康检查", diag: { type: "generic", params: { minutes: 30 } }, steps: [] });
+  await service.runDiagnostic(service.getTask(35));
+  assert.match(service.getTask(35).result.verdict, /LLM 综合推理超时\/失败，以下为已收集的关键事实/);
+  assert.equal(service.getTask(35).result.recommendation, "1) 重跑此任务（可能是临时网络问题）；2) 若反复失败，可缩短时间窗口（minutes=30）减少 prompt 长度；3) 检查下方 sections 数据手动判断。");
+});
+
 test("threat-profile diagnostics correlate threat, traffic, and policy evidence", async () => {
   const service = createTaskService({
     toolCaller: async (tool) => tool === "get_security_rules" ? { entry: [{ "@_name": "allow-web", action: "allow", source: { member: ["any"] }, destination: { member: ["any"] } }] } : {},
@@ -429,14 +448,20 @@ test("connectivity diagnostics correlate policy, traffic, routing, and probe evi
   const service = createTaskService({
     toolCaller: async (tool) => ({
       get_security_rules: { rules: { entry: [{ "@_name": "allow-web", action: "allow", source: { member: ["any"] }, destination: { member: ["any"] } }] } },
-      get_routing_table: { entry: [{ destination: "0.0.0.0/0", nexthop: "192.0.2.1" }] },
-      get_zones: { entry: [] }, get_interfaces: { hw: { entry: [] } }, get_address_objects: { entry: [] },
+      get_routing_table: { entry: [{ destination: "0.0.0.0/0", nexthop: "192.0.2.1" }, { destination: "198.51.0.0/16" }] },
+      get_zones: { entry: [{ "@_name": "Untrust", network: { "layer3": { member: ["ethernet1/1"] } } }] }, get_interfaces: { hw: { entry: [] } }, get_address_objects: { entry: [{ "@_name": "attacker", "ip-netmask": "198.51.100.10/32" }] },
       get_arp_table: { entry: [] }, get_active_sessions: { "num-active": "3" },
     })[tool] || {},
     diagnosticDependencies: {
       deepLog: async (...args) => { deepLogCalls.push(args); return { entries: [{ src: "198.51.100.10", dst: "203.0.113.20", action: "deny", inbound_if: "ethernet1/1" }], top: {}, timeline: ["10:00 deny×1"], timeRange: "10:00-10:10" }; },
       formatTop: () => "top", synthesize: async () => ({ verdict: "策略允许但流量被拒绝", confidence: "中" }),
-      rawToolCaller: async (tool, args) => { rawCalls.push({ tool, args }); return { data: "3 packets transmitted, 0% packet loss" }; },
+      rawToolCaller: async (tool, args) => {
+        rawCalls.push({ tool, args });
+        if (tool === "get_globalprotect_config") return { data: "<config><entry name='portal'/></config>" };
+        if (tool === "get_globalprotect_users") return { data: "<entry name='alice'/>" };
+        if (tool === "get_ipsec_tunnels") return { data: { ntun: "1", entries: "tunnel-a" } };
+        return { data: "3 packets transmitted, 3 received, 0% packet loss\nrtt min/avg/max = 1.0/2.0/3.0 ms" };
+      },
       directOp: async () => "<entry></entry>",
     },
     taskStore: memoryStore(), auditStore: memoryStore(),
@@ -448,9 +473,39 @@ test("connectivity diagnostics correlate policy, traffic, routing, and probe evi
   assert.equal(task.result.title, "连通性诊断（198.51.100.10）");
   assert.match(task.result.sections.find((section) => section.step === "流量证据").result, /deny×1/);
   assert.match(task.result.sections.find((section) => section.step === "路由可达性").result, /默认路由/);
+  assert.match(task.result.sections.find((section) => section.step === "路由可达性").result, /特定路由/);
+  assert.match(task.result.sections.find((section) => section.step === "Zone 配置").result, /attacker/);
+  assert.match(task.result.sections.find((section) => section.step === "源 IP 入接口").result, /ethernet1\/1×1/);
+  assert.match(task.result.sections.find((section) => section.step === "VPN\/GP 状态").result, /用户列表 有连接/);
+  assert.match(task.result.sections.find((section) => section.step === "VPN\/GP 状态").result, /IPSec 隧道数 1（tunnel-a）/);
+  assert.match(task.result.sections.find((section) => section.step === "实时探测 ping").result, /RTT min\/avg\/max=1\.0\/2\.0\/3\.0ms/);
+  assert.ok(rawCalls.some((call) => call.tool === "get_globalprotect_users"));
   assert.ok(rawCalls.some((call) => call.tool === "run_op_command"));
   assert.match(deepLogCalls[0][1].query, /receive_time geq '2024\/06\/01 11:00:00'/);
   assert.match(deepLogCalls[0][1].query, /receive_time leq '2024\/06\/01 13:00:00'/);
+});
+
+test("connectivity diagnostic fallback summarizes positive and empty evidence like the legacy executor", async () => {
+  const service = createTaskService({
+    toolCaller: async (tool) => ({
+      get_security_rules: { rules: { entry: [] } }, get_routing_table: { entry: [] },
+      get_zones: { entry: [] }, get_address_objects: { entry: [] }, get_arp_table: { entry: [] },
+      get_active_sessions: { "num-active": "0" },
+    })[tool] || {},
+    diagnosticDependencies: {
+      deepLog: async () => ({ entries: [], top: {}, timeline: [] }),
+      formatTop: () => "无", synthesize: async () => null,
+      rawToolCaller: async () => ({ data: "" }),
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 34, type: "diag", status: "pending", input: "检查连通性", diag: { type: "connectivity", params: { ip: "198.51.100.10" } }, steps: [] });
+  await service.runDiagnostic(service.getTask(34));
+  const task = service.getTask(34);
+  assert.match(task.result.verdict, /LLM 综合推理超时\/失败，以下为已收集的关键事实/);
+  assert.match(task.result.verdict, /已采集 \d+ 段数据，其中 \d+ 段为空/);
+  assert.equal(task.result.confidence, "低（fallback）");
+  assert.equal(task.result.recommendation, "1) 重跑此任务（可能是临时网络问题）；2) 若反复失败，可缩短时间窗口（minutes=30）减少 prompt 长度；3) 检查下方 sections 数据手动判断。");
 });
 
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {

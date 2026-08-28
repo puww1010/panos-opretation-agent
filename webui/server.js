@@ -1159,7 +1159,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
       task.llm = currentLLM;
       task.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
       task.steps.push(task.decision);
-    }, (task) => ["generic", "threat_profile"].includes(task.diag?.type) ? taskService.runDiagnostic(task) : runDiagTask(task, firewall));
+    }, (task) => ["generic", "threat_profile", "connectivity"].includes(task.diag?.type) ? taskService.runDiagnostic(task) : runDiagTask(task, firewall));
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
