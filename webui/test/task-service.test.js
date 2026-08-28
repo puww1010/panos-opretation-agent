@@ -96,6 +96,20 @@ test("security-rule disable and enable are finalized through the task service", 
   ]);
 });
 
+test("security-rule deletion is finalized through the task service", async () => {
+  const deletes = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigDelete: async (xpath) => { deletes.push(xpath); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 23, type: "change", status: "awaiting_approval", template: "delete_security_rule", params: { name: "obsolete-rule" }, steps: [] });
+  await service.actOnTask(23, "approve");
+  assert.equal(service.getTask(23).status, "awaiting_commit");
+  assert.deepEqual(deletes, [
+    "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='obsolete-rule']",
+  ]);
+});
+
 test("commit without a job is recorded as requiring manual follow-up", async () => {
   const service = createTaskService({
     panosAdapter: { directCommit: async () => "<response status='success'/>" },

@@ -96,19 +96,19 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
 
   async function runCandidate(task) {
     task.params = normalizeChangeParams(task.template, task.params);
-    if (task.template === "add_address_object") {
+    if (task.template === "add_address_object" && panosAdapter.directConfigSet) {
       const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address/entry[@name='" + task.params.name + "']";
       await panosAdapter.directConfigSet(xpath, "<ip-netmask>" + task.params.value + "</ip-netmask>");
       finalizeCandidate(task);
       return;
     }
-    if (task.template === "delete_address_object") {
+    if (task.template === "delete_address_object" && panosAdapter.directConfigDelete) {
       const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address/entry[@name='" + task.params.name + "']";
       await panosAdapter.directConfigDelete(xpath);
       finalizeCandidate(task);
       return;
     }
-    if (task.template === "move_security_rule") {
+    if (task.template === "move_security_rule" && panosAdapter.directConfigMove) {
       const { name, where, destination } = task.params;
       if (!name || !where) throw new Error("move_security_rule 缺少 name 或 where");
       if (["before", "after"].includes(where) && !destination) {
@@ -124,11 +124,18 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
       finalizeCandidate(task);
       return;
     }
-    if (["set_security_rule_disabled", "set_security_rule_enabled"].includes(task.template) && task.params.name) {
+    if (["set_security_rule_disabled", "set_security_rule_enabled"].includes(task.template) && task.params.name && panosAdapter.directConfigSet) {
       const value = task.template === "set_security_rule_disabled" ? "yes" : "no";
       const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='" + task.params.name + "']/disabled";
       await panosAdapter.directConfigSet(xpath, "<disabled>" + value + "</disabled>");
       task.steps.push("candidate: " + (value === "yes" ? "disable " : "enable ") + task.params.name);
+      finalizeCandidate(task);
+      return;
+    }
+    if (task.template === "delete_security_rule" && task.params.name && panosAdapter.directConfigDelete) {
+      const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='" + task.params.name + "']";
+      await panosAdapter.directConfigDelete(xpath);
+      task.steps.push("candidate: delete_security_rule " + task.params.name);
       finalizeCandidate(task);
       return;
     }
