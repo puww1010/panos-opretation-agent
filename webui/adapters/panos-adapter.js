@@ -1,5 +1,6 @@
 const fs = require("fs");
 const https = require("https");
+const path = require("path");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
 

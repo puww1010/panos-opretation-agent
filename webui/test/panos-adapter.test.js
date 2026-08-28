@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const { createPanosAdapter } = require("../adapters/panos-adapter");
 
@@ -20,4 +22,18 @@ test("adapter selects direct or MCP transport by configured route", async () => 
   assert.deepEqual(await adapter.callTool("get_system_logs", {}), { via: "direct" });
   assert.deepEqual(await adapter.callTool("get_firewall_info", {}), { via: "mcp" });
   assert.deepEqual(calls, [["direct", "get_system_logs"], ["mcp", "get_firewall_info"]]);
+});
+
+test("adapter connection does not depend on an implicit global path", () => {
+  const script = [
+    "delete global.path;",
+    "const { createPanosAdapter } = require('./webui/adapters/panos-adapter');",
+    "const adapter = createPanosAdapter({ nodeBin: process.execPath, panosMcpDir: '/tmp', sourcePath: '/definitely-missing-panos-mcp-entry.js', workingDirectory: '/tmp' });",
+    "adapter.connect().then(() => process.exit(0)).catch((error) => process.exit(String(error.message || error) === 'path is not defined' ? 1 : 0));",
+    "setTimeout(() => process.exit(2), 4000);",
+  ].join("\n");
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: path.resolve(__dirname, "../.."), encoding: "utf8", timeout: 6000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
