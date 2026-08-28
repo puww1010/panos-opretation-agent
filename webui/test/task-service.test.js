@@ -110,6 +110,26 @@ test("security-rule deletion is finalized through the task service", async () =>
   ]);
 });
 
+test("single IP block candidate creates an address object and deny rule", async () => {
+  const writes = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigSet: async (...args) => { writes.push(args); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 25, type: "change", status: "awaiting_approval", template: "block_ip",
+    params: { ip: "198.51.100.8" }, steps: [],
+  });
+  await service.actOnTask(25, "approve");
+  const task = service.getTask(25);
+  assert.equal(task.status, "awaiting_commit");
+  assert.equal(writes.length, 2);
+  assert.match(writes[0][0], /address\/entry\[@name='block-198\.51\.100\.8-/);
+  assert.equal(writes[0][1], "<ip-netmask>198.51.100.8/32</ip-netmask>");
+  assert.match(writes[1][0], /rulebase\/security\/rules\/entry\[@name='block-198\.51\.100\.8-/);
+  assert.match(writes[1][1], /<action>deny<\/action>/);
+});
+
 test("batch rule selection creates child tasks and performs one merged commit", async () => {
   let commits = 0;
   const service = createTaskService({
