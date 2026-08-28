@@ -108,6 +108,22 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
       finalizeCandidate(task);
       return;
     }
+    if (task.template === "move_security_rule") {
+      const { name, where, destination } = task.params;
+      if (!name || !where) throw new Error("move_security_rule 缺少 name 或 where");
+      if (["before", "after"].includes(where) && !destination) {
+        throw new Error("move_security_rule 在 before/after 时必须提供 destination（参照规则名）");
+      }
+      const base = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']";
+      const xpath = base + "/rulebase/security/rules/entry[@name='" + name + "']";
+      const destinationXpath = ["before", "after"].includes(where)
+        ? base + "/rulebase/security/rules/entry[@name='" + destination + "']"
+        : null;
+      await panosAdapter.directConfigMove(xpath, where, destinationXpath);
+      task.steps.push("candidate: move_security_rule " + name + " " + where + (destinationXpath ? " " + destination : ""));
+      finalizeCandidate(task);
+      return;
+    }
     if (candidateRunner) return candidateRunner(task);
     task.status = "executing";
     saveTasks();

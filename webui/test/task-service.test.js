@@ -59,6 +59,25 @@ test("address-object deletion is finalized through the task service", async () =
   ]);
 });
 
+test("security-rule move is executed and finalized through the task service", async () => {
+  const moves = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigMove: async (...args) => { moves.push(args); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 15, type: "change", status: "awaiting_approval", template: "move_security_rule",
+    params: { name: "allow-web", where: "before", destination: "deny-all" }, firewall: "lab", steps: [],
+  });
+  await service.actOnTask(15, "approve");
+  assert.equal(service.getTask(15).status, "awaiting_commit");
+  assert.deepEqual(moves, [[
+    "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='allow-web']",
+    "before",
+    "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='deny-all']",
+  ]]);
+});
+
 test("address-object plan parameters use ip-netmask by default", () => {
   assert.equal(normalizeChangeParams("add_address_object", { name: "example", value: "198.51.100.2" }).type, "ip-netmask");
 });
