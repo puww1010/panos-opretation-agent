@@ -169,6 +169,32 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
       finalizeCandidate(task);
       return;
     }
+    if (task.template === "allow_ip" && panosAdapter.directConfigSet) {
+      const date = new Date(clock()).toISOString().slice(0, 10).replace(/-/g, "");
+      const name = "allow-" + task.params.ip + "-" + date;
+      const base = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']";
+      await panosAdapter.directConfigSet(base + "/address/entry[@name='" + name + "']", "<ip-netmask>" + task.params.ip + "/32</ip-netmask>");
+      task.steps.push("candidate: address " + name);
+      const ruleXml = "<from><member>any</member></from><to><member>any</member></to><source><member>" + name + "</member></source><destination><member>any</member></destination><service><member>any</member></service><application><member>any</member></application><action>allow</action><description>WebUI allow by Agent</description>";
+      await panosAdapter.directConfigSet(base + "/rulebase/security/rules/entry[@name='" + name + "']", ruleXml);
+      task.steps.push("candidate: allow rule " + name);
+      task.params._objName = name;
+      if (task.params.position && ["top", "bottom", "before", "after"].includes(task.params.position) && panosAdapter.directConfigMove) {
+        if (["before", "after"].includes(task.params.position) && !task.params.destination) {
+          task.steps.push("⚠️ " + task.params.position + " 需要 destination 参照规则名，跳过 move，规则留在末尾");
+        } else {
+          const destination = ["before", "after"].includes(task.params.position)
+            ? base + "/rulebase/security/rules/entry[@name='" + task.params.destination + "']"
+            : null;
+          await panosAdapter.directConfigMove(base + "/rulebase/security/rules/entry[@name='" + name + "']", task.params.position, destination);
+          task.steps.push("candidate: move " + name + " " + task.params.position);
+        }
+      } else {
+        task.steps.push("ℹ️ 用户未指定位置，规则留在末尾（不移动）");
+      }
+      finalizeCandidate(task);
+      return;
+    }
     if (candidateRunner) return candidateRunner(task);
     task.status = "executing";
     saveTasks();

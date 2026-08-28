@@ -130,6 +130,26 @@ test("single IP block candidate creates an address object and deny rule", async 
   assert.match(writes[1][1], /<action>deny<\/action>/);
 });
 
+test("single IP allow candidate creates an address object and allow rule", async () => {
+  const writes = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigSet: async (...args) => { writes.push(args); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 26, type: "change", status: "awaiting_approval", template: "allow_ip",
+    params: { ip: "198.51.100.9" }, steps: [],
+  });
+  await service.actOnTask(26, "approve");
+  const task = service.getTask(26);
+  assert.equal(task.status, "awaiting_commit");
+  assert.equal(writes.length, 2);
+  assert.match(writes[0][0], /address\/entry\[@name='allow-198\.51\.100\.9-/);
+  assert.equal(writes[0][1], "<ip-netmask>198.51.100.9/32</ip-netmask>");
+  assert.match(writes[1][0], /rulebase\/security\/rules\/entry\[@name='allow-198\.51\.100\.9-/);
+  assert.match(writes[1][1], /<action>allow<\/action>/);
+});
+
 test("batch rule selection creates child tasks and performs one merged commit", async () => {
   let commits = 0;
   const service = createTaskService({
