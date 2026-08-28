@@ -150,6 +150,31 @@ test("single IP allow candidate creates an address object and allow rule", async
   assert.match(writes[1][1], /<action>allow<\/action>/);
 });
 
+test("IP group block candidate creates members, group, and deny rule", async () => {
+  const writes = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigSet: async (...args) => { writes.push(args); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 27, type: "change", status: "awaiting_approval", template: "block_ip_group",
+    params: { ips: ["198.51.100.10", "198.51.100.11"], group_name: "blocked-test-group" }, steps: [],
+  });
+  await service.actOnTask(27, "approve");
+  const task = service.getTask(27);
+  assert.equal(task.status, "awaiting_commit");
+  assert.equal(task.params._groupName, "blocked-test-group");
+  assert.equal(task.params._memberCount, 2);
+  assert.equal(writes.length, 4);
+  assert.match(writes[0][0], /address\/entry\[@name='block-198\.51\.100\.10-/);
+  assert.match(writes[1][0], /address\/entry\[@name='block-198\.51\.100\.11-/);
+  assert.equal(writes[2][0], "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address-group/entry[@name='blocked-test-group']");
+  assert.match(writes[2][1], /<member>block-198\.51\.100\.10-/);
+  assert.match(writes[3][0], /rulebase\/security\/rules\/entry\[@name='blocked-test-group'\]/);
+  assert.match(writes[3][1], /<source><member>blocked-test-group<\/member><\/source>/);
+  assert.match(writes[3][1], /<action>deny<\/action>/);
+});
+
 test("batch rule selection creates child tasks and performs one merged commit", async () => {
   let commits = 0;
   const service = createTaskService({
