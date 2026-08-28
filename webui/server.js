@@ -271,6 +271,7 @@ const taskService = createTaskService({
   panosAdapter,
   taskStore: { load: () => tasks, save: persistTasks },
   auditStore: { load: () => auditEvents, save: persistAuditEvents },
+  auditLogReader: (firewall) => callTool("get_config_logs", { nlogs: 200 }, firewall),
   deferExecution: true,
 });
 
@@ -1200,7 +1201,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
       task.llm = currentLLM;
       task.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
       task.steps.push(task.decision);
-    }, (task) => runAuditTask(task, firewall));
+    }, (task) => taskService.runAudit(task));
     return { taskId: t.id, status: t.status, type: "audit" };
   }
   if (action === "diag") {
@@ -1308,50 +1309,6 @@ function dedupeActiveTask(input) {
   dup.steps.push("🔁 与新提交任务完全一致，被新任务自动取消");
   saveTask(dup);
   return dup;
-}
-
-// ── 审计日志任务 ──
-async function runAuditTask(t, firewall) {
-  t.status = "running";
-  t.steps.push("查询配置变更日志 (config log)");
-  const step = { tool: "get_config_logs", status: "running", startMs: Date.now() };
-  t.steps.push(step);
-  let entries = [];
-  try {
-    const data = await callTool("get_config_logs", { nlogs: 200 }, firewall);
-    entries = data.entry || [];
-  } catch (e) {
-    step.status = "err"; step.msg = String(e.message || e);
-    t.status = "failed"; t.error = step.msg; saveTask(t); return;
-  }
-  step.status = "ok"; step.ms = Date.now() - step.startMs;
-
-  const { minutes, object } = t.audit || { minutes: 60, object: "all" };
-  const cutoff = Date.now() - minutes * 60000;
-  const isSec = (p) => /rulebase\/security|security\/rules/.test(p || "");
-  const rows = entries
-    .map((e) => ({
-      time: e.receive_time || e.time_generated || "",
-      admin: e.admin || "?",
-      cmd: e.cmd || "?",
-      result: e.result || "?",
-      client: e.client || "?",
-      path: (e["full-path"] || e.path || "").slice(0, 80),
-    }))
-    .filter((r) => {
-      // 时间过滤
-      if (!r.time) return true;
-      const t = Date.parse(r.time.replace("/", "-").replace("/", "-"));
-      if (isNaN(t)) return true;
-      if (t < cutoff) return false;
-      // 对象过滤
-      if (object === "security") return isSec(r.path);
-      return true;
-    });
-  t.result = { title: `配置变更审计（最近 ${minutes} 分钟${object === "security" ? " · 策略相关" : ""}）`, rows, total: rows.length, minutes, object };
-  t.steps.push(`筛选出 ${rows.length} 条变更记录`);
-  t.status = "done";
-  saveTask(t);
 }
 
 // ── 智能诊断任务 ──

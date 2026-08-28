@@ -312,6 +312,25 @@ test("address-object plan parameters use ip-netmask by default", () => {
   assert.equal(normalizeChangeParams("add_address_object", { name: "example", value: "198.51.100.2" }).type, "ip-netmask");
 });
 
+test("audit execution filters config logs through the task service", async () => {
+  const now = new Date(2023, 10, 14, 22, 13).getTime();
+  const service = createTaskService({
+    auditLogReader: async () => ({ entry: [
+      { receive_time: "2023/11/14 22:12:00", admin: "admin", cmd: "set", result: "success", client: "web", "full-path": "rulebase/security/rules/entry" },
+      { receive_time: "2023/11/14 22:12:00", admin: "admin", cmd: "set", result: "success", client: "web", "full-path": "address/entry" },
+    ] }),
+    taskStore: memoryStore(), auditStore: memoryStore(), clock: () => now,
+  });
+  service.seedTask({
+    id: 28, type: "audit", status: "pending", audit: { minutes: 60, object: "security" }, steps: [],
+  });
+  await service.runAudit(service.getTask(28));
+  const task = service.getTask(28);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.total, 1);
+  assert.equal(task.result.rows[0].path, "rulebase/security/rules/entry");
+});
+
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {
   const service = createTaskService({
     panosAdapter: { directConfigSet: async () => { throw new Error("must not execute"); } },

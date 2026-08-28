@@ -21,7 +21,7 @@ function tokenizeForMatch(text) {
     .filter((token) => token.length >= 2 && !stop.has(token.toLowerCase()) && !stop.has(token));
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
@@ -136,6 +136,50 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     task.status = "awaiting_selection";
     task.result = { awaitingSelection: true, verb, keyword, matched: top, totalMatches: matched.length, mode };
     task._candidate = { name: task.params.name, keyword, template: task.template, firewall: task.firewall };
+    saveTask(task);
+  }
+
+  async function runAudit(task) {
+    if (!auditLogReader) throw new Error("未配置配置变更日志读取器");
+    task.status = "running";
+    task.steps.push("查询配置变更日志 (config log)");
+    const step = { tool: "get_config_logs", status: "running", startMs: clock() };
+    task.steps.push(step);
+    let entries;
+    try {
+      entries = (await auditLogReader(task.firewall)).entry || [];
+    } catch (error) {
+      step.status = "err";
+      step.msg = String(error.message || error);
+      task.status = "failed";
+      task.error = step.msg;
+      saveTask(task);
+      return;
+    }
+    step.status = "ok";
+    step.ms = clock() - step.startMs;
+    const { minutes, object } = task.audit || { minutes: 60, object: "all" };
+    const cutoff = clock() - minutes * 60000;
+    const isSecurityRule = (value) => /rulebase\/security|security\/rules/.test(value || "");
+    const rows = entries.map((entry) => ({
+      time: entry.receive_time || entry.time_generated || "",
+      admin: entry.admin || "?",
+      cmd: entry.cmd || "?",
+      result: entry.result || "?",
+      client: entry.client || "?",
+      path: (entry["full-path"] || entry.path || "").slice(0, 80),
+    })).filter((row) => {
+      if (!row.time) return object !== "security" || isSecurityRule(row.path);
+      const timestamp = Date.parse(row.time.replace("/", "-").replace("/", "-"));
+      if (!Number.isNaN(timestamp) && timestamp < cutoff) return false;
+      return object !== "security" || isSecurityRule(row.path);
+    });
+    task.result = {
+      title: "配置变更审计（最近 " + minutes + " 分钟" + (object === "security" ? " · 策略相关" : "") + "）",
+      rows, total: rows.length, minutes, object,
+    };
+    task.steps.push("筛选出 " + rows.length + " 条变更记录");
+    task.status = "done";
     saveTask(task);
   }
 
@@ -539,6 +583,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     getTask,
     listTasks: () => tasks,
     prepareRuleSelection: setAwaitingSelection,
+    runAudit,
     runCandidate,
     saveTask,
     seedTask,
