@@ -686,47 +686,6 @@ async function summarizeQuery(input, action, results, conversationId) {
   return text || null;
 }
 
-async function runInspectTask(t, firewall) {
-  t.status = "running";
-  const tools = ACTIONS.inspect.tools;
-  const results = [];
-  for (const tool of tools) {
-    if (t.cancelled) { t.status = "cancelled"; break; }
-    const step = { tool, status: "running", startMs: Date.now() };
-    t.steps.push(step);
-    try { results.push({ tool, data: await callTool(tool, {}, firewall) }); step.status = "ok"; step.ms = Date.now() - step.startMs; }
-    catch (e) { step.status = "err"; step.ms = Date.now() - step.startMs; step.msg = String(e.message || e); results.push({ tool, error: step.msg }); }
-  }
-  if (t.status === "cancelled") { saveTask(t); return; }
-  // 简版合规评分（8 项中的 5 项计分）
-  const d = (tool) => results.find((r) => r.tool === tool)?.data || {};
-  const fw = d("get_firewall_info");
-  const rules = d("get_security_rules")?.rules?.entry || [];
-  const lic = d("get_licenses")?.licenses?.entry || [];
-  const threat = d("get_threat_logs")?.entry || [];
-  const wildfire = d("get_wildfire_status")?.raw || String(d("get_wildfire_status"));
-  const checks = [
-    { name: "策略最小权限", pass: !rules.some((r) => r.action === "allow" && !r.disabled && r.source?.member === "any" && r.destination?.member === "any") },
-    { name: "威胁防护启用", pass: !/Disabled due to configuration/.test(wildfire) },
-    { name: "许可有效性", pass: !lic.some((l) => l.expired === "yes") },
-    { name: "日志连续性", pass: threat.length > 0 && Date.now() - new Date(threat[0].receive_time).getTime() < 7 * 864e5 },
-    { name: "内容库更新", pass: true },
-  ];
-  const scored = checks.filter((c) => c.name !== "内容库更新");
-  const pass = scored.filter((c) => c.pass).length;
-  const rate = Math.round((pass / scored.length) * 100);
-  const grade = rate >= 90 ? "优秀" : rate >= 75 ? "良好" : rate >= 60 ? "需改进" : "不达标";
-  const date = new Date().toISOString().slice(0, 10);
-  const md = `# PAN-OS 合规巡检报告（WebUI 任务）\n\n| 项 | 值 |\n|---|---|\n| 设备 | ${fw.hostname || "?"} (${fw.serial || "?"}) |\n| 版本 | ${fw["sw-version"] || "?"} |\n| 时间 | ${date} |\n| 评级 | ${grade} (${rate}%) |\n\n| 检查项 | 结果 |\n|---|---|\n` + checks.map((c) => `| ${c.name} | ${c.pass ? "✅ 通过" : "❌ 不通过"} |`).join("\n");
-  if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
-  const file = path.join(REPORTS_DIR, `compliance-${date}-task.md`);
-  fs.writeFileSync(file, md);
-  t.result = { grade, rate, file, checks, hostname: fw.hostname, model: fw.model };
-  t.steps.push(`报告落盘 ${path.basename(file)}`);
-  t.status = "done";
-  saveTask(t);
-}
-
 // 变更执行（candidate 阶段）
 async function runChangeCandidate(t, tmpl, params, firewall) {
   t.status = "executing";
