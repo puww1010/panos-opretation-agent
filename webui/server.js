@@ -5,6 +5,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { createPanosAdapter } = require("./adapters/panos-adapter");
+const { createTaskService, normalizeChangeParams } = require("./services/task-service");
 const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
 const { planFingerprint, transitionTask } = require("./lib/task-governance");
 const { buildHealthSummary } = require("./lib/health");
@@ -266,6 +267,16 @@ function recordTaskAudit(t, event) {
   persistAuditEvents();
 }
 loadAuditEvents();
+
+// 任务状态与审批动作统一从服务入口处理；具体 PAN-OS 执行器暂以窄回调注入，保持现有异步响应行为。
+const taskService = createTaskService({
+  panosAdapter,
+  taskStore: { load: () => tasks, save: persistTasks },
+  auditStore: { load: () => auditEvents, save: persistAuditEvents },
+  candidateRunner: (task) => runChangeCandidate(task, task.template, task.params || {}, task.firewall),
+  commitRunner: (task) => runChangeCommit(task, task.firewall),
+  deferExecution: true,
+});
 
 function recordLLM(role, input, output, ms) {
   llmLogs.unshift({ ts: new Date().toLocaleString("zh-CN"), provider: currentLLM, role, input: String(input).slice(0, 80), output: String(output || "").slice(0, 200), ms });
@@ -1174,15 +1185,16 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     const c = await llmExtractChange(input, conv.conversationId);
     if (!c) return { error: "无法解析变更意图（支持：创建/删除地址对象、封禁/放行 IP、移动/删除/禁用/启用安全策略）" };
     const tmpl = CHANGE_TEMPLATES[c.template];
+    const params = normalizeChangeParams(c.template, c.params);
     // 规则类模板（delete/disable/enable）若只有模糊 keyword，先预检转 awaiting_selection
     const RULE_TMPL = ["delete_security_rule", "set_security_rule_disabled", "set_security_rule_enabled"];
-    const needPrecheck = RULE_TMPL.includes(c.template) && !(c.params?.name && /^[a-zA-Z0-9_.\-]+$/.test(c.params.name));
-    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
-    t.plan = tmpl.plan(c.params || {});
-    t.planFingerprint = planFingerprint({ template: c.template, params: c.params || {}, firewall });
+    const needPrecheck = RULE_TMPL.includes(c.template) && !(params.name && /^[a-zA-Z0-9_.\-]+$/.test(params.name));
+    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params, firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
+    t.plan = tmpl.plan(params);
+    t.planFingerprint = planFingerprint({ template: c.template, params, firewall });
     if (needPrecheck) {
       // 同步做一次预检（list candidates）→ 任务状态已是 awaiting_selection，前端直接展示候选按钮
-      try { await setAwaitingSelection(t, c.params, firewall, tmpl.label, []); }
+      try { await setAwaitingSelection(t, params, firewall, tmpl.label, []); }
       catch (e) { t.status = "failed"; t.error = e.message; saveTask(t); }
     } else {
       t.steps.push("变更计划已生成，等待审批");
@@ -2182,14 +2194,9 @@ const server = http.createServer(async (req, res) => {
       send(200, { output: out, ms: Date.now() - t0, provider: currentLLM });
       return;
     }
-    if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks }); return; }
+    if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks: taskService.listTasks() }); return; }
     if (req.method === "POST" && req.url === "/api/tasks/clean") {
-      // 清除终态任务（done/cancelled/failed），只保留活跃与待审批任务
-      const TERMINAL = new Set(["done", "cancelled", "failed"]);
-      const before = tasks.length;
-      for (let i = tasks.length - 1; i >= 0; i--) { if (TERMINAL.has(tasks[i].status)) tasks.splice(i, 1); }
-      persistTasks();
-      send(200, { removed: before - tasks.length, remain: tasks.length });
+      send(200, taskService.cleanTasks());
       return;
     }
     if (req.method === "POST" && req.url === "/api/task") {
@@ -2204,19 +2211,21 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url.startsWith("/api/task/")) {
       const parts = req.url.split("/"); // /api/task/:id/:action[/name]
       const id = Number(parts[3]); const act = parts[4]; const selName = parts[5] ? decodeURIComponent(parts[5]) : null;
-      const t = tasks.find((x) => x.id === id);
+      const t = taskService.getTask(id);
       if (!t) { send(404, { error: "task not found" }); return; }
       // 用户从候选列表选择精确规则名：用新 name 重跑 candidate 阶段
       if (act === "select" && t.status === "awaiting_selection" && t._candidate) {
         const cand = t._candidate;
-        const newParams = { ...cand.name, name: selName, keyword: cand.keyword };
-        const transition = transitionTask(t, "select");
-        if (!transition.ok) { send(400, { error: "非法操作或状态不匹配: " + t.status }); return; }
-        recordTaskAudit(t, transition.event);
-        t.steps.push(`用户从候选选中：${selName}`);
-        saveTask(t);
-        runChangeCandidate(t, cand.template, newParams, cand.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
-        send(200, { taskId: t.id, status: t.status }); return;
+        try {
+          send(200, await taskService.actOnTask(id, "select", {
+            params: { name: selName, keyword: cand.keyword },
+            firewall: cand.firewall,
+            step: `用户从候选选中：${selName}`,
+          }));
+        } catch (e) {
+          send(400, { error: String(e.message || e) });
+        }
+        return;
       }
       // 批量选择执行：POST /api/task/:id/select-multi，body: {names: ["name1", "name2", ...]}
       if (act === "select-multi" && t.status === "awaiting_selection" && t._candidate) {
@@ -2304,26 +2313,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (["approve", "reject", "confirm", "cancel"].includes(act)) {
-        const expectedFingerprint = t.planFingerprint;
-        const actualFingerprint = t.type === "change"
-          ? planFingerprint({ template: t.template, params: t.params || {}, firewall: t.firewall })
-          : null;
-        if (expectedFingerprint && actualFingerprint && expectedFingerprint !== actualFingerprint) {
-          send(409, { error: "变更计划已变化，请重新生成候选计划" });
-          return;
+        try {
+          send(200, await taskService.actOnTask(id, act));
+        } catch (e) {
+          const message = String(e.message || e);
+          send(message === "变更计划已变化，请重新生成候选计划" ? 409 : 400, { error: message });
         }
-        const transition = transitionTask(t, act);
-        if (!transition.ok) {
-          send(400, { error: "非法操作或状态不匹配: " + t.status });
-          return;
-        }
-        recordTaskAudit(t, transition.event);
-        if (act === "cancel") { t.cancelled = true; t.steps.push("手动取消"); }
-        if (act === "reject") t.steps.push("已拒绝");
-        saveTask(t);
-        if (act === "approve") runChangeCandidate(t, t.template, t.params || {}, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
-        if (act === "confirm") runChangeCommit(t, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
-        send(200, { taskId: t.id, status: t.status });
         return;
       }
       send(400, { error: "非法操作或状态不匹配: " + t.status });

@@ -1,0 +1,72 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { createTaskService, normalizeChangeParams } = require("../services/task-service");
+const { planFingerprint } = require("../lib/task-governance");
+
+function memoryStore(initial = []) {
+  let value = initial;
+  return { load: () => value, save: (next) => { value = next; } };
+}
+
+test("approval records audit before candidate execution", async () => {
+  const executed = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigSet: async () => { executed.push("candidate"); return "<response status='success'/>"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(), clock: () => 1700000000000,
+  });
+  service.seedTask({ id: 7, type: "change", status: "awaiting_approval", template: "add_address_object", params: { name: "example", value: "198.51.100.2" }, steps: [] });
+  const result = await service.actOnTask(7, "approve");
+  assert.equal(result.status, "executing");
+  assert.equal(service.listTasks()[0].audit[0].action, "approve");
+  assert.deepEqual(executed, ["candidate"]);
+});
+
+test("address-object plan parameters use ip-netmask by default", () => {
+  assert.equal(normalizeChangeParams("add_address_object", { name: "example", value: "198.51.100.2" }).type, "ip-netmask");
+});
+
+test("approval rejects a change whose plan fingerprint no longer matches", async () => {
+  const service = createTaskService({
+    panosAdapter: { directConfigSet: async () => { throw new Error("must not execute"); } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 8, type: "change", status: "awaiting_approval", template: "add_address_object",
+    params: { name: "example", value: "198.51.100.2", type: "ip-netmask" }, steps: [],
+    firewall: "lab", planFingerprint: planFingerprint({
+      template: "add_address_object", params: { name: "example", value: "203.0.113.9", type: "ip-netmask" }, firewall: "lab",
+    }),
+  });
+  await assert.rejects(service.actOnTask(8, "approve"), /变更计划已变化/);
+  assert.equal(service.listTasks()[0].status, "awaiting_approval");
+});
+
+test("cancellation is persisted and emits an audit record", async () => {
+  const auditStore = memoryStore();
+  const service = createTaskService({ panosAdapter: {}, taskStore: memoryStore(), auditStore });
+  service.seedTask({ id: 9, type: "query", status: "running", steps: [] });
+  const result = await service.actOnTask(9, "cancel");
+  assert.equal(result.status, "cancelled");
+  assert.equal(service.listTasks()[0].cancelled, true);
+  assert.equal(auditStore.load()[0].action, "cancel");
+});
+
+test("rule selection persists the selected parameters before starting candidate execution", async () => {
+  const started = [];
+  const service = createTaskService({
+    taskStore: memoryStore(), auditStore: memoryStore(),
+    candidateRunner: async (task) => { started.push({ id: task.id, params: task.params }); },
+  });
+  service.seedTask({
+    id: 10, type: "change", status: "awaiting_selection", template: "delete_security_rule",
+    params: { keyword: "legacy" }, steps: [], _candidate: { firewall: "lab" },
+  });
+  const result = await service.actOnTask(10, "select", {
+    params: { name: "legacy-rule", keyword: "legacy" },
+    step: "用户从候选选中：legacy-rule",
+  });
+  assert.equal(result.status, "executing");
+  assert.deepEqual(service.listTasks()[0].params, { name: "legacy-rule", keyword: "legacy" });
+  assert.deepEqual(started, [{ id: 10, params: { name: "legacy-rule", keyword: "legacy" } }]);
+});
