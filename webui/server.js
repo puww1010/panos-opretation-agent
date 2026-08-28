@@ -2243,7 +2243,7 @@ const server = http.createServer(async (req, res) => {
             });
             taskService.addTask(newTask);
             try {
-              await runChangeCandidate(newTask, cand.template, { name }, cand.firewall);
+              await taskService.runCandidate(newTask);
               results.push({ name, success: true, taskId: newTask.id });
             } catch (e) {
               newTask.status = "failed";

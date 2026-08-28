@@ -17,9 +17,29 @@ test("approval records audit before candidate execution", async () => {
   });
   service.seedTask({ id: 7, type: "change", status: "awaiting_approval", template: "add_address_object", params: { name: "example", value: "198.51.100.2" }, steps: [] });
   const result = await service.actOnTask(7, "approve");
-  assert.equal(result.status, "executing");
+  assert.equal(result.status, "awaiting_commit");
   assert.equal(service.listTasks()[0].audit[0].action, "approve");
   assert.deepEqual(executed, ["candidate"]);
+});
+
+test("address-object candidate is finalized with an audit record", async () => {
+  const writes = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigSet: async (xpath, xml) => { writes.push({ xpath, xml }); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 11, type: "change", status: "awaiting_approval", template: "add_address_object",
+    params: { name: "example", value: "198.51.100.2" }, firewall: "lab", steps: [],
+  });
+  await service.actOnTask(11, "approve");
+  const task = service.getTask(11);
+  assert.equal(task.status, "awaiting_commit");
+  assert.equal(task.audit.at(-1).action, "candidate_ready");
+  assert.deepEqual(writes, [{
+    xpath: "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address/entry[@name='example']",
+    xml: "<ip-netmask>198.51.100.2</ip-netmask>",
+  }]);
 });
 
 test("address-object plan parameters use ip-netmask by default", () => {

@@ -60,12 +60,23 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
   }
 
   async function runCandidate(task) {
-    if (candidateRunner) return candidateRunner(task);
     task.params = normalizeChangeParams(task.template, task.params);
     if (task.template === "add_address_object") {
       const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address/entry[@name='" + task.params.name + "']";
       await panosAdapter.directConfigSet(xpath, "<ip-netmask>" + task.params.value + "</ip-netmask>");
+      task.planFingerprint = planFingerprint({ template: task.template, params: task.params, firewall: task.firewall });
+      task.status = "awaiting_commit";
+      recordAudit(task, {
+        taskId: task.id,
+        action: "candidate_ready",
+        from: "executing",
+        to: "awaiting_commit",
+        at: new Date(clock()).toISOString(),
+      });
+      saveTasks();
+      return;
     }
+    if (candidateRunner) return candidateRunner(task);
     task.status = "executing";
     saveTasks();
   }
@@ -149,6 +160,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     createTask,
     getTask: (id) => tasks.find((task) => task.id === id),
     listTasks: () => tasks,
+    runCandidate,
     saveTask,
     seedTask,
   };
