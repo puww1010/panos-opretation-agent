@@ -21,7 +21,7 @@ function tokenizeForMatch(text) {
     .filter((token) => token.length >= 2 && !stop.has(token.toLowerCase()) && !stop.has(token));
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, diagnosticDependencies, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
@@ -260,6 +260,46 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     const file = await inspectReportWriter({ date, markdown });
     task.result = { grade, rate, file, checks, hostname: firewall.hostname, model: firewall.model };
     task.steps.push("报告落盘 " + String(file).split("/").at(-1));
+    task.status = "done";
+    saveTask(task);
+  }
+
+  async function runDiagnostic(task) {
+    const { type = "generic", params = {} } = task.diag || {};
+    if (type !== "generic") throw new Error("该诊断类型尚未迁入 Task Service: " + type);
+    if (!toolCaller || !diagnosticDependencies?.deepLog || !diagnosticDependencies?.filterByMinutes || !diagnosticDependencies?.formatTop) {
+      throw new Error("未配置通用健康诊断依赖");
+    }
+    const minutes = params.minutes || 60;
+    const sections = [];
+    task.status = "running";
+    task.steps.push("诊断类型: 通用健康");
+    const firewall = await toolCaller("get_firewall_info", {}, task.firewall);
+    sections.push({ step: "设备", result: String(firewall.hostname) + " " + firewall.model + " " + firewall["sw-version"] });
+    const resources = await toolCaller("get_system_resources", {}, task.firewall);
+    const load = typeof resources === "string" ? resources.split("\n").find((line) => line.includes("load average")) : "";
+    sections.push({ step: "负载", result: load || "（资源查询无摘要）" });
+    const sessions = await toolCaller("get_active_sessions", {}, task.firewall);
+    sections.push({ step: "会话", result: "活跃 " + (sessions["num-active"] || 0) + " / 上限 " + (sessions["num-max"] || 0) });
+    const systemLogs = diagnosticDependencies.filterByMinutes((await toolCaller("get_system_logs", {}, task.firewall))?.entry || [], minutes);
+    const errors = systemLogs.filter((entry) => ["error", "critical"].includes(entry.severity));
+    sections.push({ step: "系统事件", result: errors.length ? "最近 " + minutes + " 分钟内 " + errors.length + " 条 error/critical" : "最近 " + minutes + " 分钟无 error/critical 事件" });
+    const threatLog = await diagnosticDependencies.deepLog("threat", { minutes, nlogs: 200 });
+    sections.push({ step: "威胁近况", result: threatLog.entries.length ? "最近 " + minutes + " 分钟威胁日志 " + threatLog.entries.length + " 条" : "最近 " + minutes + " 分钟无威胁日志" });
+    sections.push({ step: "威胁源 Top", result: diagnosticDependencies.formatTop(threatLog.top, ["src", "subtype", "severity"]) });
+    task.result = { title: "通用健康诊断", sections };
+    const synthesis = diagnosticDependencies.synthesize ? await diagnosticDependencies.synthesize(task.input, sections, threatLog.top) : null;
+    if (synthesis) {
+      task.result.verdict = synthesis.verdict;
+      task.result.confidence = synthesis.confidence;
+      task.result.recommendation = synthesis.recommendation || "";
+    }
+    if (!task.result.verdict) {
+      task.result.verdict = "LLM 综合推理未产出结论，请查看下方排查步骤表（" + sections.length + " 段原始数据已采集）。";
+      task.result.confidence = "低（fallback）";
+      task.result.recommendation = "重跑任务或缩短时间窗口后复核各段数据。";
+    }
+    task.result.logStats = threatLog.top;
     task.status = "done";
     saveTask(task);
   }
@@ -667,6 +707,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     runAudit,
     runCandidate,
     runInspect,
+    runDiagnostic,
     runQuery,
     saveTask,
     seedTask,

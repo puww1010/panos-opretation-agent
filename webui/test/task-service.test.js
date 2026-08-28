@@ -378,6 +378,31 @@ test("inspection execution scores collected evidence and writes a report", async
   assert.match(report.markdown, /PAN-OS 合规巡检报告/);
 });
 
+test("generic diagnostics collect health evidence and synthesize a verdict", async () => {
+  const service = createTaskService({
+    toolCaller: async (tool) => ({
+      get_firewall_info: { hostname: "lab-fw", model: "PA-440", "sw-version": "11.2" },
+      get_system_resources: "load average: 1.0",
+      get_active_sessions: { "num-active": "10", "num-max": "100" },
+      get_system_logs: { entry: [] },
+    })[tool],
+    diagnosticDependencies: {
+      deepLog: async () => ({ entries: [], top: { src: [] } }),
+      filterByMinutes: (entries) => entries,
+      formatTop: () => "无",
+      synthesize: async () => ({ verdict: "运行正常", confidence: "高", recommendation: "保持观察" }),
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 31, type: "diag", status: "pending", input: "健康检查", diag: { type: "generic", params: { minutes: 30 } }, steps: [] });
+  await service.runDiagnostic(service.getTask(31));
+  const task = service.getTask(31);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.title, "通用健康诊断");
+  assert.equal(task.result.verdict, "运行正常");
+  assert.equal(task.result.sections.length, 6);
+});
+
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {
   const service = createTaskService({
     panosAdapter: { directConfigSet: async () => { throw new Error("must not execute"); } },

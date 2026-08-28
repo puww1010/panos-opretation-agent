@@ -285,6 +285,12 @@ const taskService = createTaskService({
     fs.writeFileSync(file, markdown);
     return file;
   },
+  diagnosticDependencies: {
+    deepLog,
+    filterByMinutes,
+    formatTop: fmtTop,
+    synthesize: llmSynthesize,
+  },
   deferExecution: true,
 });
 
@@ -1192,7 +1198,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
       task.llm = currentLLM;
       task.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
       task.steps.push(task.decision);
-    }, (task) => runDiagTask(task, firewall));
+    }, (task) => task.diag?.type === "generic" ? taskService.runDiagnostic(task) : runDiagTask(task, firewall));
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
