@@ -272,7 +272,6 @@ const taskService = createTaskService({
   taskStore: { load: () => tasks, save: persistTasks },
   auditStore: { load: () => auditEvents, save: persistAuditEvents },
   candidateRunner: (task) => runChangeCandidate(task, task.template, task.params || {}, task.firewall),
-  commitRunner: (task) => runChangeCommit(task, task.firewall),
   deferExecution: true,
 });
 

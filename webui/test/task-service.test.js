@@ -78,6 +78,88 @@ test("security-rule move is executed and finalized through the task service", as
   ]]);
 });
 
+test("commit without a job is recorded as requiring manual follow-up", async () => {
+  const service = createTaskService({
+    panosAdapter: { directCommit: async () => "<response status='success'/>" },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 16, type: "change", status: "awaiting_commit", templateLabel: "创建地址对象", steps: [] });
+  await service.actOnTask(16, "confirm");
+  const task = service.getTask(16);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.needsManualCommit, true);
+  assert.equal(task.audit.at(-1).action, "commit_needs_follow_up");
+});
+
+test("commit job completion is finalized through the task service", async () => {
+  const operations = [];
+  const service = createTaskService({
+    panosAdapter: {
+      directCommit: async () => "<job>42</job>",
+      directOp: async (command) => { operations.push(command); return "<status>FIN</status><progress>100</progress>"; },
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(), sleep: async () => {},
+  });
+  service.seedTask({ id: 17, type: "change", status: "awaiting_commit", templateLabel: "创建地址对象", steps: [] });
+  await service.actOnTask(17, "confirm");
+  const task = service.getTask(17);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.job, "42");
+  assert.equal(task.audit.at(-1).action, "commit_completed");
+  assert.deepEqual(operations, ["<show><jobs><id>42</id></jobs></show>"]);
+});
+
+test("commit job failure is finalized through the task service", async () => {
+  const service = createTaskService({
+    panosAdapter: {
+      directCommit: async () => "<job>43</job>",
+      directOp: async () => "<status>FAIL</status>",
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(), sleep: async () => {},
+  });
+  service.seedTask({ id: 18, type: "change", status: "awaiting_commit", steps: [] });
+  await service.actOnTask(18, "confirm");
+  const task = service.getTask(18);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.commitFailed, true);
+  assert.equal(task.audit.at(-1).action, "commit_failed");
+});
+
+test("commit cancellation stops polling and records the job", async () => {
+  let service;
+  service = createTaskService({
+    panosAdapter: {
+      directCommit: async () => "<job>44</job>",
+      directOp: async () => "<status>ACT</status><progress>1</progress>",
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+    sleep: async () => { service.getTask(19).cancelled = true; },
+  });
+  service.seedTask({ id: 19, type: "change", status: "awaiting_commit", steps: [] });
+  await service.actOnTask(19, "confirm");
+  const task = service.getTask(19);
+  assert.equal(task.status, "cancelled");
+  assert.equal(task.result.job, "44");
+  assert.equal(task.audit.at(-1).action, "commit_polling_cancelled");
+});
+
+test("commit polling timeout requires manual follow-up", async () => {
+  const service = createTaskService({
+    panosAdapter: {
+      directCommit: async () => "<job>45</job>",
+      directOp: async () => "<status>ACT</status><progress>1</progress>",
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(), sleep: async () => {}, maxCommitPolls: 1,
+  });
+  service.seedTask({ id: 20, type: "change", status: "awaiting_commit", steps: [] });
+  await service.actOnTask(20, "confirm");
+  const task = service.getTask(20);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.needsManualCommit, true);
+  assert.equal(task.result.timeout, true);
+  assert.equal(task.audit.at(-1).action, "commit_timed_out");
+});
+
 test("address-object plan parameters use ip-netmask by default", () => {
   assert.equal(normalizeChangeParams("add_address_object", { name: "example", value: "198.51.100.2" }).type, "ip-netmask");
 });

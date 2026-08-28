@@ -6,7 +6,7 @@ function normalizeChangeParams(template, params = {}) {
     : { ...params };
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = Date.now, candidateRunner, commitRunner, deferExecution = false }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = Date.now, candidateRunner, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
@@ -130,7 +130,94 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
   }
 
   async function runCommit(task) {
-    if (commitRunner) return commitRunner(task);
+    if (panosAdapter.directCommit) {
+      task.status = "committing";
+      let job = null;
+      try {
+        const response = await panosAdapter.directCommit("WebUI Agent: " + (task.templateLabel || task.type));
+        const text = String(response);
+        const match = text.match(/<job>(\d+)<\/job>/i)
+          || text.match(/<id>(\d+)<\/id>/i)
+          || text.match(/jobid[\s=]+["']?(\d+)/i)
+          || text.match(/\bid\s+(\d+)\b/i)
+          || text.match(/"job"\s*:\s*(\d+)/);
+        job = match ? match[1] : null;
+        task.steps.push("commit 入队" + (job ? " job=" + job : "：无 job（响应：" + text.slice(0, 120) + "）"));
+        if (!job) {
+          task.steps.push("可能原因：candidate 未生效（无变更可提交）或 commit 端点未返回 job");
+          task.status = "done";
+          task.result = Object.assign(task.result || {}, { needsManualCommit: true, raw: text.slice(0, 300) });
+          recordAudit(task, { taskId: task.id, action: "commit_needs_follow_up", from: "committing", to: "done", at: new Date(clock()).toISOString() });
+          saveTasks();
+          return;
+        }
+        if (!panosAdapter.directOp) {
+          task.steps.push("无法查询 commit job 状态，请到 Monitor → Jobs 确认最终结果");
+          task.status = "done";
+          task.result = Object.assign(task.result || {}, { needsManualCommit: true, job });
+          recordAudit(task, { taskId: task.id, action: "commit_needs_follow_up", from: "committing", to: "done", at: new Date(clock()).toISOString() });
+          saveTasks();
+          return;
+        }
+      } catch (error) {
+        task.steps.push("commit 入队失败：" + String(error.message || error).slice(0, 80));
+        task.status = "done";
+        task.result = Object.assign(task.result || {}, { needsManualCommit: true });
+        recordAudit(task, { taskId: task.id, action: "commit_needs_follow_up", from: "committing", to: "done", at: new Date(clock()).toISOString() });
+        saveTasks();
+        return;
+      }
+
+      let lastJobSignature = "";
+      for (let index = 0; index < maxCommitPolls; index += 1) {
+        if (task.cancelled) {
+          task.steps.push("已取消任务，停止 commit 轮询");
+          task.steps.push("⚠️ commit job=" + job + " 可能已在防火墙执行，请到 Monitor → Jobs 确认最终状态；如需回退变更请手动处理");
+          task.status = "cancelled";
+          task.result = Object.assign(task.result || {}, { cancelledWhileCommitting: true, job });
+          recordAudit(task, { taskId: task.id, action: "commit_polling_cancelled", from: "committing", to: "cancelled", at: new Date(clock()).toISOString() });
+          saveTasks();
+          return;
+        }
+        await sleep(index < 30 ? 3000 : 5000);
+        try {
+          const response = await panosAdapter.directOp("<show><jobs><id>" + job + "</id></jobs></show>");
+          const text = String(response);
+          const statusMatch = text.match(/<status>\s*([^<\s]+)/i);
+          const status = statusMatch ? statusMatch[1].toUpperCase() : "";
+          const progressMatch = text.match(/<progress>\s*(\d+)/i);
+          const progress = progressMatch ? progressMatch[1] : "";
+          const signature = status + "|" + progress;
+          if (signature !== lastJobSignature || index % 15 === 0) {
+            task.steps.push("commit job=" + job + " status=" + status + (progress ? " (" + progress + "%)" : ""));
+            lastJobSignature = signature;
+          }
+          if (["FIN", "FINOK"].includes(status) || text.includes("FIN OK")) {
+            task.steps.push("commit 完成 (job=" + job + ")");
+            task.status = "done";
+            task.result = Object.assign(task.result || {}, { job });
+            recordAudit(task, { taskId: task.id, action: "commit_completed", from: "committing", to: "done", at: new Date(clock()).toISOString() });
+            saveTasks();
+            return;
+          }
+          if (["FAIL", "STOPPED", "ERROR"].includes(status)) {
+            task.steps.push("commit 失败：" + status + " job=" + job);
+            task.status = "done";
+            task.result = Object.assign(task.result || {}, { job, commitFailed: true });
+            recordAudit(task, { taskId: task.id, action: "commit_failed", from: "committing", to: "done", at: new Date(clock()).toISOString() });
+            saveTasks();
+            return;
+          }
+        } catch {}
+      }
+      task.steps.push("commit 超时（10 分钟）：job=" + job + " 可能在防火墙后台仍在执行中。请登录防火墙 Web 界面 → Monitor → Jobs，搜索 job ID " + job + " 查看最终状态，或手动执行 commit");
+      task.status = "done";
+      task.result = Object.assign(task.result || {}, { needsManualCommit: true, timeout: true, timedOut: true, job });
+      recordAudit(task, { taskId: task.id, action: "commit_timed_out", from: "committing", to: "done", at: new Date(clock()).toISOString() });
+      saveTasks();
+      return;
+    }
+    throw new Error("PAN-OS adapter does not provide directCommit");
   }
 
   async function startExecution(task, runner) {
