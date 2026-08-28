@@ -70,3 +70,13 @@ test("rule selection persists the selected parameters before starting candidate 
   assert.deepEqual(service.listTasks()[0].params, { name: "legacy-rule", keyword: "legacy" });
   assert.deepEqual(started, [{ id: 10, params: { name: "legacy-rule", keyword: "legacy" } }]);
 });
+
+test("task creation resumes IDs from persisted history and persists the new task", () => {
+  const taskStore = memoryStore([{ id: 12, type: "query", status: "done", input: "旧任务", steps: [] }]);
+  const service = createTaskService({ panosAdapter: {}, taskStore, auditStore: memoryStore() });
+  const task = service.createTask("query", "新任务", { firewall: "lab" });
+  service.addTask(task);
+  assert.equal(task.id, 13);
+  assert.equal(task.status, "pending");
+  assert.equal(taskStore.load().at(-1), task);
+});

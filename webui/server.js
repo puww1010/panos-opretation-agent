@@ -203,7 +203,6 @@ const MAX_HISTORY = 20;
 const MAX_LLM_LOGS = 50;
 const MAX_TASKS = 200;   // 任务持久化上限（超出丢弃最旧）
 const MAX_METRICS = 720; // 指标采样上限（10s 一次 ≈ 2 小时滚动窗口）
-let taskSeq = 0;
 
 // ── 任务持久化：重启后保留已完成/已取消任务（内存 + cfgs/tasks.json 双写）──
 // 写锁：所有落盘走串行 Promise 队列。快照在调用时刻生成（JS 单线程，同步段按序），
@@ -235,7 +234,6 @@ function loadTasks() {
         t.steps = (t.steps || []).concat({ tool: "system", status: "err", msg: "控制台重启，任务中断" });
       }
       tasks.push(t);
-      if (t.id > taskSeq) taskSeq = t.id;
     }
     while (tasks.length > MAX_TASKS) tasks.shift();
     console.log("[agent] 已从磁盘恢复 %d 个历史任务", tasks.length);
@@ -612,17 +610,9 @@ function resolveConversation(replyTo) {
 
 // ── 任务系统 ──
 function newTask(type, input, extra = {}) {
-  // 多轮追问：无显式会话时自动关联最近一个已完成的任务（前端据此显示"追问自 #N"；extra 可覆盖）
-  let followUpOf = null;
-  if (!extra.conversationId) {
-    for (let i = tasks.length - 1; i >= 0; i--) {
-      const x = tasks[i];
-      if (["done", "failed"].includes(x.status) && ["query", "diag", "chat", "inspect"].includes(x.type)) { followUpOf = x.id; break; }
-    }
-  }
-  return { id: ++taskSeq, type, input, status: "pending", steps: [], result: null, error: null, createdAt: new Date().toLocaleString("zh-CN"), followUpOf, ...extra };
+  return taskService.createTask(type, input, extra);
 }
-function saveTask(t) { const i = tasks.findIndex((x) => x.id === t.id); if (i >= 0) tasks[i] = t; persistTasks(); }
+function saveTask(t) { return taskService.saveTask(t); }
 
 async function runQueryTask(t, action, firewall) {
   t.status = "running";
@@ -1200,7 +1190,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
       t.steps.push("变更计划已生成，等待审批");
     }
     t.llm = currentLLM;  // 记录处理该任务时实际使用的 LLM provider key
-    tasks.push(t); persistTasks();
+    taskService.addTask(t);
     recordTaskAudit(t, { taskId: t.id, action: "created", from: null, to: t.status, at: new Date().toISOString() });
     return needPrecheck && t.status === "awaiting_selection"
       ? { taskId: t.id, status: t.status, plan: t.plan, candidates: t.result.matched, totalMatches: t.result.totalMatches }
@@ -1212,7 +1202,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     t.llm = currentLLM;
     t.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
     t.steps.push(t.decision);
-    tasks.push(t); persistTasks();
+    taskService.addTask(t);
     runAuditTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
     return { taskId: t.id, status: t.status, type: "audit" };
   }
@@ -1225,13 +1215,13 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     t.llm = currentLLM;
     t.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
     t.steps.push(t.decision);
-    tasks.push(t); persistTasks();
+    taskService.addTask(t);
     runDiagTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
     const t = newTask("inspect", input, { firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo });
-    tasks.push(t); persistTasks();
+    taskService.addTask(t);
     runInspectTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
     return { taskId: t.id, status: t.status, type: "inspect" };
   }
@@ -1240,7 +1230,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     if (fromLLM) t.llm = currentLLM;
     t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
     t.steps.push(t.decision);
-    tasks.push(t); persistTasks();
+    taskService.addTask(t);
     runQueryTask(t, action, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
     return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
   }
@@ -1276,7 +1266,7 @@ async function createFreeAnswer(input, firewall, source, opts = {}) {
   t.steps.push(t.decision);
   t.result = { answer: text || "抱歉，LLM 未能给出回答。您可以换个说法，或试试：设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4。", sentTo: source === "feishu" ? "feishu" : "web" };
   t.status = "done";
-  tasks.push(t); persistTasks();
+  taskService.addTask(t);
   return { taskId: t.id, status: t.status, type: "chat" };
 }
 
@@ -2245,19 +2235,13 @@ const server = http.createServer(async (req, res) => {
           const results = [];
           // 串行执行每个变更（避免并发冲突）
           for (const name of names) {
-            const newTask = {
-              id: tasks.length + 1,
-              type: "change",
-              input: `${cand.template} ${name}`,
+            const newTask = taskService.createTask("change", `${cand.template} ${name}`, {
               template: cand.template,
               params: { name },
               firewall: cand.firewall,
-              status: "pending",
-              steps: [],
               createdAt: new Date().toISOString(),
-            };
-            tasks.push(newTask);
-            persistTasks();
+            });
+            taskService.addTask(newTask);
             try {
               await runChangeCandidate(newTask, cand.template, { name }, cand.firewall);
               results.push({ name, success: true, taskId: newTask.id });

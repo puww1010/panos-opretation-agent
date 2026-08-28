@@ -8,8 +8,48 @@ function normalizeChangeParams(template, params = {}) {
 
 function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = Date.now, candidateRunner, commitRunner, deferExecution = false }) {
   const tasks = taskStore.load();
+  let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
   function saveTasks() { taskStore.save(tasks); }
+
+  function createTask(type, input, extra = {}) {
+    let followUpOf = null;
+    if (!extra.conversationId) {
+      for (let index = tasks.length - 1; index >= 0; index -= 1) {
+        const task = tasks[index];
+        if (["done", "failed"].includes(task.status) && ["query", "diag", "chat", "inspect"].includes(task.type)) {
+          followUpOf = task.id;
+          break;
+        }
+      }
+    }
+    return {
+      id: ++taskSeq,
+      type,
+      input,
+      status: "pending",
+      steps: [],
+      result: null,
+      error: null,
+      createdAt: new Date(clock()).toLocaleString("zh-CN"),
+      followUpOf,
+      ...extra,
+    };
+  }
+
+  function addTask(task) {
+    taskSeq = Math.max(taskSeq, Number(task.id) || 0);
+    tasks.push(task);
+    saveTasks();
+    return task;
+  }
+
+  function saveTask(task) {
+    const index = tasks.findIndex((item) => item.id === task.id);
+    if (index >= 0) tasks[index] = task;
+    saveTasks();
+    return task;
+  }
 
   function recordAudit(task, event) {
     task.audit = task.audit || [];
@@ -90,7 +130,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     return { taskId: task.id, status: task.status };
   }
 
-  function seedTask(task) { tasks.push(task); saveTasks(); return task; }
+  function seedTask(task) { return addTask(task); }
 
   function cleanTasks() {
     const terminal = new Set(["done", "cancelled", "failed"]);
@@ -104,9 +144,12 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
 
   return {
     actOnTask,
+    addTask,
     cleanTasks,
+    createTask,
     getTask: (id) => tasks.find((task) => task.id === id),
     listTasks: () => tasks,
+    saveTask,
     seedTask,
   };
 }
