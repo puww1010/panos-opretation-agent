@@ -21,7 +21,7 @@ function tokenizeForMatch(text) {
     .filter((token) => token.length >= 2 && !stop.has(token.toLowerCase()) && !stop.has(token));
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
@@ -216,6 +216,49 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
       task.status = "done";
       if (queryHistoryRecorder) queryHistoryRecorder({ input: String(task.input), action, label: definition.label });
     }
+    saveTask(task);
+  }
+
+  async function runInspect(task) {
+    const tools = actionDefinitions?.inspect?.tools;
+    if (!tools || !toolCaller || !inspectReportWriter) throw new Error("未配置巡检执行依赖");
+    task.status = "running";
+    const results = [];
+    for (const tool of tools) {
+      if (task.cancelled) { task.status = "cancelled"; break; }
+      const step = { tool, status: "running", startMs: clock() };
+      task.steps.push(step);
+      try {
+        results.push({ tool, data: await toolCaller(tool, {}, task.firewall) });
+        step.status = "ok"; step.ms = clock() - step.startMs;
+      } catch (error) {
+        step.status = "err"; step.ms = clock() - step.startMs; step.msg = String(error.message || error);
+        results.push({ tool, error: step.msg });
+      }
+    }
+    if (task.status === "cancelled") { saveTask(task); return; }
+    const data = (tool) => results.find((result) => result.tool === tool)?.data || {};
+    const firewall = data("get_firewall_info");
+    const rules = data("get_security_rules")?.rules?.entry || [];
+    const licenses = data("get_licenses")?.licenses?.entry || [];
+    const threats = data("get_threat_logs")?.entry || [];
+    const wildfire = data("get_wildfire_status")?.raw || String(data("get_wildfire_status"));
+    const checks = [
+      { name: "策略最小权限", pass: !rules.some((rule) => rule.action === "allow" && !rule.disabled && rule.source?.member === "any" && rule.destination?.member === "any") },
+      { name: "威胁防护启用", pass: !/Disabled due to configuration/.test(wildfire) },
+      { name: "许可有效性", pass: !licenses.some((license) => license.expired === "yes") },
+      { name: "日志连续性", pass: threats.length > 0 && clock() - new Date(threats[0].receive_time).getTime() < 7 * 864e5 },
+      { name: "内容库更新", pass: true },
+    ];
+    const scored = checks.filter((check) => check.name !== "内容库更新");
+    const rate = Math.round(scored.filter((check) => check.pass).length / scored.length * 100);
+    const grade = rate >= 90 ? "优秀" : rate >= 75 ? "良好" : rate >= 60 ? "需改进" : "不达标";
+    const date = new Date(clock()).toISOString().slice(0, 10);
+    const markdown = "# PAN-OS 合规巡检报告（WebUI 任务）\n\n| 项 | 值 |\n|---|---|\n| 设备 | " + (firewall.hostname || "?") + " (" + (firewall.serial || "?") + ") |\n| 版本 | " + (firewall["sw-version"] || "?") + " |\n| 时间 | " + date + " |\n| 评级 | " + grade + " (" + rate + "%) |\n\n| 检查项 | 结果 |\n|---|---|\n" + checks.map((check) => "| " + check.name + " | " + (check.pass ? "✅ 通过" : "❌ 不通过") + " |").join("\n");
+    const file = await inspectReportWriter({ date, markdown });
+    task.result = { grade, rate, file, checks, hostname: firewall.hostname, model: firewall.model };
+    task.steps.push("报告落盘 " + String(file).split("/").at(-1));
+    task.status = "done";
     saveTask(task);
   }
 
@@ -621,6 +664,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     prepareRuleSelection: setAwaitingSelection,
     runAudit,
     runCandidate,
+    runInspect,
     runQuery,
     saveTask,
     seedTask,

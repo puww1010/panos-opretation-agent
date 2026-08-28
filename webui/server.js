@@ -279,6 +279,12 @@ const taskService = createTaskService({
     history.unshift({ ts: new Date().toLocaleString("zh-CN"), ...entry });
     if (history.length > MAX_HISTORY) history.pop();
   },
+  inspectReportWriter: ({ date, markdown }) => {
+    if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
+    const file = path.join(REPORTS_DIR, "compliance-" + date + "-task.md");
+    fs.writeFileSync(file, markdown);
+    return file;
+  },
   deferExecution: true,
 });
 
@@ -1190,7 +1196,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
-    const t = taskService.dispatchTask("inspect", input, { firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo }, null, (task) => runInspectTask(task, firewall));
+    const t = taskService.dispatchTask("inspect", input, { firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo }, null, (task) => taskService.runInspect(task));
     return { taskId: t.id, status: t.status, type: "inspect" };
   }
   if (action && ACTIONS[action]) {

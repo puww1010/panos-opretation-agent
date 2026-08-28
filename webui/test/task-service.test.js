@@ -356,6 +356,28 @@ test("query execution runs its tools, summarizes results, and records history", 
   assert.deepEqual(history, [{ input: "查看设备状态", action: "status", label: "设备状态" }]);
 });
 
+test("inspection execution scores collected evidence and writes a report", async () => {
+  let report;
+  const now = new Date(2023, 10, 14, 22, 13).getTime();
+  const service = createTaskService({
+    actionDefinitions: { inspect: { tools: ["get_firewall_info", "get_security_rules", "get_licenses", "get_threat_logs", "get_wildfire_status"] } },
+    toolCaller: async (tool) => ({
+      get_firewall_info: { hostname: "lab-fw", model: "PA-440", "sw-version": "11.2" },
+      get_security_rules: { rules: { entry: [] } }, get_licenses: { licenses: { entry: [] } },
+      get_threat_logs: { entry: [{ receive_time: "2023/11/14 22:12:00" }] }, get_wildfire_status: { raw: "enabled" },
+    })[tool],
+    inspectReportWriter: async (value) => { report = value; return "/tmp/inspect.md"; },
+    taskStore: memoryStore(), auditStore: memoryStore(), clock: () => now,
+  });
+  service.seedTask({ id: 30, type: "inspect", status: "pending", firewall: "lab", steps: [] });
+  await service.runInspect(service.getTask(30));
+  const task = service.getTask(30);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.grade, "优秀");
+  assert.equal(task.result.file, "/tmp/inspect.md");
+  assert.match(report.markdown, /PAN-OS 合规巡检报告/);
+});
+
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {
   const service = createTaskService({
     panosAdapter: { directConfigSet: async () => { throw new Error("must not execute"); } },
