@@ -266,13 +266,55 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
 
   async function runDiagnostic(task) {
     const { type = "generic", params = {} } = task.diag || {};
-    if (type !== "generic") throw new Error("该诊断类型尚未迁入 Task Service: " + type);
-    if (!toolCaller || !diagnosticDependencies?.deepLog || !diagnosticDependencies?.filterByMinutes || !diagnosticDependencies?.formatTop) {
-      throw new Error("未配置通用健康诊断依赖");
+    if (!["generic", "threat_profile"].includes(type)) throw new Error("该诊断类型尚未迁入 Task Service: " + type);
+    if (!toolCaller || !diagnosticDependencies?.deepLog || !diagnosticDependencies?.formatTop || (type === "generic" && !diagnosticDependencies?.filterByMinutes)) {
+      throw new Error("未配置诊断执行依赖");
     }
     const minutes = params.minutes || 60;
+    const ip = params.ip || "";
     const sections = [];
     task.status = "running";
+    if (type === "threat_profile") {
+      task.steps.push("诊断类型: 威胁源画像");
+      const threats = await diagnosticDependencies.deepLog("threat", { minutes, nlogs: 200 });
+      const matchingThreats = threats.entries.filter((entry) => !ip || entry.src === ip || entry.dst === ip);
+      const countBy = (entries, field, fallback) => entries.reduce((counts, entry) => {
+        const value = entry[field] || fallback;
+        counts[value] = (counts[value] || 0) + 1;
+        return counts;
+      }, {});
+      const renderCounts = (counts) => Object.entries(counts).map(([name, count]) => name + "×" + count).join(", ");
+      sections.push({ step: "威胁事件", result: matchingThreats.length ? "最近 " + minutes + " 分钟共 " + matchingThreats.length + " 条: " + renderCounts(countBy(matchingThreats, "subtype", "other")) : "威胁日志中无该目标记录" });
+      sections.push({ step: "严重级别", result: renderCounts(countBy(matchingThreats, "severity", "?")) || "无" });
+      sections.push({ step: "威胁源 Top", result: diagnosticDependencies.formatTop(threats.top, ["src", "subtype", "severity"]) + (threats.degraded ? "（窗口内无威胁，展示全部 " + threats.rawCount + " 条，最早 " + threats.oldest + "）" : "") });
+      const traffic = await diagnosticDependencies.deepLog("traffic", { minutes, nlogs: 200 });
+      const rules = (await toolCaller("get_security_rules", {}, task.firewall))?.entry || [];
+      const topSources = (threats.top.src || []).filter(([source]) => !ip || source !== ip).slice(0, 3).map(([source]) => source);
+      const ruleMatchesSource = (rule, source) => {
+        const matches = (members) => Array.isArray(members) ? members.includes(source) || members.includes("any") : members === source || members === "any";
+        return matches(rule.source?.member) && matches(rule.destination?.member) && ["allow", "deny"].includes(rule.action);
+      };
+      if (topSources.length) {
+        const correlations = topSources.map((source) => {
+          const relatedTraffic = traffic.entries.filter((entry) => entry.src === source);
+          const actions = [...new Set(relatedTraffic.map((entry) => entry.action))];
+          const matchedRules = rules.filter((rule) => ruleMatchesSource(rule, source));
+          const policy = matchedRules.length ? matchedRules.map((rule) => (rule["@_name"] || rule.name) + "(" + rule.action + ")").join(",") : "未匹配明确规则";
+          return source + ": 流量" + relatedTraffic.length + "条 action=" + (actions.join("/") || "无") + " 策略=" + policy;
+        });
+        sections.push({ step: "跨日志关联", result: correlations.join("；") });
+      } else {
+        sections.push({ step: "跨日志关联", result: "无其他威胁源可关联" });
+      }
+      task.result = { title: "威胁源画像" + (ip ? "：" + ip : ""), sections };
+      const synthesis = diagnosticDependencies.synthesize ? await diagnosticDependencies.synthesize(task.input, sections, threats.top) : null;
+      if (synthesis) Object.assign(task.result, { verdict: synthesis.verdict, confidence: synthesis.confidence, recommendation: synthesis.recommendation || "" });
+      if (!task.result.verdict) Object.assign(task.result, { verdict: "LLM 综合推理未产出结论，请查看下方排查步骤表（" + sections.length + " 段原始数据已采集）。", confidence: "低（fallback）", recommendation: "重跑任务或缩短时间窗口后复核各段数据。" });
+      task.result.logStats = threats.top;
+      task.status = "done";
+      saveTask(task);
+      return;
+    }
     task.steps.push("诊断类型: 通用健康");
     const firewall = await toolCaller("get_firewall_info", {}, task.firewall);
     sections.push({ step: "设备", result: String(firewall.hostname) + " " + firewall.model + " " + firewall["sw-version"] });

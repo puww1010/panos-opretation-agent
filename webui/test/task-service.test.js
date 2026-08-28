@@ -403,6 +403,26 @@ test("generic diagnostics collect health evidence and synthesize a verdict", asy
   assert.equal(task.result.sections.length, 6);
 });
 
+test("threat-profile diagnostics correlate threat, traffic, and policy evidence", async () => {
+  const service = createTaskService({
+    toolCaller: async (tool) => tool === "get_security_rules" ? { entry: [{ "@_name": "allow-web", action: "allow", source: { member: ["any"] }, destination: { member: ["any"] } }] } : {},
+    diagnosticDependencies: {
+      deepLog: async (kind) => kind === "threat"
+        ? { entries: [{ src: "198.51.100.10", subtype: "scan", severity: "high" }], top: { src: [["198.51.100.10", 1]], subtype: [["scan", 1]], severity: [["high", 1]] } }
+        : { entries: [{ src: "198.51.100.10", action: "deny" }], top: {} },
+      formatTop: () => "198.51.100.10×1", synthesize: async () => ({ verdict: "建议封禁", confidence: "高" }),
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 32, type: "diag", status: "pending", input: "分析攻击源", diag: { type: "threat_profile", params: { minutes: 60 } }, steps: [] });
+  await service.runDiagnostic(service.getTask(32));
+  const task = service.getTask(32);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.title, "威胁源画像");
+  assert.match(task.result.sections.find((section) => section.step === "跨日志关联").result, /198\.51\.100\.10/);
+  assert.equal(task.result.verdict, "建议封禁");
+});
+
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {
   const service = createTaskService({
     panosAdapter: { directConfigSet: async () => { throw new Error("must not execute"); } },
