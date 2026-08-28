@@ -21,7 +21,7 @@ function tokenizeForMatch(text) {
     .filter((token) => token.length >= 2 && !stop.has(token.toLowerCase()) && !stop.has(token));
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
@@ -180,6 +180,42 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     };
     task.steps.push("筛选出 " + rows.length + " 条变更记录");
     task.status = "done";
+    saveTask(task);
+  }
+
+  async function runQuery(task, action = task.action) {
+    const definition = actionDefinitions?.[action];
+    if (!definition || !toolCaller) throw new Error("未配置查询动作或工具调用器: " + action);
+    task.status = "running";
+    const results = [];
+    for (const tool of definition.tools) {
+      if (task.cancelled) {
+        task.status = "cancelled";
+        break;
+      }
+      const step = { tool, status: "running", startMs: clock() };
+      task.steps.push(step);
+      try {
+        results.push({ tool, data: await toolCaller(tool, task.minutes ? { minutes: task.minutes } : {}, task.firewall) });
+        step.status = "ok";
+        step.ms = clock() - step.startMs;
+      } catch (error) {
+        step.status = "err";
+        step.ms = clock() - step.startMs;
+        step.msg = String(error.message || error);
+        results.push({ tool, error: step.msg });
+      }
+    }
+    if (task.status !== "cancelled") {
+      try {
+        const summary = querySummarizer ? await querySummarizer(task.input, action, results, task.conversationId) : null;
+        task.result = { label: definition.label, results, summary };
+      } catch {
+        task.result = { label: definition.label, results };
+      }
+      task.status = "done";
+      if (queryHistoryRecorder) queryHistoryRecorder({ input: String(task.input), action, label: definition.label });
+    }
     saveTask(task);
   }
 
@@ -585,6 +621,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     prepareRuleSelection: setAwaitingSelection,
     runAudit,
     runCandidate,
+    runQuery,
     saveTask,
     seedTask,
     startBatchSelection,

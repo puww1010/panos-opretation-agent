@@ -272,6 +272,13 @@ const taskService = createTaskService({
   taskStore: { load: () => tasks, save: persistTasks },
   auditStore: { load: () => auditEvents, save: persistAuditEvents },
   auditLogReader: (firewall) => callTool("get_config_logs", { nlogs: 200 }, firewall),
+  actionDefinitions: ACTIONS,
+  toolCaller: callTool,
+  querySummarizer: summarizeQuery,
+  queryHistoryRecorder: (entry) => {
+    history.unshift({ ts: new Date().toLocaleString("zh-CN"), ...entry });
+    if (history.length > MAX_HISTORY) history.pop();
+  },
   deferExecution: true,
 });
 
@@ -612,40 +619,6 @@ function newTask(type, input, extra = {}) {
   return taskService.createTask(type, input, extra);
 }
 function saveTask(t) { return taskService.saveTask(t); }
-
-async function runQueryTask(t, action, firewall) {
-  t.status = "running";
-  const results = [];
-  for (const tool of ACTIONS[action].tools) {
-    if (t.cancelled) { t.status = "cancelled"; break; }
-    const step = { tool, status: "running", startMs: Date.now() };
-    t.steps.push(step);
-    try {
-      const r = await callTool(tool, t.minutes ? { minutes: t.minutes } : {}, firewall);
-      step.status = "ok"; step.ms = Date.now() - step.startMs;
-      results.push({ tool, data: r });
-    } catch (e) {
-      step.status = "err"; step.ms = Date.now() - step.startMs; step.msg = String(e.message || e);
-      results.push({ tool, error: step.msg });
-    }
-  }
-  if (t.status !== "cancelled") {
-    // 查询匹配分析：把用户 query + 工具结果摘要给 LLM，做"语义匹配分析"
-    // （例：query"哪些策略放行了 Internet 到 DMZ" → LLM 要把"Internet"映射到源 zone/DAG，
-    //  "DMZ"映射到目标 zone，再从规则列表中筛出真正匹配的放行规则）
-    try {
-      const summary = await summarizeQuery(t.input, action, results, t.conversationId);
-      t.result = { label: ACTIONS[action].label, results, summary };
-    } catch (e) {
-      // LLM 失败不影响查询结果本身——只展示工具原始数据
-      t.result = { label: ACTIONS[action].label, results };
-    }
-    t.status = "done";
-    history.unshift({ ts: new Date().toLocaleString("zh-CN"), input: String(t.input), action, label: ACTIONS[action].label });
-    if (history.length > MAX_HISTORY) history.pop();
-  }
-  saveTask(t);
-}
 
 // 查询任务的语义匹配分析（轻量 LLM 调用，30s 超时）
 async function summarizeQuery(input, action, results, conversationId) {
@@ -1225,7 +1198,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
       if (fromLLM) task.llm = currentLLM;
       task.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
       task.steps.push(task.decision);
-    }, (task) => runQueryTask(task, action, firewall));
+    }, (task) => taskService.runQuery(task, action));
     return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
   }
   // 兜底：意图不匹配任何 action → 自由问答（LLM 分析/推理/思考后回答，不直接拒绝）

@@ -331,6 +331,31 @@ test("audit execution filters config logs through the task service", async () =>
   assert.equal(task.result.rows[0].path, "rulebase/security/rules/entry");
 });
 
+test("query execution runs its tools, summarizes results, and records history", async () => {
+  const calls = [];
+  const history = [];
+  const service = createTaskService({
+    actionDefinitions: { status: { label: "设备状态", tools: ["get_info", "get_load"] } },
+    toolCaller: async (tool, args, firewall) => {
+      calls.push({ tool, args, firewall });
+      if (tool === "get_load") throw new Error("unavailable");
+      return { hostname: "lab-fw" };
+    },
+    querySummarizer: async (_input, action, results) => action + ":" + results.length,
+    queryHistoryRecorder: (entry) => history.push(entry),
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 29, type: "query", status: "pending", input: "查看设备状态", action: "status", minutes: 15, firewall: "lab", steps: [] });
+  await service.runQuery(service.getTask(29), "status");
+  const task = service.getTask(29);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.label, "设备状态");
+  assert.equal(task.result.summary, "status:2");
+  assert.equal(task.result.results[1].error, "unavailable");
+  assert.deepEqual(calls.map((call) => call.args), [{ minutes: 15 }, { minutes: 15 }]);
+  assert.deepEqual(history, [{ input: "查看设备状态", action: "status", label: "设备状态" }]);
+});
+
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {
   const service = createTaskService({
     panosAdapter: { directConfigSet: async () => { throw new Error("must not execute"); } },
