@@ -271,7 +271,6 @@ const taskService = createTaskService({
   panosAdapter,
   taskStore: { load: () => tasks, save: persistTasks },
   auditStore: { load: () => auditEvents, save: persistAuditEvents },
-  candidateRunner: (task) => runChangeCandidate(task, task.template, task.params || {}, task.firewall),
   deferExecution: true,
 });
 
@@ -1183,7 +1182,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     t.planFingerprint = planFingerprint({ template: c.template, params, firewall });
     if (needPrecheck) {
       // 同步做一次预检（list candidates）→ 任务状态已是 awaiting_selection，前端直接展示候选按钮
-      try { await setAwaitingSelection(t, params, firewall, tmpl.label, []); }
+      try { await taskService.prepareRuleSelection(t, tmpl.label); }
       catch (e) { t.status = "failed"; t.error = e.message; saveTask(t); }
     } else {
       t.steps.push("变更计划已生成，等待审批");

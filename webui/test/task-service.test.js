@@ -208,8 +208,8 @@ test("batch rule selection creates child tasks and performs one merged commit", 
     panosAdapter: {
       directCommit: async () => { commits += 1; return "<job>46</job>"; },
       directOp: async () => "<status>FIN</status>",
+      directConfigDelete: async () => "ok",
     },
-    candidateRunner: async (task) => { task.status = "awaiting_commit"; },
     taskStore: memoryStore(), auditStore: memoryStore(), sleep: async () => {},
   });
   service.seedTask({
@@ -339,10 +339,10 @@ test("cancellation is persisted and emits an audit record", async () => {
 });
 
 test("rule selection persists the selected parameters before starting candidate execution", async () => {
-  const started = [];
+  const deletes = [];
   const service = createTaskService({
+    panosAdapter: { directConfigDelete: async (xpath) => { deletes.push(xpath); return "ok"; } },
     taskStore: memoryStore(), auditStore: memoryStore(),
-    candidateRunner: async (task) => { started.push({ id: task.id, params: task.params }); },
   });
   service.seedTask({
     id: 10, type: "change", status: "awaiting_selection", template: "delete_security_rule",
@@ -352,9 +352,11 @@ test("rule selection persists the selected parameters before starting candidate 
     params: { name: "legacy-rule", keyword: "legacy" },
     step: "用户从候选选中：legacy-rule",
   });
-  assert.equal(result.status, "executing");
+  assert.equal(result.status, "awaiting_commit");
   assert.deepEqual(service.listTasks()[0].params, { name: "legacy-rule", keyword: "legacy" });
-  assert.deepEqual(started, [{ id: 10, params: { name: "legacy-rule", keyword: "legacy" } }]);
+  assert.deepEqual(deletes, [
+    "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='legacy-rule']",
+  ]);
 });
 
 test("task creation resumes IDs from persisted history and persists the new task", () => {

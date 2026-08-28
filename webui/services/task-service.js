@@ -21,7 +21,7 @@ function tokenizeForMatch(text) {
     .filter((token) => token.length >= 2 && !stop.has(token.toLowerCase()) && !stop.has(token));
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = Date.now, candidateRunner, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
@@ -283,9 +283,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
       finalizeCandidate(task);
       return;
     }
-    if (candidateRunner) return candidateRunner(task);
-    task.status = "executing";
-    saveTasks();
+    throw new Error("未支持的变更模板或 PAN-OS 适配器能力不足: " + task.template);
   }
 
   async function runCommit(task) {
@@ -540,6 +538,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     dispatchTask,
     getTask,
     listTasks: () => tasks,
+    prepareRuleSelection: setAwaitingSelection,
     runCandidate,
     saveTask,
     seedTask,
