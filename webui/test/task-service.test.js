@@ -117,3 +117,21 @@ test("task creation resumes IDs from persisted history and persists the new task
   assert.equal(task.status, "pending");
   assert.equal(taskStore.load().at(-1), task);
 });
+
+test("task dispatch persists prepared state before starting its runner and records runner failures", async () => {
+  const taskStore = memoryStore();
+  const service = createTaskService({ panosAdapter: {}, taskStore, auditStore: memoryStore() });
+  const task = service.dispatchTask("query", "设备状态", {}, (created) => {
+    created.decision = "准备完成";
+  }, async (created) => {
+    assert.equal(taskStore.load()[0], created);
+    assert.equal(taskStore.load()[0].decision, "准备完成");
+    created.status = "running";
+    await Promise.resolve();
+    throw new Error("runner failed");
+  });
+  assert.equal(task.status, "running");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.getTask(task.id).status, "failed");
+  assert.match(service.getTask(task.id).error, /runner failed/);
+});

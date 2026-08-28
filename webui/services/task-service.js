@@ -51,6 +51,28 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     return task;
   }
 
+  function dispatchTask(type, input, extra, prepare, runner) {
+    if (!runner) {
+      runner = prepare;
+      prepare = null;
+    }
+    const task = createTask(type, input, extra);
+    if (prepare) prepare(task);
+    addTask(task);
+    try {
+      Promise.resolve(runner(task)).catch((error) => {
+        task.status = "failed";
+        task.error = String(error.message || error);
+        saveTask(task);
+      });
+    } catch (error) {
+      task.status = "failed";
+      task.error = String(error.message || error);
+      saveTask(task);
+    }
+    return task;
+  }
+
   function recordAudit(task, event) {
     task.audit = task.audit || [];
     task.audit.push(event);
@@ -168,6 +190,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     addTask,
     cleanTasks,
     createTask,
+    dispatchTask,
     getTask: (id) => tasks.find((task) => task.id === id),
     listTasks: () => tasks,
     runCandidate,

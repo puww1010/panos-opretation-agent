@@ -1198,12 +1198,11 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
   }
   if (action === "audit") {
     const a = await llmParseAudit(input);
-    const t = newTask("audit", input, { firewall, source, audit: a, conversationId: conv.conversationId, replyTo: conv.replyTo });
-    t.llm = currentLLM;
-    t.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
-    t.steps.push(t.decision);
-    taskService.addTask(t);
-    runAuditTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    const t = taskService.dispatchTask("audit", input, { firewall, source, audit: a, conversationId: conv.conversationId, replyTo: conv.replyTo }, (task) => {
+      task.llm = currentLLM;
+      task.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+      task.steps.push(task.decision);
+    }, (task) => runAuditTask(task, firewall));
     return { taskId: t.id, status: t.status, type: "audit" };
   }
   if (action === "diag") {
@@ -1211,27 +1210,23 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     // 诊断规划判定为非诊断请求（type:null，如"画个拓扑图"）→ 降级自由问答，
     // 不再生硬报"无法解析诊断意图"——让 LLM 分析推理回答（16:48 飞书案例根因）
     if (!d || !d.type) return await createFreeAnswer(input, firewall, source, conv);
-    const t = newTask("diag", input, { firewall, source, diag: d, conversationId: conv.conversationId, replyTo: conv.replyTo });
-    t.llm = currentLLM;
-    t.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
-    t.steps.push(t.decision);
-    taskService.addTask(t);
-    runDiagTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    const t = taskService.dispatchTask("diag", input, { firewall, source, diag: d, conversationId: conv.conversationId, replyTo: conv.replyTo }, (task) => {
+      task.llm = currentLLM;
+      task.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+      task.steps.push(task.decision);
+    }, (task) => runDiagTask(task, firewall));
     return { taskId: t.id, status: t.status, type: "diag" };
   }
   if (action === "inspect") {
-    const t = newTask("inspect", input, { firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo });
-    taskService.addTask(t);
-    runInspectTask(t, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    const t = taskService.dispatchTask("inspect", input, { firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo }, null, (task) => runInspectTask(task, firewall));
     return { taskId: t.id, status: t.status, type: "inspect" };
   }
   if (action && ACTIONS[action]) {
-    const t = newTask("query", input, { action, firewall, source, minutes, conversationId: conv.conversationId, replyTo: conv.replyTo });
-    if (fromLLM) t.llm = currentLLM;
-    t.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
-    t.steps.push(t.decision);
-    taskService.addTask(t);
-    runQueryTask(t, action, firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+    const t = taskService.dispatchTask("query", input, { action, firewall, source, minutes, conversationId: conv.conversationId, replyTo: conv.replyTo }, (task) => {
+      if (fromLLM) task.llm = currentLLM;
+      task.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
+      task.steps.push(task.decision);
+    }, (task) => runQueryTask(task, action, firewall));
     return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
   }
   // 兜底：意图不匹配任何 action → 自由问答（LLM 分析/推理/思考后回答，不直接拒绝）
