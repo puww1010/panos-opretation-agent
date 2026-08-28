@@ -281,12 +281,23 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
       const matchedRules = ip ? rules.filter((rule) => hasMember(rule.source?.member, ip) && hasMember(rule.destination?.member, ip) && ["allow", "deny"].includes(rule.action)) : rules.filter((rule) => rule.action === "allow" && !rule.disabled);
       const anyAllow = rules.some((rule) => rule.action === "allow" && !rule.disabled && rule.source?.member === "any" && rule.destination?.member === "any");
       sections.push({ step: "策略命中分析", result: anyAllow ? "存在全放行规则，策略层不会阻断该目标" : (matchedRules.length ? "命中 " + matchedRules.length + " 条规则: " + matchedRules.map((rule) => (rule["@_name"] || rule.name) + "(" + rule.action + ")").join(", ") : "未找到明确匹配规则") });
-      const traffic = await diagnosticDependencies.deepLog("traffic", { minutes, nlogs: 200, query: "" });
+      let logQuery = "";
+      const aroundTime = String(params.around_time || "");
+      const fullTime = aroundTime.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
+      const clockTime = aroundTime.match(/(\d{2}):(\d{2})/);
+      let center = null;
+      if (fullTime) center = new Date(Number(fullTime[1]), Number(fullTime[2]) - 1, Number(fullTime[3]), Number(fullTime[4]), Number(fullTime[5]));
+      else if (clockTime) { const now = new Date(clock()); center = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(clockTime[1]), Number(clockTime[2])); }
+      if (center) {
+        const formatLogTime = (value) => [value.getFullYear(), String(value.getMonth() + 1).padStart(2, "0"), String(value.getDate()).padStart(2, "0")].join("/") + " " + String(value.getHours()).padStart(2, "0") + ":" + String(value.getMinutes()).padStart(2, "0") + ":" + String(value.getSeconds()).padStart(2, "0");
+        logQuery = "(receive_time geq '" + formatLogTime(new Date(center.getTime() - 60 * 60000)) + "' and receive_time leq '" + formatLogTime(new Date(center.getTime() + 60 * 60000)) + "')";
+      }
+      const traffic = await diagnosticDependencies.deepLog("traffic", { minutes, nlogs: 200, query: logQuery });
       const hits = traffic.entries.filter((entry) => (ip && (entry.src === ip || entry.dst === ip)) || (!ip && entry.action !== "allow"));
       const actions = hits.reduce((counts, entry) => { counts[entry.action] = (counts[entry.action] || 0) + 1; return counts; }, {});
       const actionText = Object.entries(actions).map(([action, count]) => action + "×" + count).join(" ");
       const timeNote = traffic.timeRange ? "（数据时间 " + traffic.timeRange + "）" : "";
-      sections.push({ step: "流量证据", result: "最近 " + minutes + " 分钟" + timeNote + (hits.length ? " 该目标相关 " + hits.length + " 条: " + actionText : (ip ? " 无该目标流量记录" : " 未发现被拦截流量")) });
+      sections.push({ step: "流量证据", result: (logQuery ? "指定时间点查询" : "最近 " + minutes + " 分钟") + timeNote + (hits.length ? " 该目标相关 " + hits.length + " 条: " + actionText : (ip ? " 无该目标流量记录" : " 未发现被拦截流量")) });
       sections.push({ step: "流量 Top 统计", result: diagnosticDependencies.formatTop(traffic.top, ["src", "dst", "app", "action"]) + (traffic.degraded ? "（窗口内无数据，展示全部 " + traffic.rawCount + " 条，最早 " + traffic.oldest + "）" : "") });
       sections.push({ step: "流量时间线", result: traffic.timeline?.length ? traffic.timeline.join("；") : "（无时间线数据）" });
       const routes = (await toolCaller("get_routing_table", {}, task.firewall))?.entry || [];

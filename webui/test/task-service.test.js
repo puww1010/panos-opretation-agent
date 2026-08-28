@@ -425,6 +425,7 @@ test("threat-profile diagnostics correlate threat, traffic, and policy evidence"
 
 test("connectivity diagnostics correlate policy, traffic, routing, and probe evidence", async () => {
   const rawCalls = [];
+  const deepLogCalls = [];
   const service = createTaskService({
     toolCaller: async (tool) => ({
       get_security_rules: { rules: { entry: [{ "@_name": "allow-web", action: "allow", source: { member: ["any"] }, destination: { member: ["any"] } }] } },
@@ -433,14 +434,14 @@ test("connectivity diagnostics correlate policy, traffic, routing, and probe evi
       get_arp_table: { entry: [] }, get_active_sessions: { "num-active": "3" },
     })[tool] || {},
     diagnosticDependencies: {
-      deepLog: async () => ({ entries: [{ src: "198.51.100.10", dst: "203.0.113.20", action: "deny", inbound_if: "ethernet1/1" }], top: {}, timeline: ["10:00 deny×1"], timeRange: "10:00-10:10" }),
+      deepLog: async (...args) => { deepLogCalls.push(args); return { entries: [{ src: "198.51.100.10", dst: "203.0.113.20", action: "deny", inbound_if: "ethernet1/1" }], top: {}, timeline: ["10:00 deny×1"], timeRange: "10:00-10:10" }; },
       formatTop: () => "top", synthesize: async () => ({ verdict: "策略允许但流量被拒绝", confidence: "中" }),
       rawToolCaller: async (tool, args) => { rawCalls.push({ tool, args }); return { data: "3 packets transmitted, 0% packet loss" }; },
       directOp: async () => "<entry></entry>",
     },
     taskStore: memoryStore(), auditStore: memoryStore(),
   });
-  service.seedTask({ id: 33, type: "diag", status: "pending", input: "测试连通性", diag: { type: "connectivity", params: { ip: "198.51.100.10", minutes: 30, probe: "ping" } }, steps: [] });
+  service.seedTask({ id: 33, type: "diag", status: "pending", input: "测试连通性", diag: { type: "connectivity", params: { ip: "198.51.100.10", minutes: 30, probe: "ping", around_time: "2024/06/01 12:00" } }, steps: [] });
   await service.runDiagnostic(service.getTask(33));
   const task = service.getTask(33);
   assert.equal(task.status, "done");
@@ -448,6 +449,8 @@ test("connectivity diagnostics correlate policy, traffic, routing, and probe evi
   assert.match(task.result.sections.find((section) => section.step === "流量证据").result, /deny×1/);
   assert.match(task.result.sections.find((section) => section.step === "路由可达性").result, /默认路由/);
   assert.ok(rawCalls.some((call) => call.tool === "run_op_command"));
+  assert.match(deepLogCalls[0][1].query, /receive_time geq '2024\/06\/01 11:00:00'/);
+  assert.match(deepLogCalls[0][1].query, /receive_time leq '2024\/06\/01 13:00:00'/);
 });
 
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {
