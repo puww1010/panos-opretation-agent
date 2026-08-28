@@ -51,3 +51,4 @@ cfgs/tasks.json.*
 cfgs/audit-events.json
 cfgs/audit-events.json.*
 checkpoints/
+.worktrees/
