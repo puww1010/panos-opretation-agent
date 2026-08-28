@@ -423,6 +423,33 @@ test("threat-profile diagnostics correlate threat, traffic, and policy evidence"
   assert.equal(task.result.verdict, "建议封禁");
 });
 
+test("connectivity diagnostics correlate policy, traffic, routing, and probe evidence", async () => {
+  const rawCalls = [];
+  const service = createTaskService({
+    toolCaller: async (tool) => ({
+      get_security_rules: { rules: { entry: [{ "@_name": "allow-web", action: "allow", source: { member: ["any"] }, destination: { member: ["any"] } }] } },
+      get_routing_table: { entry: [{ destination: "0.0.0.0/0", nexthop: "192.0.2.1" }] },
+      get_zones: { entry: [] }, get_interfaces: { hw: { entry: [] } }, get_address_objects: { entry: [] },
+      get_arp_table: { entry: [] }, get_active_sessions: { "num-active": "3" },
+    })[tool] || {},
+    diagnosticDependencies: {
+      deepLog: async () => ({ entries: [{ src: "198.51.100.10", dst: "203.0.113.20", action: "deny", inbound_if: "ethernet1/1" }], top: {}, timeline: ["10:00 deny×1"], timeRange: "10:00-10:10" }),
+      formatTop: () => "top", synthesize: async () => ({ verdict: "策略允许但流量被拒绝", confidence: "中" }),
+      rawToolCaller: async (tool, args) => { rawCalls.push({ tool, args }); return { data: "3 packets transmitted, 0% packet loss" }; },
+      directOp: async () => "<entry></entry>",
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 33, type: "diag", status: "pending", input: "测试连通性", diag: { type: "connectivity", params: { ip: "198.51.100.10", minutes: 30, probe: "ping" } }, steps: [] });
+  await service.runDiagnostic(service.getTask(33));
+  const task = service.getTask(33);
+  assert.equal(task.status, "done");
+  assert.equal(task.result.title, "连通性诊断（198.51.100.10）");
+  assert.match(task.result.sections.find((section) => section.step === "流量证据").result, /deny×1/);
+  assert.match(task.result.sections.find((section) => section.step === "路由可达性").result, /默认路由/);
+  assert.ok(rawCalls.some((call) => call.tool === "run_op_command"));
+});
+
 test("approval rejects a change whose plan fingerprint no longer matches", async () => {
   const service = createTaskService({
     panosAdapter: { directConfigSet: async () => { throw new Error("must not execute"); } },
