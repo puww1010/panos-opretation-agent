@@ -124,6 +124,14 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
       finalizeCandidate(task);
       return;
     }
+    if (["set_security_rule_disabled", "set_security_rule_enabled"].includes(task.template) && task.params.name) {
+      const value = task.template === "set_security_rule_disabled" ? "yes" : "no";
+      const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='" + task.params.name + "']/disabled";
+      await panosAdapter.directConfigSet(xpath, "<disabled>" + value + "</disabled>");
+      task.steps.push("candidate: " + (value === "yes" ? "disable " : "enable ") + task.params.name);
+      finalizeCandidate(task);
+      return;
+    }
     if (candidateRunner) return candidateRunner(task);
     task.status = "executing";
     saveTasks();

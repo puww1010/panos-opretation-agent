@@ -78,6 +78,24 @@ test("security-rule move is executed and finalized through the task service", as
   ]]);
 });
 
+test("security-rule disable and enable are finalized through the task service", async () => {
+  const writes = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigSet: async (...args) => { writes.push(args); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 21, type: "change", status: "awaiting_approval", template: "set_security_rule_disabled", params: { name: "allow-web" }, steps: [] });
+  service.seedTask({ id: 22, type: "change", status: "awaiting_approval", template: "set_security_rule_enabled", params: { name: "allow-admin" }, steps: [] });
+  await service.actOnTask(21, "approve");
+  await service.actOnTask(22, "approve");
+  assert.equal(service.getTask(21).status, "awaiting_commit");
+  assert.equal(service.getTask(22).status, "awaiting_commit");
+  assert.deepEqual(writes, [
+    ["/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='allow-web']/disabled", "<disabled>yes</disabled>"],
+    ["/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='allow-admin']/disabled", "<disabled>no</disabled>"],
+  ]);
+});
+
 test("commit without a job is recorded as requiring manual follow-up", async () => {
   const service = createTaskService({
     panosAdapter: { directCommit: async () => "<response status='success'/>" },
