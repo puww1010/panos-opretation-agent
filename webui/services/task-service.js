@@ -184,7 +184,8 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
   }
 
   async function runQuery(task, action = task.action) {
-    const definition = actionDefinitions?.[action];
+    const definitions = typeof actionDefinitions === "function" ? actionDefinitions() : actionDefinitions;
+    const definition = definitions?.[action];
     if (!definition || !toolCaller) throw new Error("未配置查询动作或工具调用器: " + action);
     task.status = "running";
     const results = [];
@@ -220,7 +221,8 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
   }
 
   async function runInspect(task) {
-    const tools = actionDefinitions?.inspect?.tools;
+    const definitions = typeof actionDefinitions === "function" ? actionDefinitions() : actionDefinitions;
+    const tools = definitions?.inspect?.tools;
     if (!tools || !toolCaller || !inspectReportWriter) throw new Error("未配置巡检执行依赖");
     task.status = "running";
     const results = [];

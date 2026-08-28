@@ -272,7 +272,7 @@ const taskService = createTaskService({
   taskStore: { load: () => tasks, save: persistTasks },
   auditStore: { load: () => auditEvents, save: persistAuditEvents },
   auditLogReader: (firewall) => callTool("get_config_logs", { nlogs: 200 }, firewall),
-  actionDefinitions: ACTIONS,
+  actionDefinitions: () => ACTIONS,
   toolCaller: callTool,
   querySummarizer: summarizeQuery,
   queryHistoryRecorder: (entry) => {
