@@ -42,6 +42,23 @@ test("address-object candidate is finalized with an audit record", async () => {
   }]);
 });
 
+test("address-object deletion is finalized through the task service", async () => {
+  const deletes = [];
+  const service = createTaskService({
+    panosAdapter: { directConfigDelete: async (xpath) => { deletes.push(xpath); return "ok"; } },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 14, type: "change", status: "awaiting_approval", template: "delete_address_object",
+    params: { name: "obsolete-object" }, firewall: "lab", steps: [],
+  });
+  await service.actOnTask(14, "approve");
+  assert.equal(service.getTask(14).status, "awaiting_commit");
+  assert.deepEqual(deletes, [
+    "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/address/entry[@name='obsolete-object']",
+  ]);
+});
+
 test("address-object plan parameters use ip-netmask by default", () => {
   assert.equal(normalizeChangeParams("add_address_object", { name: "example", value: "198.51.100.2" }).type, "ip-netmask");
 });
