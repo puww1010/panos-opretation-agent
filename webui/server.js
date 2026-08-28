@@ -2212,82 +2212,13 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       // 批量选择执行：POST /api/task/:id/select-multi，body: {names: ["name1", "name2", ...]}
-      if (act === "select-multi" && t.status === "awaiting_selection" && t._candidate) {
+      if (act === "select-multi") {
         const { names } = JSON.parse(await body());
-        if (!Array.isArray(names) || !names.length) {
-          send(400, { error: "names 必须是非空数组" });
-          return;
+        try {
+          send(200, await taskService.startBatchSelection(id, names));
+        } catch (e) {
+          send(400, { error: String(e.message || e) });
         }
-        const transition = transitionTask(t, "select");
-        if (!transition.ok) { send(400, { error: "非法操作或状态不匹配: " + t.status }); return; }
-        recordTaskAudit(t, transition.event);
-        t.steps.push(`批量执行 ${names.length} 个策略：${names.join(", ")}`);
-        saveTask(t);
-        // 异步批量执行
-        (async () => {
-          const cand = t._candidate;
-          const results = [];
-          // 串行执行每个变更（避免并发冲突）
-          for (const name of names) {
-            const newTask = taskService.createTask("change", `${cand.template} ${name}`, {
-              template: cand.template,
-              params: { name },
-              firewall: cand.firewall,
-              createdAt: new Date().toISOString(),
-            });
-            taskService.addTask(newTask);
-            try {
-              await taskService.runCandidate(newTask);
-              results.push({ name, success: true, taskId: newTask.id });
-            } catch (e) {
-              newTask.status = "failed";
-              newTask.error = String(e.message || e);
-              saveTask(newTask);
-              results.push({ name, success: false, error: String(e.message || e), taskId: newTask.id });
-            }
-          }
-          // 所有变更后做一次统一 commit（而非每个子任务独立 commit，节省时间+减少 commit job）
-          const successfulTasks = results.filter(r => r.success).map(r => tasks.find(t => t.id === r.taskId));
-          if (successfulTasks.length > 0) {
-            t.steps.push(`统一 commit ${successfulTasks.length} 个变更（合并为单次 commit）`);
-            try {
-              await runChangeCommit(t, cand.firewall);
-              // runChangeCommit 不抛异常，通过 t.result.{commitFailed,needsManualCommit} 判断结果
-              if (t.result?.commitFailed || t.result?.needsManualCommit) {
-                const errMsg = t.result.commitFailed ? "commit 失败" : "commit 超时/需手动";
-                for (const st of successfulTasks) {
-                  st.status = "failed";
-                  st.error = errMsg + " (job=" + (t.result.job || "?") + ")";
-                  saveTask(st);
-                }
-              } else {
-                for (const st of successfulTasks) {
-                  st.status = "done";
-                  st.result = Object.assign(st.result || {}, { mergedCommit: true, commitJob: t.result.job });
-                  saveTask(st);
-                }
-              }
-            } catch (e) {
-              for (const st of successfulTasks) {
-                st.status = "failed";
-                st.error = "commit 失败: " + String(e.message || e);
-                saveTask(st);
-              }
-              t.steps.push("commit 异常: " + String(e.message || e).slice(0, 120));
-            }
-          } else {
-            t.steps.push("无可 commit 的变更");
-          }
-          t.status = "done";
-          // 合并 commit job 信息（runChangeCommit 已设 t.result.job），不要覆盖
-          t.result = Object.assign(t.result || {}, { batch: true, total: names.length, results });
-          saveTask(t);
-        })().catch(e => {
-          t.status = "failed";
-          t.error = String(e.message || e);
-          saveTask(t);
-        });
-        send(200, { taskId: t.id, status: "executing", message: `开始批量执行 ${names.length} 个策略` });
         return;
       }
       if (["approve", "reject", "confirm", "cancel"].includes(act)) {

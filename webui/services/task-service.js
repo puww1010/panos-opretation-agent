@@ -51,6 +51,10 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     return task;
   }
 
+  function getTask(id) {
+    return tasks.find((task) => task.id === id);
+  }
+
   function dispatchTask(type, input, extra, prepare, runner) {
     if (!runner) {
       runner = prepare;
@@ -291,6 +295,91 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     return { taskId: task.id, status: task.status };
   }
 
+  async function runBatchSelection(task, names) {
+    const candidate = task._candidate;
+    const results = [];
+    for (const name of names) {
+      const child = createTask("change", candidate.template + " " + name, {
+        template: candidate.template,
+        params: { name },
+        firewall: candidate.firewall,
+        createdAt: new Date(clock()).toISOString(),
+      });
+      addTask(child);
+      try {
+        await runCandidate(child);
+        results.push({ name, success: true, taskId: child.id });
+      } catch (error) {
+        child.status = "failed";
+        child.error = String(error.message || error);
+        saveTask(child);
+        results.push({ name, success: false, error: child.error, taskId: child.id });
+      }
+    }
+
+    const successfulTasks = results
+      .filter((result) => result.success)
+      .map((result) => getTask(result.taskId))
+      .filter(Boolean);
+    if (successfulTasks.length) {
+      task.steps.push("统一 commit " + successfulTasks.length + " 个变更（合并为单次 commit）");
+      try {
+        await runCommit(task);
+        if (task.result?.commitFailed || task.result?.needsManualCommit) {
+          const message = task.result.commitFailed ? "commit 失败" : "commit 超时/需手动";
+          for (const child of successfulTasks) {
+            child.status = "failed";
+            child.error = message + " (job=" + (task.result.job || "?") + ")";
+            saveTask(child);
+          }
+        } else {
+          for (const child of successfulTasks) {
+            child.status = "done";
+            child.result = Object.assign(child.result || {}, { mergedCommit: true, commitJob: task.result.job });
+            saveTask(child);
+          }
+        }
+      } catch (error) {
+        for (const child of successfulTasks) {
+          child.status = "failed";
+          child.error = "commit 失败: " + String(error.message || error);
+          saveTask(child);
+        }
+        task.steps.push("commit 异常: " + String(error.message || error).slice(0, 120));
+      }
+    } else {
+      task.steps.push("无可 commit 的变更");
+    }
+    if (task.status !== "cancelled") task.status = "done";
+    task.result = Object.assign(task.result || {}, { batch: true, total: names.length, results });
+    saveTask(task);
+    return { taskId: task.id, status: task.status };
+  }
+
+  async function startBatchSelection(id, names) {
+    if (!Array.isArray(names) || !names.length) throw new Error("names 必须是非空数组");
+    const task = getTask(id);
+    if (!task) throw new Error("task not found");
+    if (task.status !== "awaiting_selection" || !task._candidate) {
+      throw new Error("非法操作或状态不匹配: " + task.status);
+    }
+    const transition = transitionTask(task, "select", new Date(clock()));
+    if (!transition.ok) throw new Error("非法操作或状态不匹配: " + task.status);
+    recordAudit(task, transition.event);
+    task.steps.push("批量执行 " + names.length + " 个策略：" + names.join(", "));
+    saveTask(task);
+    const execution = runBatchSelection(task, names);
+    if (deferExecution) {
+      void execution.catch((error) => {
+        task.status = "failed";
+        task.error = String(error.message || error);
+        saveTask(task);
+      });
+      return { taskId: task.id, status: task.status, message: "开始批量执行 " + names.length + " 个策略" };
+    }
+    return execution;
+  }
+
   function seedTask(task) { return addTask(task); }
 
   function cleanTasks() {
@@ -309,11 +398,12 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     cleanTasks,
     createTask,
     dispatchTask,
-    getTask: (id) => tasks.find((task) => task.id === id),
+    getTask,
     listTasks: () => tasks,
     runCandidate,
     saveTask,
     seedTask,
+    startBatchSelection,
   };
 }
 

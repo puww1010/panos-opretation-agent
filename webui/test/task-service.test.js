@@ -110,6 +110,30 @@ test("security-rule deletion is finalized through the task service", async () =>
   ]);
 });
 
+test("batch rule selection creates child tasks and performs one merged commit", async () => {
+  let commits = 0;
+  const service = createTaskService({
+    panosAdapter: {
+      directCommit: async () => { commits += 1; return "<job>46</job>"; },
+      directOp: async () => "<status>FIN</status>",
+    },
+    candidateRunner: async (task) => { task.status = "awaiting_commit"; },
+    taskStore: memoryStore(), auditStore: memoryStore(), sleep: async () => {},
+  });
+  service.seedTask({
+    id: 24, type: "change", status: "awaiting_selection", template: "delete_security_rule",
+    firewall: "lab", steps: [], _candidate: { template: "delete_security_rule", firewall: "lab" },
+  });
+  const result = await service.startBatchSelection(24, ["legacy-a", "legacy-b"]);
+  assert.equal(result.status, "done");
+  assert.equal(commits, 1);
+  const tasks = service.listTasks();
+  assert.equal(tasks.length, 3);
+  assert.equal(tasks[0].result.batch, true);
+  assert.deepEqual(tasks.slice(1).map((task) => task.status), ["done", "done"]);
+  assert.deepEqual(tasks.slice(1).map((task) => task.result.mergedCommit), [true, true]);
+});
+
 test("commit without a job is recorded as requiring manual follow-up", async () => {
   const service = createTaskService({
     panosAdapter: { directCommit: async () => "<response status='success'/>" },
