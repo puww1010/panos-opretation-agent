@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const { createTaskService, normalizeChangeParams } = require("../services/task-service");
 const { planFingerprint } = require("../lib/task-governance");
@@ -8,6 +11,31 @@ function memoryStore(initial = []) {
   let value = initial;
   return { load: () => value, save: (next) => { value = next; } };
 }
+
+test("file-backed task service recovers interrupted tasks and persists creation audit", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "panos-task-service-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const taskFile = path.join(directory, "tasks.json");
+  const auditFile = path.join(directory, "audit-events.json");
+  fs.writeFileSync(taskFile, JSON.stringify(["pending", "running", "executing", "committing"].map((status, index) => ({ id: index + 8, type: "change", status, steps: [] }))));
+  fs.writeFileSync(auditFile, JSON.stringify([{ taskId: 1, action: "existing" }]));
+
+  const service = createTaskService({ panosAdapter: {}, taskFile, auditFile, clock: () => 1700000000000 });
+  for (const id of [8, 9, 10, 11]) {
+    const recovered = service.getTask(id);
+    assert.equal(recovered.status, "failed");
+    assert.match(recovered.error, /控制台重启/);
+  }
+
+  const task = service.createTask("change", "封禁 198.51.100.8", { status: "awaiting_approval", steps: [] });
+  service.addTask(task);
+  service.recordAudit(task, { taskId: task.id, action: "created", from: null, to: task.status, at: "2026-08-28T00:00:00.000Z" });
+  await service.flushPersistence();
+
+  const reloaded = createTaskService({ panosAdapter: {}, taskFile, auditFile, clock: () => 1700000000000 });
+  assert.equal(reloaded.getTask(task.id).status, "awaiting_approval");
+  assert.deepEqual(reloaded.listAuditEvents().map((event) => event.action), ["existing", "created"]);
+});
 
 test("approval records audit before candidate execution", async () => {
   const executed = [];

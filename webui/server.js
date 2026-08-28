@@ -194,83 +194,18 @@ try {
 // "刷新页面回默认"语义=重启控制台（进程重启时重新读 _default），不是浏览器 F5。
 // 不做定时器重置——避免连续发任务时每个任务结束后被意外重置。
 
-const tasks = [];        // 任务列表
 const history = [];      // 查询历史
 const llmLogs = [];      // LLM 决策日志（证明 LLM 规划起作用）
 const metricsBuffer = []; // KPI 指标采样环形缓冲（报表预留，见 spec §12.1 metrics 表）
-const auditEvents = [];   // 任务审计独立持久化；清除任务视图不影响历史事件
 const MAX_HISTORY = 20;
 const MAX_LLM_LOGS = 50;
-const MAX_TASKS = 200;   // 任务持久化上限（超出丢弃最旧）
 const MAX_METRICS = 720; // 指标采样上限（10s 一次 ≈ 2 小时滚动窗口）
 
-// ── 任务持久化：重启后保留已完成/已取消任务（内存 + cfgs/tasks.json 双写）──
-// 写锁：所有落盘走串行 Promise 队列。快照在调用时刻生成（JS 单线程，同步段按序），
-// 排队按序 writeFileSync——避免多任务并发 saveTask 时互相覆盖（后写覆盖先写）。
-let _writeQueue = Promise.resolve();
-function persistTasks() {
-  let snap = null;
-  try { snap = JSON.stringify(tasks, null, 2); } catch (e) { console.error("[agent] persist serialize failed:", e.message); return; }
-  _writeQueue = _writeQueue
-    .then(() => new Promise((res) => {
-      try {
-        // 原子替换：先写临时文件再 rename，避免进程被杀打断 writeFileSync 时把任务文件清空
-        const tmp = TASKS_FILE + ".tmp";
-        fs.writeFileSync(tmp, snap);
-        fs.renameSync(tmp, TASKS_FILE);
-      } catch (e) { console.error("[agent] persist tasks failed:", e.message); }
-      res();
-    }))
-    .catch(() => {});
-}
-function loadTasks() {
-  try {
-    const saved = JSON.parse(fs.readFileSync(TASKS_FILE, "utf-8"));
-    if (!Array.isArray(saved)) return;
-    for (const t of saved) {
-      // 重启后运行中的任务无法恢复执行，置为 failed（保留现场供排查）
-      if (["pending", "running", "executing", "committing"].includes(t.status)) {
-        t.status = "failed"; t.error = (t.error ? t.error + "；" : "") + "控制台重启，任务中断";
-        t.steps = (t.steps || []).concat({ tool: "system", status: "err", msg: "控制台重启，任务中断" });
-      }
-      tasks.push(t);
-    }
-    while (tasks.length > MAX_TASKS) tasks.shift();
-    console.log("[agent] 已从磁盘恢复 %d 个历史任务", tasks.length);
-  } catch (e) {
-    // 文件损坏：先备份，再静默忽略（绝不能因解析失败就回写空数组覆盖掉数据）
-    try { if (fs.existsSync(TASKS_FILE)) fs.copyFileSync(TASKS_FILE, TASKS_FILE + ".corrupt-" + Date.now()); } catch {}
-    console.warn("[agent] tasks.json 加载失败（已备份损坏文件）:", e.message);
-  }
-}
-loadTasks();
-
-function loadAuditEvents() {
-  try {
-    const saved = JSON.parse(fs.readFileSync(AUDIT_FILE, "utf-8"));
-    if (Array.isArray(saved)) auditEvents.push(...saved);
-  } catch {}
-}
-function persistAuditEvents() {
-  try {
-    const tmp = AUDIT_FILE + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(auditEvents, null, 2));
-    fs.renameSync(tmp, AUDIT_FILE);
-  } catch (e) { console.error("[agent] persist audit failed:", e.message); }
-}
-function recordTaskAudit(t, event) {
-  if (!event) return;
-  const entry = { ...event, type: t.type, firewall: t.firewall || null, planFingerprint: t.planFingerprint || null };
-  auditEvents.push(entry);
-  persistAuditEvents();
-}
-loadAuditEvents();
-
-// 任务状态与审批动作统一从服务入口处理；具体 PAN-OS 执行器暂以窄回调注入，保持现有异步响应行为。
+// Task Service owns task/audit in-memory state and JSON persistence. The server only composes dependencies.
 const taskService = createTaskService({
   panosAdapter,
-  taskStore: { load: () => tasks, save: persistTasks },
-  auditStore: { load: () => auditEvents, save: persistAuditEvents },
+  taskFile: TASKS_FILE,
+  auditFile: AUDIT_FILE,
   auditLogReader: (firewall) => callTool("get_config_logs", { nlogs: 200 }, firewall),
   actionDefinitions: () => ACTIONS,
   toolCaller: callTool,
@@ -598,7 +533,7 @@ let _convSeq = 0;
 function nextConvId() {
   // 从现有任务恢复会话计数（重启后不重复编号）
   if (!_convSeq) {
-    for (const x of tasks) {
+    for (const x of taskService.listTasks()) {
       const m = x.conversationId && String(x.conversationId).match(/^conv-(\d+)$/);
       if (m) _convSeq = Math.max(_convSeq, Number(m[1]));
     }
@@ -610,10 +545,11 @@ function nextConvId() {
 // 无 replyTo 时看最近一个任务的时间差，<SESSION_GAP_MS 归同会话，否则开新会话。
 // 老任务（无 conversationId）惰性补号；返回 {conversationId, replyTo}
 function resolveConversation(replyTo) {
+  const tasks = taskService.listTasks();
   if (replyTo) {
     const target = tasks.find((x) => x.id === Number(replyTo));
     if (target) {
-      if (!target.conversationId) { target.conversationId = nextConvId(); persistTasks(); } // 惰性迁移老任务（落盘防重启计数重复）
+      if (!target.conversationId) { target.conversationId = nextConvId(); taskService.saveTask(target); } // 惰性迁移老任务（落盘防重启计数重复）
       return { conversationId: target.conversationId, replyTo: target.id };
     }
   }
@@ -621,18 +557,12 @@ function resolveConversation(replyTo) {
   if (last) {
     const t0 = Date.parse(String(last.createdAt || "").replace(/\//g, "-"));
     if (!isNaN(t0) && Date.now() - t0 < SESSION_GAP_MS) {
-      if (!last.conversationId) { last.conversationId = nextConvId(); persistTasks(); }
+      if (!last.conversationId) { last.conversationId = nextConvId(); taskService.saveTask(last); }
       return { conversationId: last.conversationId, replyTo: null };
     }
   }
   return { conversationId: nextConvId(), replyTo: null };
 }
-
-// ── 任务系统 ──
-function newTask(type, input, extra = {}) {
-  return taskService.createTask(type, input, extra);
-}
-function saveTask(t) { return taskService.saveTask(t); }
 
 // 查询任务的语义匹配分析（轻量 LLM 调用，30s 超时）
 async function summarizeQuery(input, action, results, conversationId) {
@@ -710,6 +640,7 @@ function extractKeyItems(t) {
 }
 function buildConversationContext(limit = CTX_ROUNDS, conversationId) {
   // 指定会话 → 只取同会话内的任务；未指定（老调用/无会话）→ 退化为全局最近 N 个（兼容）
+  const tasks = taskService.listTasks();
   const pool = conversationId ? tasks.filter((x) => x.conversationId === conversationId) : tasks;
   const recent = pool
     .filter((x) => ["done", "failed"].includes(x.status) && ["query", "diag", "chat", "inspect"].includes(x.type))
@@ -747,19 +678,19 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     // 规则类模板（delete/disable/enable）若只有模糊 keyword，先预检转 awaiting_selection
     const RULE_TMPL = ["delete_security_rule", "set_security_rule_disabled", "set_security_rule_enabled"];
     const needPrecheck = RULE_TMPL.includes(c.template) && !(params.name && /^[a-zA-Z0-9_.\-]+$/.test(params.name));
-    const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params, firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
+    const t = taskService.createTask("change", input, { template: c.template, templateLabel: tmpl.label, params, firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
     t.plan = tmpl.plan(params);
     t.planFingerprint = planFingerprint({ template: c.template, params, firewall });
     if (needPrecheck) {
       // 同步做一次预检（list candidates）→ 任务状态已是 awaiting_selection，前端直接展示候选按钮
       try { await taskService.prepareRuleSelection(t, tmpl.label); }
-      catch (e) { t.status = "failed"; t.error = e.message; saveTask(t); }
+      catch (e) { t.status = "failed"; t.error = e.message; taskService.saveTask(t); }
     } else {
       t.steps.push("变更计划已生成，等待审批");
     }
     t.llm = currentLLM;  // 记录处理该任务时实际使用的 LLM provider key
     taskService.addTask(t);
-    recordTaskAudit(t, { taskId: t.id, action: "created", from: null, to: t.status, at: new Date().toISOString() });
+    taskService.recordAudit(t, { taskId: t.id, action: "created", from: null, to: t.status, at: new Date().toISOString() });
     return needPrecheck && t.status === "awaiting_selection"
       ? { taskId: t.id, status: t.status, plan: t.plan, candidates: t.result.matched, totalMatches: t.result.totalMatches }
       : { taskId: t.id, status: t.status, plan: t.plan };
@@ -822,7 +753,7 @@ async function createFreeAnswer(input, firewall, source, opts = {}) {
 【多轮追问】输入前可能附带【最近对话上下文】（含用户之前的问句、结果、关键条目名）。若当前问题引用前文（"那条/上面那条/刚才/它/第二条/这个结果"），**必须基于上下文中的真实条目和数据回答**（如引用上轮结果里的具体策略名/设备/数值），不要泛泛而谈，不要编造上下文里没有的条目。`,
     `${fwCtx ? fwCtx + "\n" : ""}用户问题：${withCtx(input, opts.conversationId)}`,
     60000);
-  const t = newTask("chat", input, { firewall, source, conversationId: opts.conversationId, replyTo: opts.replyTo });
+  const t = taskService.createTask("chat", input, { firewall, source, conversationId: opts.conversationId, replyTo: opts.replyTo });
   t.llm = currentLLM;
   if (source) t.source = source;  // 标记任务来源（'feishu'/'web'/'bridge'），用于 WebUI 区分展示
   t.decision = `LLM 兜底 → 自由问答（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
@@ -865,7 +796,7 @@ function lev(a, b) {
 function dedupeActiveTask(input) {
   const norm = normalizeInput(input);
   if (!norm) return null;
-  const dup = tasks.find((x) => {
+  const dup = taskService.listTasks().find((x) => {
     if (!x.input || !ACTIVE_FOR_DEDUPE.includes(x.status)) return false;
     const xn = normalizeInput(x.input);
     if (!xn) return false;
@@ -876,7 +807,7 @@ function dedupeActiveTask(input) {
   // 自动取消旧任务（保留本次提交的，作为最新意图）
   dup.status = "cancelled";
   dup.steps.push("🔁 与新提交任务完全一致，被新任务自动取消");
-  saveTask(dup);
+  taskService.saveTask(dup);
   return dup;
 }
 

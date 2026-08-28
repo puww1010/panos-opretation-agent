@@ -1,4 +1,72 @@
 const { planFingerprint, transitionTask } = require("../lib/task-governance");
+const fs = require("node:fs");
+
+function createFileBackedTaskStore(file, { maxTasks = 200, logger = console } = {}) {
+  const tasks = [];
+  let loaded = false;
+  let writeQueue = Promise.resolve();
+
+  return {
+    load() {
+      if (loaded) return tasks;
+      loaded = true;
+      try {
+        const saved = JSON.parse(fs.readFileSync(file, "utf-8"));
+        if (!Array.isArray(saved)) return tasks;
+        for (const task of saved) {
+          if (["pending", "running", "executing", "committing"].includes(task.status)) {
+            task.status = "failed";
+            task.error = (task.error ? task.error + "；" : "") + "控制台重启，任务中断";
+            task.steps = (task.steps || []).concat({ tool: "system", status: "err", msg: "控制台重启，任务中断" });
+          }
+          tasks.push(task);
+        }
+        while (tasks.length > maxTasks) tasks.shift();
+        logger.log("[agent] 已从磁盘恢复 %d 个历史任务", tasks.length);
+      } catch (error) {
+        try { if (fs.existsSync(file)) fs.copyFileSync(file, file + ".corrupt-" + Date.now()); } catch {}
+        logger.warn("[agent] tasks.json 加载失败（已备份损坏文件）:", error.message);
+      }
+      return tasks;
+    },
+    save(nextTasks) {
+      let snapshot;
+      try { snapshot = JSON.stringify(nextTasks, null, 2); } catch (error) { logger.error("[agent] persist serialize failed:", error.message); return; }
+      writeQueue = writeQueue.then(() => {
+        try {
+          const temporary = file + ".tmp";
+          fs.writeFileSync(temporary, snapshot);
+          fs.renameSync(temporary, file);
+        } catch (error) { logger.error("[agent] persist tasks failed:", error.message); }
+      }).catch(() => {});
+    },
+    flush: () => writeQueue,
+  };
+}
+
+function createFileBackedAuditStore(file, { logger = console } = {}) {
+  const events = [];
+  let loaded = false;
+
+  return {
+    load() {
+      if (loaded) return events;
+      loaded = true;
+      try {
+        const saved = JSON.parse(fs.readFileSync(file, "utf-8"));
+        if (Array.isArray(saved)) events.push(...saved);
+      } catch {}
+      return events;
+    },
+    save(nextEvents) {
+      try {
+        const temporary = file + ".tmp";
+        fs.writeFileSync(temporary, JSON.stringify(nextEvents, null, 2));
+        fs.renameSync(temporary, file);
+      } catch (error) { logger.error("[agent] persist audit failed:", error.message); }
+    },
+  };
+}
 
 function normalizeChangeParams(template, params = {}) {
   return template === "add_address_object"
@@ -40,8 +108,12 @@ function ipMatchDest(destination, ip) {
   return (ipNumber & mask) === (networkNumber & mask);
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, diagnosticDependencies, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile, auditFile, maxTasks, logger, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, diagnosticDependencies, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+  taskStore = taskStore || (taskFile && createFileBackedTaskStore(taskFile, { maxTasks, logger }));
+  auditStore = auditStore || (auditFile && createFileBackedAuditStore(auditFile, { logger }));
+  if (!taskStore || !auditStore) throw new TypeError("Task Service requires task and audit stores");
   const tasks = taskStore.load();
+  const auditEvents = auditStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
 
   function saveTasks() { taskStore.save(tasks); }
@@ -112,11 +184,11 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
   }
 
   function recordAudit(task, event) {
+    if (!event) return;
     task.audit = task.audit || [];
     task.audit.push(event);
-    const audit = auditStore.load();
-    audit.push({ ...event, type: task.type, firewall: task.firewall || null, planFingerprint: task.planFingerprint || null });
-    auditStore.save(audit);
+    auditEvents.push({ ...event, type: task.type, firewall: task.firewall || null, planFingerprint: task.planFingerprint || null });
+    auditStore.save(auditEvents);
   }
 
   function finalizeCandidate(task) {
@@ -834,6 +906,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     createTask,
     dispatchTask,
     getTask,
+    listAuditEvents: () => auditEvents,
     listTasks: () => tasks,
     prepareRuleSelection: setAwaitingSelection,
     runAudit,
@@ -841,6 +914,8 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, auditLogR
     runInspect,
     runDiagnostic,
     runQuery,
+    recordAudit,
+    flushPersistence: () => Promise.all([taskStore.flush ? taskStore.flush() : undefined, auditStore.flush ? auditStore.flush() : undefined]),
     saveTask,
     seedTask,
     startBatchSelection,
