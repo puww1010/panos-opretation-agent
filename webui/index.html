@@ -411,6 +411,12 @@
   .topo-if-state { font-size:8.5px; font-weight:700; }
   .topo-fw-box { filter:drop-shadow(0 4px 10px rgba(22,104,220,.25)); }
   .dash-inner { max-width:1200px; margin:0 auto; }
+  .health-summary { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; margin-bottom:14px; border:1px solid var(--border); border-radius:12px; background:var(--card2); color:var(--muted); font-size:12.5px; line-height:1.55; }
+  .health-summary strong { color:var(--text); white-space:nowrap; }
+  .health-summary.attention { border-color:var(--warn-border); background:var(--warn-bg); color:var(--warn-fg); }
+  .health-summary.alert { border-color:var(--err-border); background:var(--err-bg); color:var(--err-fg); }
+  .health-summary .health-items { display:flex; flex-wrap:wrap; gap:6px 12px; }
+  .health-summary .health-item::before { content:"•"; margin-right:4px; }
   .dash-monitor { display:grid; grid-template-columns:1.45fr 1fr; gap:14px; margin-top:14px; }
   @media (max-width:960px) { .dash-monitor { grid-template-columns:1fr; } }
   .platform-grid { display:flex; flex-direction:column; gap:8px; }
@@ -465,7 +471,7 @@
   .dash-try .try-tip { font-size:11.5px; color:var(--dim); margin-bottom:7px; }
   .dash-try .chips { margin-top:0; }
   @media (max-width:960px) { .sidebar { width:56px; } .sidebar .side-title, .sidebar .txt, .sidebar .side-sep { display:none; } .dash-grid { grid-template-columns:1fr; } }
-  @media (max-width:720px) { .topbar{padding:10px 14px} .wrap{padding:14px} .cmd-row{flex-direction:column} .cmd .btn{padding:12px} .msg-bubble{max-width:92%} .chat-scroll{padding:10px 10px 4px} .cmdbar{padding:8px 10px 12px} .kpis-compact{grid-template-columns:repeat(2,1fr)} }
+  @media (max-width:720px) { .topbar{padding:10px 14px} .wrap{padding:14px} .cmd-row{flex-direction:column} .cmd .btn{padding:12px;min-height:44px} .msg-bubble{max-width:92%} .chat-scroll{padding:10px 10px 4px} .cmdbar{padding:8px 10px 12px} .kpis-compact{grid-template-columns:repeat(2,1fr)} .health-summary{flex-direction:column;gap:4px} .if-row{flex-wrap:wrap;gap:6px 10px} .if-name{min-width:0;flex:1} .if-ip{flex-basis:calc(100% - 64px);margin-left:64px} .if-meta{margin-left:auto} .dash-quick{grid-template-columns:1fr} }
 </style>
 </head>
 <body>
@@ -695,6 +701,7 @@
         <div class="dash-inner">
 
           <!-- KPI 概览卡（loadOverview 用 getElementById 找这些 ID） -->
+          <div class="health-summary" id="healthSummary" role="status" aria-live="polite">设备健康状态加载中…</div>
           <div class="kpis">
             <div class="kpi" id="kpiDevice"><div class="label"><svg class="ic sm"><use href="#i-device"/></svg>设备</div><div class="value">--</div><div class="extra">--</div></div>
             <div class="kpi" id="kpiHa"><div class="label"><svg class="ic sm"><use href="#i-ha"/></svg>HA 高可用</div><div class="value">--</div><div class="extra">PA 高可用对</div></div>
@@ -952,11 +959,21 @@ setInterval(() => {
 // fetch 加强：5 秒超时（避免某一个 endpoint 卡死让整个 init 僵掉）
 // 统一携带登录 token（localStorage）——WebUI 认证开启后所有 API 需要 Authorization
 const _origFetch = window.fetch;
+function shouldAttachAuth(url) {
+  const requestUrl = typeof url === "string" ? url : url && url.url;
+  if (!requestUrl) return false;
+  try {
+    const target = new URL(requestUrl, window.location.href);
+    return target.origin === window.location.origin && /^\/api\//.test(target.pathname);
+  } catch (e) {
+    return false;
+  }
+}
 window.fetch = function (url, opts) {
   opts = opts || {};
   opts.headers = Object.assign({}, opts.headers);
   const t = localStorage.getItem("panos_web_token");
-  if (t) opts.headers["Authorization"] = "Bearer " + t;
+  if (t && shouldAttachAuth(url)) opts.headers["Authorization"] = "Bearer " + t;
   return _origFetch(url, opts);
 };
 async function fjs(url, opts) { opts = opts || {}; opts.timeout = opts.timeout || 5000;
@@ -1258,12 +1275,26 @@ async function loadOverview() {
     setHTML("kpiLicense", ".value", lic.total === undefined ? "--" : String(lic.total));
     setText("kpiLicense", ".extra", lic.expired ? lic.expired + " 项已过期" : (lic.total ? "全部有效" : ""));
     const licEl = document.getElementById("kpiLicense"); if (licEl) licEl.className = "kpi" + (lic.expired ? " warn" : "");
+    renderHealth(d.health || { level: "normal", items: [] });
     // 接口流量渲染
     renderInterfaces(d.interfaces || []);
     // 平台 loading 渲染
     renderPlatform(d.platform || null);
   } catch (e) { console.warn("[loadOverview]", e.message); }
   setTimeout(loadOverview, 5000);
+}
+
+function renderHealth(health) {
+  const box = document.getElementById("healthSummary");
+  if (!box) return;
+  const level = ["normal", "attention", "alert"].includes(health.level) ? health.level : "normal";
+  const labels = { normal: "设备健康：正常", attention: "设备健康：需关注", alert: "设备健康：需处理" };
+  const items = Array.isArray(health.items) ? health.items : [];
+  box.className = "health-summary " + level;
+  box.innerHTML = "<strong>" + labels[level] + "</strong>" +
+    (items.length
+      ? '<span class="health-items">' + items.map((item) => '<span class="health-item">' + esc(item.message || "") + "</span>").join("") + "</span>"
+      : '<span class="health-items"><span class="health-item">数据已更新，暂无待处理事项</span></span>');
 }
 
 // 概览：接口流量列表
@@ -2005,10 +2036,16 @@ function renderAiBody(t) {
   const sourceTag = t.source === "feishu" ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:600;background:var(--feishu-bg);color:var(--feishu-fg);border:1px solid var(--feishu-border)">' + ic("phone", "sm") + ' 飞书端</span>' : "";
   const followUpTag = (t.replyTo || t.followUpOf) ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:600;background:var(--warn-bg2);color:var(--warn-fg);border:1px solid var(--warn-border2)">' + ic("reply", "sm") + ' 追问自 #' + (t.replyTo || t.followUpOf) + '</span>' : "";
   let h = (sourceTag || followUpTag || llmTag) ? '<div class="msg-meta">' + sourceTag + followUpTag + llmTag + '</div>' : "";
+  const planFingerprint = t.planFingerprint ? '<div style="font:11px var(--mono);color:var(--dim);margin:-4px 0 10px">计划校验：' + esc(t.planFingerprint.slice(0, 12)) + '…</div>' : "";
+  const auditSummary = Array.isArray(t.audit) && t.audit.length
+    ? '<div style="font-size:11px;color:var(--muted);margin:-4px 0 10px">最近审计：' + esc(t.audit.slice(-3).map((event) => event.action + " → " + event.to).join("；")) + '</div>'
+    : "";
   h += '<div class="task-body">';
 
   if (t.status === "awaiting_approval") {
     h += '<div class="plan">变更计划：' + esc(t.plan) + "</div>";
+    h += planFingerprint;
+    h += auditSummary;
     h += '<button class="btn" style="background:var(--green);color:#04121a;border:none" onclick="act(' + t.id + ",'approve')\">批准执行</button> <button class='btn' style='background:var(--red);color:#fff;border-color:var(--red)' onclick=\"act(" + t.id + ",'reject')\">拒绝</button>";
   } else if (t.status === "awaiting_selection") {
     const r = t.result || {}; const matched = r.matched || [];
@@ -2037,6 +2074,8 @@ function renderAiBody(t) {
     h += ' <button class="btn" style="background:var(--red);color:#fff;border-color:var(--red)" onclick="act(' + t.id + ",'cancel')\">取消</button>";
   } else if (t.status === "awaiting_commit") {
     h += '<div class="plan">candidate 已就绪，确认 commit？</div>';
+    h += planFingerprint;
+    h += auditSummary;
     h += '<button class="btn" style="background:var(--green);color:#04121a;border:none" onclick="act(' + t.id + ",'confirm')\">确认 commit</button> <button class='btn' onclick=\"act(" + t.id + ",'cancel')\">取消</button>";
   }
 

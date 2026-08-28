@@ -6,6 +6,9 @@ const fs = require("fs");
 const path = require("path");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
+const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
+const { planFingerprint, transitionTask } = require("./lib/task-governance");
+const { buildHealthSummary } = require("./lib/health");
 
 // ── 路径（默认项目内相对路径，可用环境变量覆盖；脱离 WorkBuddy 独立部署无需改代码）──
 const NODE = process.env.NODE_BIN || "node";
@@ -16,6 +19,7 @@ const CFG = process.env.PANOS_FIREWALLS_CONFIG || path.join(__dirname, "..", "cf
 const PORT = process.env.PORT || 8080;
 const REPORTS_DIR = path.join(__dirname, "..", "reports");
 const TASKS_FILE = process.env.TASKS_FILE || path.join(__dirname, "..", "cfgs", "tasks.json");
+const AUDIT_FILE = process.env.AUDIT_FILE || path.join(__dirname, "..", "cfgs", "audit-events.json");
 const AUTH_FILE = path.join(__dirname, "..", "cfgs", "auth.json");
 
 // ── WebUI 认证（发布公网前必须启用；所有 /api/* 需 token，飞书 bridge 用 internal_token）──
@@ -173,6 +177,7 @@ const tasks = [];        // 任务列表
 const history = [];      // 查询历史
 const llmLogs = [];      // LLM 决策日志（证明 LLM 规划起作用）
 const metricsBuffer = []; // KPI 指标采样环形缓冲（报表预留，见 spec §12.1 metrics 表）
+const auditEvents = [];   // 任务审计独立持久化；清除任务视图不影响历史事件
 const MAX_HISTORY = 20;
 const MAX_LLM_LOGS = 50;
 const MAX_TASKS = 200;   // 任务持久化上限（超出丢弃最旧）
@@ -220,6 +225,27 @@ function loadTasks() {
   }
 }
 loadTasks();
+
+function loadAuditEvents() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(AUDIT_FILE, "utf-8"));
+    if (Array.isArray(saved)) auditEvents.push(...saved);
+  } catch {}
+}
+function persistAuditEvents() {
+  try {
+    const tmp = AUDIT_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(auditEvents, null, 2));
+    fs.renameSync(tmp, AUDIT_FILE);
+  } catch (e) { console.error("[agent] persist audit failed:", e.message); }
+}
+function recordTaskAudit(t, event) {
+  if (!event) return;
+  const entry = { ...event, type: t.type, firewall: t.firewall || null, planFingerprint: t.planFingerprint || null };
+  auditEvents.push(entry);
+  persistAuditEvents();
+}
+loadAuditEvents();
 
 function recordLLM(role, input, output, ms) {
   llmLogs.unshift({ ts: new Date().toLocaleString("zh-CN"), provider: currentLLM, role, input: String(input).slice(0, 80), output: String(output || "").slice(0, 200), ms });
@@ -1328,7 +1354,9 @@ async function runChangeCandidate(t, tmpl, params, firewall) {
     }
   }
   t.params = p;
+  t.planFingerprint = planFingerprint({ template: tmpl, params: p, firewall });
   t.status = "awaiting_commit";
+  recordTaskAudit(t, { taskId: t.id, action: "candidate_ready", from: "executing", to: "awaiting_commit", at: new Date().toISOString() });
   saveTask(t);
 }
 
@@ -1415,6 +1443,7 @@ async function runChangeCommit(t, firewall) {
       t.steps.push("可能原因：candidate 未生效（无变更可提交）或 commit 端点未返回 job");
       t.status = "done";
       t.result = Object.assign(t.result || {}, { needsManualCommit: true, raw: txt.slice(0, 300) });
+      recordTaskAudit(t, { taskId: t.id, action: "commit_needs_follow_up", from: "committing", to: "done", at: new Date().toISOString() });
       saveTask(t);
       return;
     }
@@ -1422,6 +1451,7 @@ async function runChangeCommit(t, firewall) {
     t.steps.push("commit 入队失败：" + e.message.slice(0, 80));
     t.status = "done";
     t.result = Object.assign(t.result || {}, { needsManualCommit: true });
+    recordTaskAudit(t, { taskId: t.id, action: "commit_needs_follow_up", from: "committing", to: "done", at: new Date().toISOString() });
     saveTask(t);
     return;
   }
@@ -1434,6 +1464,7 @@ async function runChangeCommit(t, firewall) {
       t.steps.push("⚠️ commit job=" + job + " 可能已在防火墙执行，请到 Monitor → Jobs 确认最终状态；如需回退变更请手动处理");
       t.status = "cancelled";
       t.result = Object.assign(t.result || {}, { cancelledWhileCommitting: true, job });
+      recordTaskAudit(t, { taskId: t.id, action: "commit_polling_cancelled", from: "committing", to: "cancelled", at: new Date().toISOString() });
       saveTask(t);
       return;
     }
@@ -1456,6 +1487,7 @@ async function runChangeCommit(t, firewall) {
         t.steps.push("commit 完成 (job=" + job + ")");
         t.status = "done";
         t.result = Object.assign(t.result || {}, { job });
+        recordTaskAudit(t, { taskId: t.id, action: "commit_completed", from: "committing", to: "done", at: new Date().toISOString() });
         saveTask(t);
         return;
       }
@@ -1463,6 +1495,7 @@ async function runChangeCommit(t, firewall) {
         t.steps.push("commit 失败：" + st + " job=" + job);
         t.status = "done";
         t.result = Object.assign(t.result || {}, { job, commitFailed: true });
+        recordTaskAudit(t, { taskId: t.id, action: "commit_failed", from: "committing", to: "done", at: new Date().toISOString() });
         saveTask(t);
         return;
       }
@@ -1473,6 +1506,7 @@ async function runChangeCommit(t, firewall) {
   t.steps.push("️ commit 超时（10 分钟）：job=" + job + " 可能在防火墙后台仍在执行中。请登录防火墙 Web 界面 → Monitor → Jobs，搜索 job ID " + job + " 查看最终状态，或手动执行 commit");
   t.status = "done";
   t.result = Object.assign(t.result || {}, { needsManualCommit: true, timeout: true, job });
+  recordTaskAudit(t, { taskId: t.id, action: "commit_timed_out", from: "committing", to: "done", at: new Date().toISOString() });
   saveTask(t);
   // 超时：标记需要手动 commit（但提供 job id 供用户去 PAN-OS UI 跟进）
   t.steps.push(`commit 轮询超时（job ${job}）— 可能仍在执行，请到 PAN-OS UI 查看或继续轮询`);
@@ -1543,6 +1577,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     const needPrecheck = RULE_TMPL.includes(c.template) && !(c.params?.name && /^[a-zA-Z0-9_.\-]+$/.test(c.params.name));
     const t = newTask("change", input, { template: c.template, templateLabel: tmpl.label, params: c.params, firewall, source, conversationId: conv.conversationId, replyTo: conv.replyTo, status: needPrecheck ? "awaiting_selection" : "awaiting_approval" });
     t.plan = tmpl.plan(c.params || {});
+    t.planFingerprint = planFingerprint({ template: c.template, params: c.params || {}, firewall });
     if (needPrecheck) {
       // 同步做一次预检（list candidates）→ 任务状态已是 awaiting_selection，前端直接展示候选按钮
       try { await setAwaitingSelection(t, c.params, firewall, tmpl.label, []); }
@@ -1552,6 +1587,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     }
     t.llm = currentLLM;  // 记录处理该任务时实际使用的 LLM provider key
     tasks.push(t); persistTasks();
+    recordTaskAudit(t, { taskId: t.id, action: "created", from: null, to: t.status, at: new Date().toISOString() });
     return needPrecheck && t.status === "awaiting_selection"
       ? { taskId: t.id, status: t.status, plan: t.plan, candidates: t.result.matched, totalMatches: t.result.totalMatches }
       : { taskId: t.id, status: t.status, plan: t.plan };
@@ -1784,11 +1820,12 @@ async function getOverview() {
   }
   // 接口信息（PA-440 物理/逻辑接口：名称/状态/速率/IP/MAC/角色）
   const interfaces = ifc ? parseInterfaces(ifc) : [];
-  const out = { ts: Date.now(), kpi, interfaces, platform: plat || null, health: kpi.device.hostname ? "ok" : "degraded" };
+  const health = buildHealthSummary({ kpi, interfaces, platform: plat || null });
+  const out = { ts: Date.now(), kpi, interfaces, platform: plat || null, health };
   overviewCache = out; overviewTs = Date.now();
   // 指标采样（报表预留）：每次 getOverview 计算完成后把 KPI 快照写入环形缓冲，
   // 未来切 SQLite/PG 时按 spec 第 12 章 metrics 表落库；现在提供 /api/metrics 供前端可视化。
-  metricsBuffer.push({ ts: out.ts, kpi: JSON.parse(JSON.stringify(kpi)), health: out.health });
+  metricsBuffer.push({ ts: out.ts, kpi: JSON.parse(JSON.stringify(kpi)), health: health.level });
   if (metricsBuffer.length > MAX_METRICS) metricsBuffer.shift();
   return out;
 }
@@ -2375,6 +2412,7 @@ async function runDiagTask(t, firewall) {
 }
 const server = http.createServer(async (req, res) => {
   // 所有响应默认 no-cache（前端会随轮询实时变化；浏览器/代理缓存旧值会误导排查）
+  for (const [name, value] of Object.entries(buildSecurityHeaders())) res.setHeader(name, value);
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
@@ -2386,7 +2424,7 @@ const server = http.createServer(async (req, res) => {
     // 静态资源（/、/index.html、/assets/*、图片）免认证——不含敏感数据，前端 JS 会检测 401 展示登录页
     const urlPath0 = req.url.split("?")[0];
     const isStatic = req.method === "GET" && (urlPath0 === "/" || urlPath0 === "/index.html" || urlPath0.startsWith("/assets/") || /^\/[a-zA-Z0-9_.\-]+\.(png|jpg|jpeg|svg|gif|ico|webp|woff2)$/.test(urlPath0));
-    if (urlPath0.startsWith("/api/") && !isStatic) {
+    if (isSameOriginApiPath(urlPath0) && !isStatic) {
       if (req.method === "POST" && urlPath0 === "/api/auth/login") {
         // 登录：校验用户名密码，签发会话 token（带空闲超时配置）
         let cred = {};
@@ -2570,7 +2608,9 @@ const server = http.createServer(async (req, res) => {
       if (act === "select" && t.status === "awaiting_selection" && t._candidate) {
         const cand = t._candidate;
         const newParams = { ...cand.name, name: selName, keyword: cand.keyword };
-        t.status = "executing";
+        const transition = transitionTask(t, "select");
+        if (!transition.ok) { send(400, { error: "非法操作或状态不匹配: " + t.status }); return; }
+        recordTaskAudit(t, transition.event);
         t.steps.push(`用户从候选选中：${selName}`);
         saveTask(t);
         runChangeCandidate(t, cand.template, newParams, cand.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
@@ -2583,8 +2623,10 @@ const server = http.createServer(async (req, res) => {
           send(400, { error: "names 必须是非空数组" });
           return;
         }
+        const transition = transitionTask(t, "select");
+        if (!transition.ok) { send(400, { error: "非法操作或状态不匹配: " + t.status }); return; }
+        recordTaskAudit(t, transition.event);
         t.steps.push(`批量执行 ${names.length} 个策略：${names.join(", ")}`);
-        t.status = "executing";
         saveTask(t);
         // 异步批量执行
         (async () => {
@@ -2659,21 +2701,29 @@ const server = http.createServer(async (req, res) => {
         send(200, { taskId: t.id, status: "executing", message: `开始批量执行 ${names.length} 个策略` });
         return;
       }
-      if (act === "cancel") {
-        t.cancelled = true; t.status = "cancelled"; t.steps.push("手动取消");
+      if (["approve", "reject", "confirm", "cancel"].includes(act)) {
+        const expectedFingerprint = t.planFingerprint;
+        const actualFingerprint = t.type === "change"
+          ? planFingerprint({ template: t.template, params: t.params || {}, firewall: t.firewall })
+          : null;
+        if (expectedFingerprint && actualFingerprint && expectedFingerprint !== actualFingerprint) {
+          send(409, { error: "变更计划已变化，请重新生成候选计划" });
+          return;
+        }
+        const transition = transitionTask(t, act);
+        if (!transition.ok) {
+          send(400, { error: "非法操作或状态不匹配: " + t.status });
+          return;
+        }
+        recordTaskAudit(t, transition.event);
+        if (act === "cancel") { t.cancelled = true; t.steps.push("手动取消"); }
+        if (act === "reject") t.steps.push("已拒绝");
         saveTask(t);
-        send(200, { taskId: t.id, status: t.status }); return;
+        if (act === "approve") runChangeCandidate(t, t.template, t.params || {}, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+        if (act === "confirm") runChangeCommit(t, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
+        send(200, { taskId: t.id, status: t.status });
+        return;
       }
-      if (act === "approve" && t.status === "awaiting_approval") {
-        runChangeCandidate(t, t.template, t.params || {}, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
-        send(200, { taskId: t.id, status: t.status }); return;
-      }
-      if (act === "reject" && t.status === "awaiting_approval") { t.status = "cancelled"; t.steps.push("已拒绝"); saveTask(t); send(200, { taskId: t.id, status: t.status }); return; }
-      if (act === "confirm" && t.status === "awaiting_commit") {
-        runChangeCommit(t, t.firewall).catch((e) => { t.status = "failed"; t.error = String(e.message || e); saveTask(t); });
-        send(200, { taskId: t.id, status: t.status }); return;
-      }
-      if (act === "cancel" && (t.status === "awaiting_approval" || t.status === "awaiting_commit")) { t.status = "cancelled"; t.steps.push("已取消"); saveTask(t); send(200, { taskId: t.id, status: t.status }); return; }
       send(400, { error: "非法操作或状态不匹配: " + t.status });
       return;
     }

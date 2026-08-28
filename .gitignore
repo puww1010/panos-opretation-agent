@@ -48,4 +48,6 @@ cfgs/auth.json
 cfgs/tasks.json
 cfgs/llm-choice.json
 cfgs/tasks.json.*
+cfgs/audit-events.json
+cfgs/audit-events.json.*
 checkpoints/

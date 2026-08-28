@@ -80,6 +80,13 @@ python3 feishu-bridge.py --daemon
 - `PANOS_FIREWALLS_CONFIG` — 防火墙配置路径（host + api_key）
 - 环境变量：`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `KIMI_API_KEY`（start.sh 或模型配置面板）
 
+## 内部试用版安全边界
+
+- 所有 `/api/*` 接口均要求有效登录会话；响应附带基础浏览器安全头，避免被嵌入其他页面或被错误识别为可执行内容。
+- 本阶段为内部测试，**空闲自动退出保持关闭**；会话仍有绝对有效期，正式部署前必须重新评估空闲超时、SSO 与角色权限。
+- 变更任务的批准、拒绝、确认 commit 与取消由服务端状态机校验。计划目标变化时必须重新生成候选计划，不能沿用旧确认。
+- 任务审计事件独立写入 `cfgs/audit-events.json`；“清除已完成任务”只影响任务列表，不应删除审计事件。该文件含运维元数据，已被 Git 忽略。
+
 ## 排错
 
 ```bash
@@ -133,4 +140,3 @@ MIT
 
 https://github.com/apius-tech/Palo-MCP
 https://github.com/zm1990s/pan-os-mcp
-
