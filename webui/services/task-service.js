@@ -6,6 +6,21 @@ function normalizeChangeParams(template, params = {}) {
     : { ...params };
 }
 
+function isValidRuleName(name) {
+  return Boolean(name && /^[a-zA-Z0-9_.\-]+$/.test(name));
+}
+
+function tokenizeForMatch(text) {
+  const stop = new Set([
+    "的", "在", "和", "与", "或", "带", "有", "含", "按", "上", "里", "下", "中", "为", "是",
+    "规则", "名字", "名称", "rule", "policy", "删除", "封禁", "放行", "禁用", "启用",
+    "请", "把", "我", "你", "他", "来", "起", "到", "this", "that", "the", "with", "and", "or",
+  ]);
+  return (text.match(/[\u4e00-\u9fa5]+|[A-Za-z][A-Za-z0-9_-]*/g) || [])
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !stop.has(token.toLowerCase()) && !stop.has(token));
+}
+
 function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = Date.now, candidateRunner, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   const tasks = taskStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
@@ -98,6 +113,32 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
     saveTasks();
   }
 
+  async function setAwaitingSelection(task, verb) {
+    const keyword = (task.params.keyword || "").trim();
+    if (!keyword) throw new Error("该操作需要精确规则名或模糊 keyword 之一");
+    const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules";
+    const text = String(await panosAdapter.directConfigShow(xpath));
+    const rules = (text.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || []).map((block) => {
+      const match = block.match(/<entry[^>]*\bname=\"([^\"]+)\"/);
+      return match ? match[1] : null;
+    }).filter(Boolean);
+    let matched = rules.filter((name) => name.toLowerCase().includes(keyword.toLowerCase()));
+    let mode = "整串匹配";
+    if (!matched.length) {
+      const tokens = tokenizeForMatch(keyword);
+      if (tokens.length) {
+        matched = rules.filter((name) => tokens.some((token) => name.toLowerCase().includes(token.toLowerCase())));
+        if (matched.length) mode = "拆词 OR 匹配 [" + tokens.join(", ") + "]";
+      }
+    }
+    const top = matched.slice(0, 10);
+    task.steps.push(mode + " \"" + keyword + "\" 命中 " + matched.length + " 条规则" + (top.length ? "：" + top.join("、") : ""));
+    task.status = "awaiting_selection";
+    task.result = { awaitingSelection: true, verb, keyword, matched: top, totalMatches: matched.length, mode };
+    task._candidate = { name: task.params.name, keyword, template: task.template, firewall: task.firewall };
+    saveTask(task);
+  }
+
   async function runCandidate(task) {
     task.params = normalizeChangeParams(task.template, task.params);
     if (task.template === "add_address_object" && panosAdapter.directConfigSet) {
@@ -128,7 +169,12 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
       finalizeCandidate(task);
       return;
     }
-    if (["set_security_rule_disabled", "set_security_rule_enabled"].includes(task.template) && task.params.name && panosAdapter.directConfigSet) {
+    if (["delete_security_rule", "set_security_rule_disabled", "set_security_rule_enabled"].includes(task.template) && !isValidRuleName(task.params.name) && panosAdapter.directConfigShow) {
+      const verb = task.template === "delete_security_rule" ? "删除" : task.template === "set_security_rule_disabled" ? "禁用" : "启用";
+      await setAwaitingSelection(task, verb);
+      return;
+    }
+    if (["set_security_rule_disabled", "set_security_rule_enabled"].includes(task.template) && isValidRuleName(task.params.name) && panosAdapter.directConfigSet) {
       const value = task.template === "set_security_rule_disabled" ? "yes" : "no";
       const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='" + task.params.name + "']/disabled";
       await panosAdapter.directConfigSet(xpath, "<disabled>" + value + "</disabled>");
@@ -136,7 +182,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, clock = D
       finalizeCandidate(task);
       return;
     }
-    if (task.template === "delete_security_rule" && task.params.name && panosAdapter.directConfigDelete) {
+    if (task.template === "delete_security_rule" && isValidRuleName(task.params.name) && panosAdapter.directConfigDelete) {
       const xpath = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules/entry[@name='" + task.params.name + "']";
       await panosAdapter.directConfigDelete(xpath);
       task.steps.push("candidate: delete_security_rule " + task.params.name);

@@ -110,6 +110,33 @@ test("security-rule deletion is finalized through the task service", async () =>
   ]);
 });
 
+test("fuzzy security-rule deletion waits for a running-config selection", async () => {
+  const reads = [];
+  const service = createTaskService({
+    panosAdapter: {
+      directConfigShow: async (xpath) => {
+        reads.push(xpath);
+        return '<entry name="legacy-web"><description>old</description></entry><entry name="legacy-admin"><description>old</description></entry><entry name="current-web"><description>new</description></entry>';
+      },
+    },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({
+    id: 24, type: "change", status: "awaiting_approval", template: "delete_security_rule",
+    params: { keyword: "legacy" }, firewall: "lab", steps: [],
+  });
+  await service.actOnTask(24, "approve");
+  const task = service.getTask(24);
+  assert.equal(task.status, "awaiting_selection");
+  assert.deepEqual(task.result, {
+    awaitingSelection: true, verb: "删除", keyword: "legacy",
+    matched: ["legacy-web", "legacy-admin"], totalMatches: 2, mode: "整串匹配",
+  });
+  assert.deepEqual(reads, [
+    "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/rulebase/security/rules",
+  ]);
+});
+
 test("single IP block candidate creates an address object and deny rule", async () => {
   const writes = [];
   const service = createTaskService({
