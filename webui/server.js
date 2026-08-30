@@ -8,6 +8,7 @@ const { createPanosAdapter } = require("./adapters/panos-adapter");
 const { createAuthService } = require("./services/auth-service");
 const { createDashboardService } = require("./services/dashboard-service");
 const { createLlmService } = require("./services/llm-service");
+const { createApiRouter } = require("./routes/api-routes");
 const { createTaskService, normalizeChangeParams } = require("./services/task-service");
 const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
 const { planFingerprint, transitionTask } = require("./lib/task-governance");
@@ -136,6 +137,7 @@ const dashboardService = createDashboardService({
     catch { return { devices: {} }; }
   },
 });
+const apiRouter = createApiRouter({ dashboardService });
 
 const history = [];      // 查询历史
 const metricsBuffer = []; // KPI 指标采样环形缓冲（报表预留，见 spec §12.1 metrics 表）
@@ -875,6 +877,7 @@ const server = http.createServer(async (req, res) => {
       res.end(html);
       return;
     }
+    if (await apiRouter.handleDashboard(req, send)) return;
     if (req.method === "POST" && req.url === "/api/llm/reset") {
       // 语义（13:34 更新）：用户选择持久化——刷新/重启都保持上次选择（读 llm-choice.json），
       // 不再强制回 _default。只有手动 /api/llm/select 切换才改变。
