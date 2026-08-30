@@ -60,3 +60,17 @@ test("LLM service includes same-conversation context, parses the action, and rec
   assert.equal(service.getLogs().length, 1);
   assert.equal(service.getLogs()[0].role, "意图规划");
 });
+
+test("LLM service persists a configured provider selection without returning its key", (t) => {
+  const { configFile, choiceFile } = serviceFiles(t);
+  const service = createLlmService({ configFile, choiceFile, environment: {} });
+
+  assert.deepEqual(service.saveProvider({
+    provider: "lab-model", label: "Lab Model", base_url: "https://llm.invalid/v1", model: "lab-1", env: "LAB_MODEL_KEY", key: "test-only-key",
+  }), { ok: true, provider: "lab-model", configured: true });
+  assert.deepEqual(service.selectProvider("lab-model"), { ok: true, current: "lab-model" });
+
+  const reloaded = createLlmService({ configFile, choiceFile, environment: {} });
+  assert.equal(reloaded.getCurrent(), "lab-model");
+  assert.equal(Object.hasOwn(reloaded.getPublicConfig().providers["lab-model"], "key"), false);
+});
