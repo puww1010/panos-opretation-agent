@@ -5,6 +5,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { createPanosAdapter } = require("./adapters/panos-adapter");
+const { createDashboardService } = require("./services/dashboard-service");
 const { createLlmService } = require("./services/llm-service");
 const { createTaskService, normalizeChangeParams } = require("./services/task-service");
 const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
@@ -44,6 +45,7 @@ const {
   deepLog,
   filterByMinutes,
   fmtTop,
+  getDefaultFirewall,
   xmlEntries,
 } = panosAdapter;
 
@@ -128,6 +130,18 @@ loadAuth();
 const LLM_CONFIG_PATH = process.env.LLM_CONFIG || path.join(__dirname, "llm-config.json");
 const LLM_CHOICE_FILE = process.env.LLM_CHOICE_FILE || path.join(__dirname, "..", "cfgs", "llm-choice.json");
 
+const dashboardService = createDashboardService({
+  callTool,
+  directOp,
+  xmlEntries,
+  healthSummary: buildHealthSummary,
+  firewallHost: getDefaultFirewall().host,
+  topologyNames: () => {
+    try { return JSON.parse(fs.readFileSync(path.join(__dirname, "../cfgs/topology.json"), "utf-8")) || { devices: {} }; }
+    catch { return { devices: {} }; }
+  },
+});
+
 const history = [];      // 查询历史
 const metricsBuffer = []; // KPI 指标采样环形缓冲（报表预留，见 spec §12.1 metrics 表）
 const MAX_HISTORY = 20;
@@ -149,10 +163,7 @@ taskService = createTaskService({
   actionDefinitions: () => ACTIONS,
   toolCaller: callTool,
   querySummarizer: (...args) => llmService.summarizeQuery(...args),
-  queryHistoryRecorder: (entry) => {
-    history.unshift({ ts: new Date().toLocaleString("zh-CN"), ...entry });
-    if (history.length > MAX_HISTORY) history.pop();
-  },
+  queryHistoryRecorder: (entry) => dashboardService.recordHistory(entry),
   inspectReportWriter: ({ date, markdown }) => {
     if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
     const file = path.join(REPORTS_DIR, "compliance-" + date + "-task.md");
@@ -1010,24 +1021,22 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && req.url === "/api/overview") {
-      send(200, await getOverview());
+      send(200, await dashboardService.getOverview());
       return;
     }
     // 网络拓扑（概览侧栏「网络拓扑」视图数据源）
     if (req.method === "GET" && req.url === "/api/topology") {
-      send(200, await getTopology());
+      send(200, await dashboardService.getTopology());
       return;
     }
     // 报表接口预留（spec §12.1 metrics）：返回 KPI 指标采样序列，支持 ?minutes= 过滤
     if (req.method === "GET" && req.url.startsWith("/api/metrics")) {
       const u = new URL(req.url, "http://localhost");
       const mins = Math.max(1, Math.min(1440, parseInt(u.searchParams.get("minutes") || "120", 10) || 120));
-      const since = Date.now() - mins * 60000;
-      const pts = metricsBuffer.filter((m) => m.ts >= since);
-      send(200, { series: pts, count: pts.length, windowMinutes: mins, note: "指标采样缓冲（10s 粒度，滚窗 2h）；切库后由 metrics 表提供" });
+      send(200, dashboardService.getMetrics(mins));
       return;
     }
-    if (req.method === "GET" && req.url === "/api/history") { send(200, { history }); return; }
+    if (req.method === "GET" && req.url === "/api/history") { send(200, { history: dashboardService.getHistory() }); return; }
     send(404, { error: "Not Found" });
   } catch (e) { send(500, { error: String(e.message || e) }); }
 });

@@ -37,3 +37,9 @@ test("adapter connection does not depend on an implicit global path", () => {
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
+
+test("adapter exposes only the default firewall display target", () => {
+  const adapter = createPanosAdapter({ directFirewall: { name: "lab-fw", host: "198.51.100.1", api_key: "test-secret" } });
+
+  assert.deepEqual(adapter.getDefaultFirewall(), { name: "lab-fw", host: "198.51.100.1" });
+});

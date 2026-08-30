@@ -462,8 +462,13 @@ async function directForTool(name, args = {}) {
     return { ...mcpInfo };
   }
 
+  function getDefaultFirewall() {
+    return { name: DIRECT_FW.name || "", host: DIRECT_FW.host || "" };
+  }
+
   return {
     connect,
+    getDefaultFirewall,
     isConnected,
     getMcpInfo,
     callTool,
