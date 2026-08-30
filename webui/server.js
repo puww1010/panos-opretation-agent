@@ -9,6 +9,7 @@ const { createAuthService } = require("./services/auth-service");
 const { createDashboardService } = require("./services/dashboard-service");
 const { createLlmService } = require("./services/llm-service");
 const { createApiRouter } = require("./routes/api-routes");
+const { createStaticRouter } = require("./routes/static-routes");
 const { createTaskService, normalizeChangeParams } = require("./services/task-service");
 const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
 const { planFingerprint, transitionTask } = require("./lib/task-governance");
@@ -52,65 +53,6 @@ const {
 } = panosAdapter;
 
 // ── WebUI 认证（发布公网前必须启用；所有 /api/* 需 token，飞书 bridge 用 internal_token）──
-const crypto = require("crypto");
-const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
-const AUTH_SESSION_DAYS = 7;               // 登录会话绝对有效期
-// 空闲超时（分钟）：已停用（用户要求"先去掉，搞好以后再说"）。
-// 恢复方法：把 IDLE_MINUTES 改为正数即可重新启用，并同步打开前端 _checkIdle 轮询。
-const IDLE_MINUTES = 0;                    // 0 = 空闲超时停用（不再因空闲自动登出）
-const IDLE_MS = IDLE_MINUTES > 0 ? IDLE_MINUTES * 60 * 1000 : Infinity;
-let authData = null;                        // { username, password_hash, sessions:{token:{exp,lastSeen}}, internal_token }
-function loadAuth() {
-  try {
-    if (fs.existsSync(AUTH_FILE)) {
-      authData = JSON.parse(fs.readFileSync(AUTH_FILE, "utf-8"));
-    }
-  } catch (e) { console.error("[auth] auth.json 解析失败，重建:", String(e.message || e)); }
-  if (!authData || typeof authData !== "object") authData = { username: "admin", password_hash: "", sessions: {}, internal_token: "" };
-  authData.sessions = authData.sessions || {};
-  // 兼容旧格式：sessions[token] 是纯数字（expiry）→ 转对象 {exp, lastSeen}
-  for (const k of Object.keys(authData.sessions)) {
-    if (typeof authData.sessions[k] === "number") authData.sessions[k] = { exp: authData.sessions[k], lastSeen: Date.now() };
-  }
-  // 首次初始化：随机密码 + 内部令牌
-  if (!authData.password_hash) {
-    const pw = process.env.PANOS_WEB_PASSWORD || crypto.randomBytes(6).toString("base64").replace(/[^a-zA-Z0-9]/g, "").slice(0, 10);
-    authData.password_hash = sha256(pw);
-    console.log("[auth] ⚠️ 首次启动：WebUI 登录账号 = " + authData.username + " / 密码 = " + pw + "（写入 " + AUTH_FILE + "，请立即修改）");
-  }
-  if (!authData.internal_token) {
-    authData.internal_token = process.env.PANOS_WEB_INTERNAL_TOKEN || crypto.randomBytes(24).toString("hex");
-  }
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2));
-}
-function saveAuth() { fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2)); }
-function authValid(token) {
-  if (!token || !authData.sessions[token]) return false;
-  const s = authData.sessions[token];
-  // 绝对过期（7 天）或 空闲超时（N 分钟无用户主动操作）→ 会话失效
-  if (Date.now() > s.exp || Date.now() - s.lastSeen > IDLE_MS) {
-    delete authData.sessions[token]; saveAuth();
-    return false;
-  }
-  return true;
-}
-function authIssueToken() {
-  const token = crypto.randomBytes(32).toString("hex");
-  authData.sessions[token] = { exp: Date.now() + AUTH_SESSION_DAYS * 864e5, lastSeen: Date.now() };
-  saveAuth();
-  return token;
-}
-let _lastAuthWrite = 0;
-function authTouch(token) {
-  // 用户主动操作时刷新 lastSeen（节流写盘：≥60s 才写一次，避免高频写 auth.json）
-  const s = authData.sessions[token];
-  if (!s) return;
-  s.lastSeen = Date.now();
-  if (Date.now() - _lastAuthWrite > 60000) { _lastAuthWrite = Date.now(); saveAuth(); }
-}
-function authCheck(req) {
-  return authService.checkRequest(req);
-}
 // 用户主动操作类接口：通过认证后刷新 lastSeen（轮询类 GET 不在此列——挂机不续命）
 function authTouchIfUserAction(req, token) {
   if (!token || authService.isInternalToken(token)) return;
@@ -125,6 +67,7 @@ function authTouchIfUserAction(req, token) {
 const LLM_CONFIG_PATH = process.env.LLM_CONFIG || path.join(__dirname, "llm-config.json");
 const LLM_CHOICE_FILE = process.env.LLM_CHOICE_FILE || path.join(__dirname, "..", "cfgs", "llm-choice.json");
 const authService = createAuthService({ authFile: AUTH_FILE });
+const staticRouter = createStaticRouter({ rootDirectory: __dirname });
 
 const dashboardService = createDashboardService({
   callTool,
@@ -177,7 +120,14 @@ taskService = createTaskService({
   },
   deferExecution: true,
 });
-apiRouter = createApiRouter({ dashboardService, llmService, taskService, actions: () => ACTIONS });
+apiRouter = createApiRouter({ dashboardService, llmService, taskService, authService, actions: () => ACTIONS, isApiPath: isSameOriginApiPath,
+  firewalls: () => { try { return JSON.parse(fs.readFileSync(CFG, "utf-8")).firewalls.map(({ name, host }) => ({ name, host })); } catch { return []; } },
+  feishu: {
+    status: async () => ({ chat: FEISHU_CHAT, running: await feishuDaemonRunning(), lark: LARK_CLI }),
+    send: feishuSend,
+    latestReport: () => { const files = fs.existsSync(REPORTS_DIR) ? fs.readdirSync(REPORTS_DIR).filter((file) => file.startsWith("compliance-") && file.endsWith(".md")).sort().reverse() : []; return files.length ? "【PAN-OS 合规报告 " + files[0] + "】\n" + fs.readFileSync(path.join(REPORTS_DIR, files[0]), "utf-8").slice(0, 1500) : null; },
+  },
+});
 
 function llmProviderLabel() {
   const current = llmService.getCurrent();
@@ -796,237 +746,12 @@ const server = http.createServer(async (req, res) => {
   const send = (code, obj) => { res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" }); res.end(JSON.stringify(obj)); };
   const body = () => new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => ok(b)); });
   try {
-    if (req.url === "/favicon.ico") { res.writeHead(204); res.end(); return; }
-    // ── 认证：登录接口放行；其余 /api/* 必须携带有效 token（用户会话或 internal_token）──
-    // 静态资源（/、/index.html、/assets/*、图片）免认证——不含敏感数据，前端 JS 会检测 401 展示登录页
-    const urlPath0 = req.url.split("?")[0];
-    const isStatic = req.method === "GET" && (urlPath0 === "/" || urlPath0 === "/index.html" || urlPath0.startsWith("/assets/") || /^\/[a-zA-Z0-9_.\-]+\.(png|jpg|jpeg|svg|gif|ico|webp|woff2)$/.test(urlPath0));
-    if (isSameOriginApiPath(urlPath0) && !isStatic) {
-      if (req.method === "POST" && urlPath0 === "/api/auth/login") {
-        // 登录：校验用户名密码，签发会话 token（带空闲超时配置）
-        let cred = {};
-        try { cred = JSON.parse(await body()); } catch (e) { cred = {}; }
-        const login = authService.login(cred);
-        if (login.ok) {
-          send(200, login);
-        } else {
-          send(401, { error: "用户名或密码错误" });
-        }
-        return;
-      }
-      if (req.method === "POST" && urlPath0 === "/api/auth/logout") {
-        send(200, authService.logout(authService.tokenFromRequest(req)));
-        return;
-      }
-      if (req.method === "GET" && urlPath0 === "/api/auth/check") {
-        const ok = authCheck(req);
-        send(ok ? 200 : 401, ok ? { ok: true, username: authService.getUsername(), idleMinutes: authService.idleMinutes } : { error: "未认证" });
-        return;
-      }
-      // 保持登录（空闲警告弹窗点击"保持登录"时调用，刷新 lastSeen）
-      if (req.method === "POST" && urlPath0 === "/api/auth/keepalive") {
-        if (!authCheck(req)) { send(401, { error: "未认证或登录已过期" }); return; }
-        authService.touch(authService.tokenFromRequest(req));
-        send(200, { ok: true, idleMinutes: authService.idleMinutes });
-        return;
-      }
-      // 修改密码：需已认证 + 校验旧密码；成功后清空所有会话（含当前），强制重新登录
-      if (req.method === "POST" && urlPath0 === "/api/auth/change-password") {
-        if (!authCheck(req)) { send(401, { error: "未认证或登录已过期，请重新登录" }); return; }
-        let cred = {};
-        try { cred = JSON.parse(await body()); } catch (e) { cred = {}; }
-        const changed = authService.changePassword(authService.tokenFromRequest(req), cred);
-        send(changed.ok ? 200 : 400, changed.ok ? changed : { error: changed.error });
-        return;
-      }
-      // 其余 API：统一认证拦截（401 让前端显示登录页）；用户主动操作类接口通过后刷新 lastSeen
-      if (!authCheck(req)) {
-        send(401, { error: "未认证或登录已过期，请重新登录" });
-        return;
-      }
-      const hdr = req.headers["authorization"] || "";
-      const tok = hdr.startsWith("Bearer ") ? hdr.slice(7).trim() : "";
-      authTouchIfUserAction(req, tok);
-    }
-    // 静态资源：assets/ 目录 + webui/ 根的零散文件（logo 等），防路径穿越
-    if (req.method === "GET") {
-      const urlPath = decodeURIComponent(req.url.split("?")[0]);
-      const MIME = { ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".svg":"image/svg+xml", ".gif":"image/gif", ".ico":"image/x-icon", ".webp":"image/webp", ".woff2":"font/woff2" };
-      let candidate = null;
-      if (urlPath.startsWith("/assets/")) candidate = path.join(__dirname, urlPath);
-      else if (/^\/[a-zA-Z0-9_.\-]+$/.test(urlPath) && urlPath !== "/" && urlPath !== "/index.html") candidate = path.join(__dirname, urlPath.slice(1));
-      if (candidate && fs.existsSync(candidate)) {
-        const real = fs.realpathSync(candidate);
-        // 路径穿越防护：必须在 __dirname 下
-        if (real.startsWith(fs.realpathSync(__dirname))) {
-          const ext = path.extname(real).toLowerCase();
-          const mime = MIME[ext];
-          if (mime) {
-            res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=3600" });
-            res.end(fs.readFileSync(real));
-            return;
-          }
-        }
-      }
-    }
-    if (req.method === "GET" && (req.url.split("?")[0] === "/" || req.url.split("?")[0] === "/index.html")) {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate" });
-      let html = fs.readFileSync(path.join(__dirname, "index.html"), "utf-8");
-      // 注入 cache-bust 注释（绕过缓存，URL 变化导致内容不同 → 浏览器重新解析）
-      const ver = Date.now().toString(36);
-      html = html.replace("<body>", "<body><!-- build: " + ver + " -->");
-      res.end(html);
-      return;
-    }
+    if (staticRouter.handle(req, res)) return;
+    if (await apiRouter.handleAuth(req, send, body, (token) => authTouchIfUserAction(req, token))) return;
     if (await apiRouter.handleDashboard(req, send)) return;
     if (await apiRouter.handleLlm(req, send, body)) return;
     if (await apiRouter.handleTasks(req, send, body, createTaskFromInput, async () => { if (!panosAdapter.isConnected()) await connect(); })) return;
-    if (req.method === "POST" && req.url === "/api/llm/reset") {
-      // 语义（13:34 更新）：用户选择持久化——刷新/重启都保持上次选择（读 llm-choice.json），
-      // 不再强制回 _default。只有手动 /api/llm/select 切换才改变。
-      send(200, { current: llmService.getCurrent(), note: "保持用户选择" });
-      return;
-    }
-    if (req.method === "GET" && req.url === "/api/actions") {
-      send(200, { actions: Object.fromEntries(Object.entries(ACTIONS).map(([k, v]) => [k, v.label])),
-        llm: llmService.getCurrent() !== "keyword", model: llmService.getCurrent() !== "keyword" ? llmService.getModel() : null });
-      return;
-    }
-    if (req.method === "GET" && req.url === "/api/llm") {
-      send(200, llmService.getPublicConfig());
-      return;
-    }
-    if (req.method === "POST" && req.url === "/api/llm/config") {
-      const { provider, base_url, model, key, env, label } = JSON.parse(await body());
-      try { send(200, llmService.saveProvider({ provider, base_url, model, key, env, label })); }
-      catch (e) { send(e.message === "provider 必填且仅小写字母数字下划线" ? 400 : 500, { error: e.message === "provider 必填且仅小写字母数字下划线" ? e.message : "写入 llm-config.json 失败：" + e.message }); }
-      return;
-    }
-    if (req.method === "POST" && req.url === "/api/llm/config/delete") {
-      const { provider } = JSON.parse(await body());
-      try { send(200, llmService.deleteProvider(provider)); } catch { send(200, { ok: true }); }
-      return;
-    }
-    if (req.method === "POST" && req.url === "/api/llm/select") {
-      const { provider } = JSON.parse(await body());
-      // 用户选择持久化：写 cfgs/llm-choice.json，刷新/重启都保持，只有手动切换才变
-      const selected = llmService.selectProvider(provider);
-      if (selected.ok) { send(200, { current: selected.current }); return; }
-      const v = selected.provider;
-      const SIGNUP = { deepseek: "https://platform.deepseek.com", qwen: "https://bailian.console.aliyun.com", kimi: "https://platform.moonshot.cn" };
-      send(400, {
-        error: "「" + (v?.label || provider) + "」未配置 API key",
-        hint: "请按以下步骤配置：\n\n1. 申请 API key：\n   " + (SIGNUP[provider] || v?.base_url || "https://...") + "\n\n2. 在 webui/start.sh 中添加环境变量：\n   export " + (v?.env || "?") + '="你的key"\n\n3. 重启控制台：\n   cd webui && ./start.sh'
-      });
-      return;
-    }
-    if (req.method === "GET" && req.url === "/api/firewalls") {
-      let fws = [];
-      try { fws = JSON.parse(fs.readFileSync(CFG, "utf-8")).firewalls.map(({ name, host }) => ({ name, host })); } catch {}
-      send(200, { firewalls: fws, multi: fws.length > 1 });
-      return;
-    }
-    if (req.method === "GET" && req.url === "/api/llm/log") { send(200, { logs: llmService.getLogs() }); return; }
-    if (req.method === "POST" && req.url === "/api/llm/test") {
-      const { text } = JSON.parse(await body());
-      const t0 = Date.now();
-      const out = await llmService.classify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/inspect(完整巡检)/change(变更)/diag(诊断)/null(无关)", text || "");
-      send(200, { output: out, ms: Date.now() - t0, provider: llmService.getCurrent() });
-      return;
-    }
-    if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks: taskService.listTasks() }); return; }
-    if (req.method === "POST" && req.url === "/api/tasks/clean") {
-      send(200, taskService.cleanTasks());
-      return;
-    }
-    if (req.method === "POST" && req.url === "/api/task") {
-      const { query, firewall, source, replyTo } = JSON.parse(await body());
-      if (!panosAdapter.isConnected()) await connect();
-      // 区分任务来源：'web'（Web 控制台默认）/ 'feishu'（飞书 bridge 提交）
-      // 飞书移动端发来的任务 WebUI 不显示长答案，Web 端正常显示
-      // replyTo：前端"↩ 追问这条"时携带被追问的任务 id，后端并入该任务所在会话
-      send(200, await createTaskFromInput(query, firewall, source || "web", { replyTo }));
-      return;
-    }
-    if (req.method === "POST" && req.url.startsWith("/api/task/")) {
-      const parts = req.url.split("/"); // /api/task/:id/:action[/name]
-      const id = Number(parts[3]); const act = parts[4]; const selName = parts[5] ? decodeURIComponent(parts[5]) : null;
-      const t = taskService.getTask(id);
-      if (!t) { send(404, { error: "task not found" }); return; }
-      // 用户从候选列表选择精确规则名：用新 name 重跑 candidate 阶段
-      if (act === "select" && t.status === "awaiting_selection" && t._candidate) {
-        const cand = t._candidate;
-        try {
-          send(200, await taskService.actOnTask(id, "select", {
-            params: { name: selName, keyword: cand.keyword },
-            firewall: cand.firewall,
-            step: `用户从候选选中：${selName}`,
-          }));
-        } catch (e) {
-          send(400, { error: String(e.message || e) });
-        }
-        return;
-      }
-      // 批量选择执行：POST /api/task/:id/select-multi，body: {names: ["name1", "name2", ...]}
-      if (act === "select-multi") {
-        const { names } = JSON.parse(await body());
-        try {
-          send(200, await taskService.startBatchSelection(id, names));
-        } catch (e) {
-          send(400, { error: String(e.message || e) });
-        }
-        return;
-      }
-      if (["approve", "reject", "confirm", "cancel"].includes(act)) {
-        try {
-          send(200, await taskService.actOnTask(id, act));
-        } catch (e) {
-          const message = String(e.message || e);
-          send(message === "变更计划已变化，请重新生成候选计划" ? 409 : 400, { error: message });
-        }
-        return;
-      }
-      send(400, { error: "非法操作或状态不匹配: " + t.status });
-      return;
-    }
-    if (req.url === "/api/feishu/status") {
-      const running = await feishuDaemonRunning();
-      send(200, { chat: FEISHU_CHAT, running, lark: LARK_CLI });
-      return;
-    }
-    if (req.url === "/api/feishu/send") {
-      const { text } = JSON.parse(await body());
-      if (!text) { send(400, { error: "消息不能为空" }); return; }
-      send(200, await feishuSend(text));
-      return;
-    }
-    if (req.url === "/api/feishu/push-report") {
-      // 推送最新合规报告到飞书
-      const dir = path.join(__dirname, "..", "reports");
-      const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith("compliance-") && f.endsWith(".md")).sort().reverse() : [];
-      if (!files.length) { send(400, { error: "没有合规报告" }); return; }
-      const latest = fs.readFileSync(path.join(dir, files[0]), "utf-8");
-      const summary = latest.slice(0, 1500);
-      send(200, await feishuSend("【PAN-OS 合规报告 " + files[0] + "】\n" + summary));
-      return;
-    }
-    if (req.method === "GET" && req.url === "/api/overview") {
-      send(200, await dashboardService.getOverview());
-      return;
-    }
-    // 网络拓扑（概览侧栏「网络拓扑」视图数据源）
-    if (req.method === "GET" && req.url === "/api/topology") {
-      send(200, await dashboardService.getTopology());
-      return;
-    }
-    // 报表接口预留（spec §12.1 metrics）：返回 KPI 指标采样序列，支持 ?minutes= 过滤
-    if (req.method === "GET" && req.url.startsWith("/api/metrics")) {
-      const u = new URL(req.url, "http://localhost");
-      const mins = Math.max(1, Math.min(1440, parseInt(u.searchParams.get("minutes") || "120", 10) || 120));
-      send(200, dashboardService.getMetrics(mins));
-      return;
-    }
-    if (req.method === "GET" && req.url === "/api/history") { send(200, { history: dashboardService.getHistory() }); return; }
+    if (await apiRouter.handleOperations(req, send, body)) return;
     send(404, { error: "Not Found" });
   } catch (e) { send(500, { error: String(e.message || e) }); }
 });

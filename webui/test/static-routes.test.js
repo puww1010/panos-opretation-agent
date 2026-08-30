@@ -1,0 +1,26 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const path = require("node:path");
+const { createStaticRouter } = require("../routes/static-routes");
+
+function response() {
+  const state = { status: null, headers: null, body: null };
+  return {
+    state,
+    end(body) { state.body = body; },
+    writeHead(status, headers = {}) { state.status = status; state.headers = headers; },
+  };
+}
+
+test("static router serves the root page and rejects traversal-like paths", () => {
+  const router = createStaticRouter({ rootDirectory: path.join(__dirname, "..") });
+  const root = response();
+  assert.equal(router.handle({ method: "GET", url: "/" }, root), true);
+  assert.equal(root.state.status, 200);
+  assert.match(root.state.headers["Content-Type"], /text\/html/);
+  assert.match(root.state.body, /<!-- build:/);
+
+  const traversal = response();
+  assert.equal(router.handle({ method: "GET", url: "/assets/%2e%2e/server.js" }, traversal), false);
+  assert.equal(traversal.state.status, null);
+});
