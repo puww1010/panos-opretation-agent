@@ -74,3 +74,52 @@ test("LLM service persists a configured provider selection without returning its
   assert.equal(reloaded.getCurrent(), "lab-model");
   assert.equal(Object.hasOwn(reloaded.getPublicConfig().providers["lab-model"], "key"), false);
 });
+
+test("LLM service preserves change fallback and diagnostic parameter sanitization", async (t) => {
+  const { configFile, choiceFile } = serviceFiles(t, {
+    providers: { deepseek: { model: "test-model", key: "test-key" } },
+  }, { current: "deepseek" });
+  const replies = [
+    '{"template":"move_security_rule","params":{}}',
+    '{"type":"connectivity","params":{"minutes":"bad","probe":"telnet"}}',
+  ];
+  const service = createLlmService({
+    configFile,
+    choiceFile,
+    environment: {},
+    fetcher: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: replies.shift() } }] }) }),
+  });
+
+  const change = await service.extractChange("封禁 198.51.100.10", { conversationId: null, changeTemplates: {
+    block_ip: { label: "封禁 IP", params: ["ip"] },
+    move_security_rule: { label: "移动规则", params: ["name"] },
+  } });
+  const diagnostic = await service.parseDiagnostic("连通性诊断", null);
+
+  assert.deepEqual(change, { template: "block_ip", params: { ip: "198.51.100.10" } });
+  assert.deepEqual(diagnostic, { type: "connectivity", params: { minutes: 60 } });
+});
+
+test("LLM service puts rule identifiers before descriptive fields in query context", async (t) => {
+  const { configFile, choiceFile } = serviceFiles(t, {
+    providers: { deepseek: { model: "test-model", key: "test-key" } },
+  }, { current: "deepseek" });
+  let request;
+  const service = createLlmService({
+    configFile,
+    choiceFile,
+    environment: {},
+    fetcher: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "规则摘要" } }] }) };
+    },
+  });
+
+  await service.summarizeQuery("查询安全策略", "security", [{
+    tool: "get_security_rules",
+    data: [{ description: "long description", action: "allow", "@_name": "allow-web" }],
+  }]);
+
+  const context = request.messages[1].content;
+  assert.ok(context.indexOf('"@_name"') < context.indexOf('"description"'));
+});

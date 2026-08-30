@@ -213,7 +213,15 @@ function createLlmService({ configFile, choiceFile, environment = process.env, t
       if (typeof data === "string") return `[${result.tool}] ${data.slice(0, 1500)}`;
       const items = Array.isArray(data) ? data : Array.isArray(data.entry) ? data.entry : Array.isArray(data.rules?.entry) ? data.rules.entry : Array.isArray(data.zone?.entry) ? data.zone.entry : null;
       if (!items) return `[${result.tool}] ${JSON.stringify(data).slice(0, 1500)}`;
-      const head = items.slice(0, 50).map((item) => JSON.stringify(item).slice(0, 1200)).join("\n");
+      const head = items.slice(0, 50).map((item) => {
+        if (!item || typeof item !== "object") return String(item).slice(0, 1200);
+        const ordered = {};
+        for (const key of ["@_name", "name", "action", "disabled", "from", "to", "source", "destination", "service", "application", "uuid", "@_uuid"]) {
+          if (key in item) ordered[key] = item[key];
+        }
+        for (const key of Object.keys(item)) if (!(key in ordered)) ordered[key] = item[key];
+        return JSON.stringify(ordered).slice(0, 1200);
+      }).join("\n");
       const times = items.map((item) => item?.receive_time || "").filter(Boolean).sort();
       const timeNote = times.length ? `（数据时间范围：${times[0]} → ${times[times.length - 1]}，共 ${items.length} 条）` : "";
       return `[${result.tool}] 共 ${items.length} 条${timeNote}：\n${head}`;
