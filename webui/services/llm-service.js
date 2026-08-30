@@ -142,7 +142,11 @@ function createLlmService({ configFile, choiceFile, environment = process.env, t
   async function resolveAction(input, { conversationId, actions }) {
     const list = Object.entries(actions).map(([key, action]) => `${key}: ${action.label}（如"${action.keywords[0]}"）`).join("\n");
     const text = await classify("意图规划",
-      `你是防火墙运维意图分类器。从动作列表选一个 key；无关咨询/方案/教学/画图类请求输出 {"action":null}；配置变更请求输出 {"action":"change"}；故障诊断请求输出 {"action":"diag"}；审计/配置变更查询输出 {"action":"audit"}。\n【多轮追问】需结合上下文：追问含义/细节输出 null；追问删除/禁用/封禁输出 change；追问流量/策略分析输出 diag。\n日志类查询若指定时间范围，提取 minutes；非日志查询 minutes 必须为 null。只输出 JSON：{"action":"<key>","minutes":<数字或null>}。\n动作列表：\n${list}\ndiag: 故障诊断`, withContext(input, conversationId));
+      `你是防火墙运维意图分类器。从动作列表选一个 key；若输入与防火墙查询无关输出 {"action":null}；若输入是配置变更请求（创建/删除/封禁/改策略）输出 {"action":"change"}；若输入是故障诊断请求（连不上/不通/访问不了/排查/诊断/健康检查/某IP什么情况/一直扫描/某个具体故障现象）输出 {"action":"diag"}；若输入是审计/配置变更查询（谁改的/审计/变更记录/谁修改/谁删了/配置变更）输出 {"action":"audit"}。
+注意：若输入是咨询/方案/教学/画图类请求（如何配置XX、XX是什么、帮我画个拓扑图、最佳实践建议、概念解释等）→ 输出 {"action":null}（系统会用自由问答回答，不要归为 diag）。
+【多轮追问】输入前可能附带【最近对话上下文】。若当前问题引用了上下文（如"那条/上面那条/刚才那个/这个结果/它/那个策略/那台设备/结合上面的结果继续/基于刚才的"等指代词或依赖前文才能理解）→ 属于追问：追问上轮结果的含义/细节/为什么 → {"action":null}；追问删除/禁用/封禁具体条目 → {"action":"change"}；追问那条对应的流量/策略分析 → {"action":"diag"}。
+【时间窗口 minutes】仅当动作是 traffic、threat、url 等日志查询且用户指定时间范围时提取分钟数：过去4小时=240、过去1小时=60、最近30分钟/半小时=30、最近10分钟=10、今天/最近1天=1440、过去2小时=120、过去6小时=360。用户没提时间 → minutes=null。**如果用户提到时间但动作不是日志查询，minutes 仍为 null**。
+只输出 JSON：{"action":"<key>","minutes":<数字或null>}。\n动作列表（含 diag）:\n${list}\ndiag: 故障诊断（连不上/不通/访问不了/排查/诊断/健康检查/什么情况）`, withContext(input, conversationId));
     if (!text) return null;
     const match = text.match(/"action"\s*:\s*("?)(\w+|null)\1/);
     if (!match) return null;
@@ -154,7 +158,17 @@ function createLlmService({ configFile, choiceFile, environment = process.env, t
   async function extractChange(input, { conversationId, changeTemplates }) {
     const templates = Object.entries(changeTemplates).map(([key, template]) => `${key}: ${template.label}（参数: ${template.params.join(", ")}）`).join("\n");
     const text = await classify("变更参数提取",
-      `你是防火墙配置变更解析器。从模板列表选 template 并提取参数。block_ip/allow_ip 仅用于创建新策略；move_security_rule 仅用于移动已有规则且 name 不能为空。精确规则名填 name，模糊规则名只提取核心子串到 keyword；多个 IP 封禁使用 block_ip_group 和 ips 数组。用户未指定位置时不要传 position。多轮追问只能引用上下文真实条目，不能编造。无法匹配输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${templates}`, withContext(input, conversationId));
+      `你是防火墙配置变更解析器。从模板列表选一个 template，并提取参数（ip 为合法 IPv4；name 允许字母/数字/点/下划线/连字符 [a-zA-Z0-9_.-]，规则名必须原样保留）。
+【重要区分规则】
+- block_ip / allow_ip：用于创建新的封禁/放行策略。即使提到置顶/最顶部，只要是创建新策略就用 block_ip / allow_ip。
+- move_security_rule：仅用于移动已有策略，必须有明确的已有规则名 name；"添加一条封禁XX的策略在最顶部" → block_ip；"把 block-social 移到 deny-all 上面" → move_security_rule（name=block-social, where=before, destination=deny-all）。
+- move_security_rule 的 where 取值 top/bottom/before/after：上面/之前=before，下/之后=after，最上面=top，最下面=bottom。
+- delete_security_rule、set_security_rule_disabled、set_security_rule_enabled：精确规则名填 name；模糊描述只提取最核心搜索子串到 keyword，去掉"的/带/有/含/按/在/里/上/下/规则/名字/名称"等停用词，不能把整段描述塞进 keyword；系统会列候选由用户确认。
+- allow_ip：从放行/允许/白名单/allow 输入提取合法 IPv4。
+- block_ip / allow_ip / block_ip_group 可用 params.position 指定创建后位置：最顶部=top、最底部=bottom、X上面=before+destination、X下面=after+destination；用户没说位置必须省略 position，避免无脑 top 改变原规则顺序。
+- block_ip_group：多个 IP 封禁并放入地址组；提取所有 IPv4 到 params.ips 数组，用户给组名则填 group_name，未给则由系统生成。**绝不能把多个 IP 用逗号拼成一个名字**（PAN-OS 不接受逗号），绝不能用 block_ip 单 IP 模板。
+【多轮追问】只可把上下文中真实存在的关键条目解析为 params.name，**禁止编造**；无法确定时 name 留空走 keyword 预检。
+若无法匹配模板输出 {"template":null}。只输出 JSON：{"template":"<key>","params":{...}}。\n${templates}`, withContext(input, conversationId));
     if (!text) return null;
     try {
       const parsed = JSON.parse((text.match(/\{[\s\S]*\}/) || ["{}"]) [0]);
@@ -170,7 +184,7 @@ function createLlmService({ configFile, choiceFile, environment = process.env, t
   }
 
   async function parseAudit(input) {
-    const text = await classify("审计解析", "你是防火墙审计日志查询解析器。提取 minutes（无则 60）和 object（security/address/all）。只输出 JSON。", input);
+    const text = await classify("审计解析", "你是防火墙审计日志查询解析器。从用户请求中提取：minutes（时间窗口分钟数，如10分钟前=10、最近1小时=60、今天=1440，无则默认60）；object（对象类型：策略=security、地址=address、全部=all）。只输出 JSON：{\"minutes\":<num>,\"object\":\"<type>\"}。", input);
     if (!text) return { minutes: 60, object: "all" };
     try {
       const parsed = JSON.parse((text.match(/\{[\s\S]*?\}/) || ["{}"]) [0]);
@@ -179,7 +193,7 @@ function createLlmService({ configFile, choiceFile, environment = process.env, t
   }
 
   async function parseDiagnostic(input, conversationId) {
-    const text = await classify("诊断规划", "你是网络诊断解析器。判断 connectivity、threat_profile 或 generic，并提取 ip、port、direction、target_label、minutes、probe（仅 ping/traceroute）和 around_time。无法判断输出 {\"type\":null}。只输出 JSON。", withContext(input, conversationId));
+    const text = await classify("诊断规划", "你是网络诊断解析器。判断用户症状属于：connectivity（连通性排查，涉及源/目的/IP/端口/连不上/不通/访问不了）、threat_profile（威胁源画像，涉及什么情况/一直扫描/攻击/画像且给定了IP）、generic（通用健康检查）。提取参数：ip（IPv4）、port、direction（inbound/outbound）、target_label（如外网）、minutes（最近10分钟=10、最近1小时=60、今天=1440，无则默认60）、probe（ping/测试连通/探测填 ping；追踪路由/traceroute 填 traceroute；否则不填）、around_time（仅用户指定现象发生具体时间点时填 YYYY/MM/DD HH:MM 或 HH:MM，未指定不填）。【多轮追问】用户引用前文时从上下文提取缺失的 ip/port 等参数。无法判断输出 {\"type\":null}。只输出 JSON：{\"type\":\"<t>\",\"params\":{}}。", withContext(input, conversationId));
     if (!text) return null;
     try {
       const parsed = JSON.parse((text.match(/\{[\s\S]*\}/) || ["{}"]) [0]);
@@ -195,7 +209,16 @@ function createLlmService({ configFile, choiceFile, environment = process.env, t
     const timeline = sections.find((section) => section.step === "流量时间线");
     const timelineContext = timeline?.result && timeline.result !== "（无时间线数据）" ? "\n【流量时间线】\n" + timeline.result.slice(0, 600) : "";
     const text = await classify("诊断综合",
-      `你是 PAN-OS 防火墙诊断专家。必须基于证据交叉推理：观察缺失不等于否定结论；直接证据优先；PAN-OS zone 是策略匹配核心；相关功能配置和运行数据均为空时，应判断为未配置/未启用而非臆测失败。verdict 开头必须说明数据时间范围，置信度需反映证据强弱。输出 JSON：{"verdict":"","confidence":"高/中/低","confidence_reason":"","evidence":[],"recommendation":""}。\n【用户症状】${input}\n【数据】\n${context}${statContext}${timelineContext}`,
+      `你是 PAN-OS 防火墙诊断专家。**禁止套模板**，必须真正读数据、交叉对照、做证据链推理。
+【重要推理原则】
+- **观察缺失 ≠ 否定结论**：流量日志没有 X 不等于 X 没发生；可能未到达防火墙、被前置设备丢掉、查询字段不正确、过滤窗口太窄或主机方向问题。涉及未观测到的关键证据时，置信度只能是中或低。
+- **直接证据 > 间接推断**。逐段检查用户提到的 IP/主机/对象是否出现及出现次数；未出现可报告为未被防火墙观测到，但不能跳到对象损坏/不存在等结论。
+- **PAN-OS zone 是核心**：策略匹配靠 zone，跨 zone 默认拒绝；先列 zone，再列策略。
+- 跨子网时 ARP 表空不等于主机不可达；路由缺失推断要克制，需看特定路由和转发。
+- 当用户描述与数据明显冲突（例如双方 IP 均未出现），verdict 要明确说明防火墙未观测到其交互，建议先在源主机实测确认前提，不要硬找根因。
+- **绝对优先级：功能未配置识别**。当 GP、VPN、IPSec、DHCP、HA 或特定 zone 间路由等相关配置和运行数据全部为空，结论应是**功能未配置 / 未启用 / 未启动**，而不是已配置但失败。流量有 ssl 不等于 GP 连接；reset-both 不等于 GP 被拒绝。
+- verdict 开头必须标注本结论基于的数据时间范围（最早 → 最晚）；若用户报告现象时间落在窗口外，明确说明本次数据无法证实/证伪。必须看时间线趋势，解释阶段性 deny/reset 和恢复，而非只给当前快照。
+输出 JSON：{"verdict":"一段话根因（开头标注数据时间范围；含[流量]、[策略]、[zone]等证据引用）","confidence":"高/中/低","confidence_reason":"为什么是这个置信度","evidence":["关键证据"],"recommendation":"具体到工具/命令的下一步"}。\n【用户症状】${input}\n【数据】\n${context}${statContext}${timelineContext}`,
       input, 120000);
     if (!text) return null;
     const match = text.match(/\{[\s\S]*?\}/);
@@ -227,7 +250,13 @@ function createLlmService({ configFile, choiceFile, environment = process.env, t
       return `[${result.tool}] 共 ${items.length} 条${timeNote}：\n${head}`;
     }).join("\n\n");
     const timeHint = /过去|最近|小时内|分钟|今天|昨天|小时前/.test(input) ? "\n【注意】必须说明实际返回的数据时间范围，若不覆盖用户要求需明确指出。" : "";
-    const text = await classify("查询匹配", `你是 PAN-OS 防火墙查询结果分析器。将用户语义映射到真实 zone、地址对象和规则字段，按 action 区分 allow/deny，直接说明匹配数量；无匹配时明确说明。引用条目名或关键字段，回答 1-3 段中文，不堆 JSON。`, `用户问句：${input}${timeHint}\n\n工具结果：\n${context}${buildConversationContext(conversationId) ? "\n\n" + buildConversationContext(conversationId) : ""}`, 30000);
+    const text = await classify("查询匹配", `你是 PAN-OS 防火墙查询结果分析器。用户的问句往往带语义（例如 Internet=源 zone Untrust 或外部，DMZ=目标 zone DMZ 或特定对象）。你需要：
+1. **语义映射**：将 Internet、DMZ、内部、外部、特定 IP 映射到实际 zone、地址对象或 any。
+2. **匹配筛选**：只从真实数据中选真正满足问题的条目，按 action 区分 allow/deny。
+3. **明确回答**：直接说明有/无/几条；无匹配时明确说没有匹配的策略，不能强行凑全放行规则。
+4. **完整汇报元数据**：当 get_firewall_info 返回 Dashboard General Information 风格元数据时，主动列出 GP/AV/Threat/WildFire/URL 模块版本与状态、Advanced Routing、Duplicate IP、Plugin DLP、Device Certificate Status、Uptime 等。设备清单/资产查询不能遗漏。
+5. 用 @_name 或关键字段引用匹配项；若问题引用前文，优先结合最近对话上下文，不要重复全量查询。
+输出 1-3 段简洁中文（≤350 字），不要堆 JSON。`, `用户问句：${input}${timeHint}\n\n工具结果：\n${context}${buildConversationContext(conversationId) ? "\n\n" + buildConversationContext(conversationId) : ""}`, 30000);
     return text || null;
   }
 

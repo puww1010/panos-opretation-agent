@@ -123,3 +123,39 @@ test("LLM service puts rule identifiers before descriptive fields in query conte
   const context = request.messages[1].content;
   assert.ok(context.indexOf('"@_name"') < context.indexOf('"description"'));
 });
+
+test("LLM service retains legacy prompt constraints before server helpers are removed", async (t) => {
+  const { configFile, choiceFile } = serviceFiles(t, {
+    providers: { deepseek: { model: "test-model", key: "test-key" } },
+  }, { current: "deepseek" });
+  const systems = [];
+  const replies = [
+    '{"action":"security","minutes":null}',
+    '{"template":null}',
+    '{"type":"connectivity","params":{}}',
+    '{"verdict":"ok","confidence":"低","confidence_reason":"证据不足","evidence":[],"recommendation":"复查"}',
+    "查询摘要",
+  ];
+  const service = createLlmService({
+    configFile,
+    choiceFile,
+    environment: {},
+    fetcher: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      systems.push(request.messages[0].content);
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: replies.shift() } }] }) };
+    },
+  });
+
+  await service.resolveAction("查看最近一小时流量", { conversationId: null, actions: { security: { label: "安全策略", keywords: ["策略"] } } });
+  await service.extractChange("封禁 198.51.100.10", { conversationId: null, changeTemplates: { block_ip: { label: "封禁 IP", params: ["ip"] } } });
+  await service.parseDiagnostic("连通性诊断", null);
+  await service.synthesizeDiagnostic("GP 连不上", [{ step: "GP", result: "无配置" }]);
+  await service.summarizeQuery("最近一小时的设备资产", "assets", [{ tool: "get_firewall_info", data: {} }]);
+
+  assert.match(systems[0], /如果用户提到时间但动作不是日志查询/);
+  assert.match(systems[1], /绝不能把多个 IP 用逗号拼成一个名字/);
+  assert.match(systems[2], /around_time/);
+  assert.match(systems[3], /功能未配置/);
+  assert.match(systems[4], /完整汇报元数据/);
+});
