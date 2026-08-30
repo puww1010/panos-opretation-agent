@@ -5,6 +5,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { createPanosAdapter } = require("./adapters/panos-adapter");
+const { createLlmService } = require("./services/llm-service");
 const { createTaskService, normalizeChangeParams } = require("./services/task-service");
 const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
 const { planFingerprint, transitionTask } = require("./lib/task-governance");
@@ -124,92 +125,30 @@ function authTouchIfUserAction(req, token) {
 }
 loadAuth();
 
-// ── LLM 提供方（llm-config.json 驱动，可运行时编辑）──
-const LLM_SEED = {
-  deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY" },
-  qwen:     { label: "通义千问", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "Qwen-3.8", env: "QWEN_API_KEY" },
-  kimi:     { label: "Kimi",     base_url: "https://api.moonshot.cn/v1", model: "Kimi K3", env: "KIMI_API_KEY" },
-};
 const LLM_CONFIG_PATH = process.env.LLM_CONFIG || path.join(__dirname, "llm-config.json");
-let LLM_PROVIDERS = {};
-function loadLLMConfig() {
-  const data = JSON.parse(JSON.stringify(LLM_SEED));
-  let onDisk = {};
-  try { onDisk = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8")); } catch {}
-  const providers = onDisk.providers || {};
-  for (const [k, v] of Object.entries(LLM_SEED)) {
-    const disk = providers[k];
-    if (disk) {
-      data[k] = { ...LLM_SEED[k], ...disk };
-      if (disk.key) process.env[LLM_SEED[k].env] = disk.key;
-    } else if (process.env[LLM_SEED[k].env]) {
-      // 文件未配置但进程 env 有，自动接管（start.sh 兼容）
-      data[k] = { ...LLM_SEED[k], key: process.env[LLM_SEED[k].env] };
-    }
-  }
-  // 文件里有的自定义提供方（非种子）
-  for (const [k, v] of Object.entries(providers)) {
-    if (!data[k]) {
-      data[k] = { label: v.label || k, base_url: v.base_url || "", model: v.model || "", env: v.env || (k.toUpperCase() + "_API_KEY"), key: v.key || "" };
-      if (v.key && data[k].env) process.env[data[k].env] = v.key;
-    }
-  }
-  LLM_PROVIDERS = data;
-}
-loadLLMConfig();
-function saveLLMConfig() {
-  const onDisk = { _default: currentLLM, providers: {} };
-  for (const [k, v] of Object.entries(LLM_PROVIDERS)) {
-    onDisk.providers[k] = { label: v.label, base_url: v.base_url, model: v.model, env: v.env, key: v.key };
-  }
-  fs.writeFileSync(LLM_CONFIG_PATH, JSON.stringify(onDisk, null, 2), { mode: 0o600 });
-  try { fs.chmodSync(LLM_CONFIG_PATH, 0o600); } catch {}
-}
-let currentLLM = "keyword";
-// 用户选择持久化：最后一次 select 写 cfgs/llm-choice.json，重启/刷新都保持，只有手动切换才变。
-// （此前"刷新回默认"导致用户选 Kimi 但页面刷新后任务实际跑 deepseek，造成混淆）
 const LLM_CHOICE_FILE = process.env.LLM_CHOICE_FILE || path.join(__dirname, "..", "cfgs", "llm-choice.json");
-function loadLLMChoice() {
-  try { return JSON.parse(fs.readFileSync(LLM_CHOICE_FILE, "utf-8")).current; } catch { return null; }
-}
-function saveLLMChoice(c) {
-  try { fs.writeFileSync(LLM_CHOICE_FILE, JSON.stringify({ current: c, updatedAt: new Date().toISOString() })); } catch {}
-}
-try {
-  // 优先：用户上次选择（持久化）> llm-config.json 的 _default > 进程 env > 首个有 key 的提供方
-  const chosen = loadLLMChoice();
-  if (chosen && LLM_PROVIDERS[chosen] && LLM_PROVIDERS[chosen].key) currentLLM = chosen;
-  else {
-    const diskDef = JSON.parse(fs.readFileSync(LLM_CONFIG_PATH, "utf-8"))._default;
-    if (diskDef && LLM_PROVIDERS[diskDef] && LLM_PROVIDERS[diskDef].key) currentLLM = diskDef;
-    else currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
-  }
-} catch {
-  const chosen = loadLLMChoice();
-  if (chosen && LLM_PROVIDERS[chosen] && LLM_PROVIDERS[chosen].key) currentLLM = chosen;
-  else currentLLM = process.env.LLM_PROVIDER || Object.keys(LLM_PROVIDERS).find((k) => LLM_PROVIDERS[k].key) || "keyword";
-}
-
-// LLM 临时选择：默认读 llm-config.json 的 _default（deepseek），UI 选 qwen 后内存一直保持 qwen。
-// "刷新页面回默认"语义=重启控制台（进程重启时重新读 _default），不是浏览器 F5。
-// 不做定时器重置——避免连续发任务时每个任务结束后被意外重置。
 
 const history = [];      // 查询历史
-const llmLogs = [];      // LLM 决策日志（证明 LLM 规划起作用）
 const metricsBuffer = []; // KPI 指标采样环形缓冲（报表预留，见 spec §12.1 metrics 表）
 const MAX_HISTORY = 20;
-const MAX_LLM_LOGS = 50;
 const MAX_METRICS = 720; // 指标采样上限（10s 一次 ≈ 2 小时滚动窗口）
 
+let taskService;
+const llmService = createLlmService({
+  configFile: LLM_CONFIG_PATH,
+  choiceFile: LLM_CHOICE_FILE,
+  taskLister: () => taskService ? taskService.listTasks() : [],
+});
+
 // Task Service owns task/audit in-memory state and JSON persistence. The server only composes dependencies.
-const taskService = createTaskService({
+taskService = createTaskService({
   panosAdapter,
   taskFile: TASKS_FILE,
   auditFile: AUDIT_FILE,
   auditLogReader: (firewall) => callTool("get_config_logs", { nlogs: 200 }, firewall),
   actionDefinitions: () => ACTIONS,
   toolCaller: callTool,
-  querySummarizer: summarizeQuery,
+  querySummarizer: (...args) => llmService.summarizeQuery(...args),
   queryHistoryRecorder: (entry) => {
     history.unshift({ ts: new Date().toLocaleString("zh-CN"), ...entry });
     if (history.length > MAX_HISTORY) history.pop();
@@ -226,14 +165,14 @@ const taskService = createTaskService({
     formatTop: fmtTop,
     rawToolCaller: callToolRaw,
     directOp,
-    synthesize: llmSynthesize,
+    synthesize: (...args) => llmService.synthesizeDiagnostic(...args),
   },
   deferExecution: true,
 });
 
-function recordLLM(role, input, output, ms) {
-  llmLogs.unshift({ ts: new Date().toLocaleString("zh-CN"), provider: currentLLM, role, input: String(input).slice(0, 80), output: String(output || "").slice(0, 200), ms });
-  if (llmLogs.length > MAX_LLM_LOGS) llmLogs.pop();
+function llmProviderLabel() {
+  const current = llmService.getCurrent();
+  return llmService.getProvider(current)?.label || current;
 }
 
 // ── 动作清单（查询用）──
@@ -321,40 +260,7 @@ function feishuDaemonRunning() {
   });
 }
 async function llmClassify(role, system, input, timeoutMs = 20000) {
-  const p = LLM_PROVIDERS[currentLLM];
-  if (!p || !p.key) return null;
-  // Kimi（k2.6 等思考型模型）响应慢，规划类调用默认 20s 常超时 → 自动放宽到 45s
-  const effectiveTimeout = (currentLLM === "kimi" && timeoutMs <= 20000) ? 45000 : timeoutMs;
-  // 429 自动重试：Moonshot/Kimi 限流频繁，单次 429 等 3s 通常可恢复（kimi 1 个任务多次调用易撞 rpm 限制）
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), effectiveTimeout);
-    const t0 = Date.now();
-    try {
-      const r = await fetch(`${p.base_url}/chat/completions`, {
-        method: "POST", signal: ac.signal,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
-        body: JSON.stringify({ model: p.model, ...(currentLLM === "kimi" ? {} : { temperature: 0 }),
-          messages: [{ role: "system", content: system }, { role: "user", content: input }],
-          // deepseek / qwen3.8-max / kimi-k2.6 均为思考型模型：禁用 thinking 避免花大量时间生成内部推理
-          // （实测 qwen3.8-max 不禁用→107s，禁用→9.4s；kimi-k2.6 不禁用→正文空（token 全被 thinking 吃掉），禁用→993字符）
-          ...(["deepseek", "qwen", "kimi"].includes(currentLLM) ? { thinking: { type: "disabled" } } : {}) }),
-      });
-      if (r.status === 429 && attempt === 0) {
-        // 限流：等 3s 重试一次
-        console.warn(`[agent] LLM ${currentLLM} 429 限流，3s 后重试`);
-        await new Promise((r) => setTimeout(r, 3000));
-        continue;
-      }
-      if (!r.ok) { console.error("[agent] LLM http", r.status); return null; }
-      const d = await r.json();
-      const text = d.choices?.[0]?.message?.content || "";
-      recordLLM(role, input, text, Date.now() - t0);
-      return text;
-    } catch (e) { console.error("[agent] LLM error:", e.message); recordLLM(role, input, "ERROR: " + e.message, Date.now() - t0); return null; }
-    finally { clearTimeout(timer); }
-  }
-  return null;
+  return llmService.classify(role, system, input, timeoutMs);
 }
 
 async function llmResolveAction(input, conversationId) {
@@ -667,11 +573,11 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
   let action = null, fromLLM = false, minutes = null;
   for (const [k, v] of Object.entries(ACTIONS)) { if (k === input || v.label === input) action = k; }
   if (!action) {
-    const resolved = await llmResolveAction(input, conv.conversationId);
+    const resolved = await llmService.resolveAction(input, { conversationId: conv.conversationId, actions: ACTIONS });
     if (resolved) { action = resolved.action; minutes = resolved.minutes; if (action) fromLLM = true; }
   }
   if (action === "change") {
-    const c = await llmExtractChange(input, conv.conversationId);
+    const c = await llmService.extractChange(input, { conversationId: conv.conversationId, changeTemplates: CHANGE_TEMPLATES });
     if (!c) return { error: "无法解析变更意图（支持：创建/删除地址对象、封禁/放行 IP、移动/删除/禁用/启用安全策略）" };
     const tmpl = CHANGE_TEMPLATES[c.template];
     const params = normalizeChangeParams(c.template, c.params);
@@ -688,7 +594,7 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
     } else {
       t.steps.push("变更计划已生成，等待审批");
     }
-    t.llm = currentLLM;  // 记录处理该任务时实际使用的 LLM provider key
+    t.llm = llmService.getCurrent();  // 记录处理该任务时实际使用的 LLM provider key
     taskService.addTask(t);
     taskService.recordAudit(t, { taskId: t.id, action: "created", from: null, to: t.status, at: new Date().toISOString() });
     return needPrecheck && t.status === "awaiting_selection"
@@ -696,22 +602,22 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
       : { taskId: t.id, status: t.status, plan: t.plan };
   }
   if (action === "audit") {
-    const a = await llmParseAudit(input);
+    const a = await llmService.parseAudit(input);
     const t = taskService.dispatchTask("audit", input, { firewall, source, audit: a, conversationId: conv.conversationId, replyTo: conv.replyTo }, (task) => {
-      task.llm = currentLLM;
-      task.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+      task.llm = llmService.getCurrent();
+      task.decision = `LLM 规划 → 审计查询（${a.minutes} 分钟内${a.object}）（${llmProviderLabel()}）`;
       task.steps.push(task.decision);
     }, (task) => taskService.runAudit(task));
     return { taskId: t.id, status: t.status, type: "audit" };
   }
   if (action === "diag") {
-    const d = await llmParseDiag(input, conv.conversationId);
+    const d = await llmService.parseDiagnostic(input, conv.conversationId);
     // 诊断规划判定为非诊断请求（type:null，如"画个拓扑图"）→ 降级自由问答，
     // 不再生硬报"无法解析诊断意图"——让 LLM 分析推理回答（16:48 飞书案例根因）
     if (!d || !d.type) return await createFreeAnswer(input, firewall, source, conv);
     const t = taskService.dispatchTask("diag", input, { firewall, source, diag: d, conversationId: conv.conversationId, replyTo: conv.replyTo }, (task) => {
-      task.llm = currentLLM;
-      task.decision = `LLM 规划 → 诊断 ${d.type}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+      task.llm = llmService.getCurrent();
+      task.decision = `LLM 规划 → 诊断 ${d.type}（${llmProviderLabel()}）`;
       task.steps.push(task.decision);
     }, (task) => taskService.runDiagnostic(task));
     return { taskId: t.id, status: t.status, type: "diag" };
@@ -722,8 +628,8 @@ async function createTaskFromInput(input, firewall, source, opts = {}) {
   }
   if (action && ACTIONS[action]) {
     const t = taskService.dispatchTask("query", input, { action, firewall, source, minutes, conversationId: conv.conversationId, replyTo: conv.replyTo }, (task) => {
-      if (fromLLM) task.llm = currentLLM;
-      task.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
+      if (fromLLM) task.llm = llmService.getCurrent();
+      task.decision = fromLLM ? `LLM 规划 → 动作 ${action}（${llmProviderLabel()}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`;
       task.steps.push(task.decision);
     }, (task) => taskService.runQuery(task, action));
     return { taskId: t.id, status: t.status, type: "query", label: ACTIONS[action].label };
@@ -739,24 +645,11 @@ async function createFreeAnswer(input, firewall, source, opts = {}) {
     const fw = await callTool("get_firewall_info", {}, firewall).catch(() => null);
     if (fw && fw.hostname) fwCtx = `设备: ${fw.hostname} ${fw.model} SW${fw["sw-version"]}`;
   } catch {}
-  const text = await llmClassify("自由问答",
-    `你是 PAN-OS 防火墙运维专家（会思考、分析、推理后再回答）。用户的问题没有匹配到系统的标准动作（设备状态/安全策略/威胁日志/流量日志/完整巡检/诊断/变更审批/审计），请做以下三件事：
-
-1. **分析问题意图**：判断用户到底想干什么（可能问的是网络概念、配置建议、排错思路、最佳实践、命令语法、License 等）。
-2. **推理回答**：结合你的 PAN-OS 知识给出有深度的答案（配置步骤/排查思路/相关命令 show 或 request、注意事项）。
-3. **给出建议**：说明如何用本系统或防火墙 CLI 进一步验证（如"可以用系统里的'完整巡检'跑一遍"、"在防火墙 CLI 执行 show session info"）。
-
-要求：
-- 不要敷衍，不要只说"无法处理"。
-- 如果问题其实是标准动作能解决的（例如用户在绕弯子问设备状态），先指出"这可以用系统 XX 功能直接查看"，再补充答案。
-- 200-400 字，条理清晰，用 markdown 列表。
-【多轮追问】输入前可能附带【最近对话上下文】（含用户之前的问句、结果、关键条目名）。若当前问题引用前文（"那条/上面那条/刚才/它/第二条/这个结果"），**必须基于上下文中的真实条目和数据回答**（如引用上轮结果里的具体策略名/设备/数值），不要泛泛而谈，不要编造上下文里没有的条目。`,
-    `${fwCtx ? fwCtx + "\n" : ""}用户问题：${withCtx(input, opts.conversationId)}`,
-    60000);
+  const text = await llmService.answerFree(input, { conversationId: opts.conversationId, firewallContext: fwCtx });
   const t = taskService.createTask("chat", input, { firewall, source, conversationId: opts.conversationId, replyTo: opts.replyTo });
-  t.llm = currentLLM;
+  t.llm = llmService.getCurrent();
   if (source) t.source = source;  // 标记任务来源（'feishu'/'web'/'bridge'），用于 WebUI 区分展示
-  t.decision = `LLM 兜底 → 自由问答（${LLM_PROVIDERS[currentLLM]?.label || currentLLM}）`;
+  t.decision = `LLM 兜底 → 自由问答（${llmProviderLabel()}）`;
   t.steps.push(t.decision);
   t.result = { answer: text || "抱歉，LLM 未能给出回答。您可以换个说法，或试试：设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4。", sentTo: source === "feishu" ? "feishu" : "web" };
   t.status = "done";
@@ -1259,50 +1152,35 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/llm/reset") {
       // 语义（13:34 更新）：用户选择持久化——刷新/重启都保持上次选择（读 llm-choice.json），
       // 不再强制回 _default。只有手动 /api/llm/select 切换才改变。
-      send(200, { current: currentLLM, note: "保持用户选择" });
+      send(200, { current: llmService.getCurrent(), note: "保持用户选择" });
       return;
     }
     if (req.method === "GET" && req.url === "/api/actions") {
       send(200, { actions: Object.fromEntries(Object.entries(ACTIONS).map(([k, v]) => [k, v.label])),
-        llm: currentLLM !== "keyword", model: currentLLM !== "keyword" ? LLM_PROVIDERS[currentLLM].model : null });
+        llm: llmService.getCurrent() !== "keyword", model: llmService.getCurrent() !== "keyword" ? llmService.getModel() : null });
       return;
     }
     if (req.method === "GET" && req.url === "/api/llm") {
-      send(200, { current: currentLLM,
-        providers: Object.fromEntries(Object.entries(LLM_PROVIDERS).map(([k, v]) => [k, {
-          label: v.label, model: v.model, base_url: v.base_url, env: v.env,
-          configured: Boolean(v.key),
-          key_hint: v.key ? (v.key.slice(0, 4) + "***" + v.key.slice(-3)) : null,
-        }])) });
+      send(200, llmService.getPublicConfig());
       return;
     }
     if (req.method === "POST" && req.url === "/api/llm/config") {
       const { provider, base_url, model, key, env, label } = JSON.parse(await body());
-      if (!provider || !/^[a-z0-9_-]+$/.test(provider)) { send(400, { error: "provider 必填且仅小写字母数字下划线" }); return; }
-      const seed = LLM_SEED[provider] || { label: provider, env: (env || provider.toUpperCase() + "_API_KEY") };
-      LLM_PROVIDERS[provider] = {
-        label: label || seed.label,
-        base_url: base_url || seed.base_url,
-        model: model || seed.model,
-        env: env || seed.env,
-        key: key || "",
-      };
-      try { saveLLMConfig(); } catch (e) { send(500, { error: "写入 llm-config.json 失败：" + e.message }); return; }
-      send(200, { ok: true, provider, configured: Boolean(LLM_PROVIDERS[provider].key) });
+      try { send(200, llmService.saveProvider({ provider, base_url, model, key, env, label })); }
+      catch (e) { send(e.message === "provider 必填且仅小写字母数字下划线" ? 400 : 500, { error: e.message === "provider 必填且仅小写字母数字下划线" ? e.message : "写入 llm-config.json 失败：" + e.message }); }
       return;
     }
     if (req.method === "POST" && req.url === "/api/llm/config/delete") {
       const { provider } = JSON.parse(await body());
-      if (LLM_PROVIDERS[provider]) { delete LLM_PROVIDERS[provider]; try { saveLLMConfig(); } catch {} }
-      send(200, { ok: true });
+      try { send(200, llmService.deleteProvider(provider)); } catch { send(200, { ok: true }); }
       return;
     }
     if (req.method === "POST" && req.url === "/api/llm/select") {
       const { provider } = JSON.parse(await body());
       // 用户选择持久化：写 cfgs/llm-choice.json，刷新/重启都保持，只有手动切换才变
-      if (provider === "keyword") { currentLLM = "keyword"; saveLLMChoice("keyword"); send(200, { current: currentLLM }); return; }
-      if (LLM_PROVIDERS[provider] && LLM_PROVIDERS[provider].key) { currentLLM = provider; saveLLMChoice(provider); send(200, { current: currentLLM }); return; }
-      const v = LLM_PROVIDERS[provider];
+      const selected = llmService.selectProvider(provider);
+      if (selected.ok) { send(200, { current: selected.current }); return; }
+      const v = selected.provider;
       const SIGNUP = { deepseek: "https://platform.deepseek.com", qwen: "https://bailian.console.aliyun.com", kimi: "https://platform.moonshot.cn" };
       send(400, {
         error: "「" + (v?.label || provider) + "」未配置 API key",
@@ -1316,12 +1194,12 @@ const server = http.createServer(async (req, res) => {
       send(200, { firewalls: fws, multi: fws.length > 1 });
       return;
     }
-    if (req.method === "GET" && req.url === "/api/llm/log") { send(200, { logs: llmLogs }); return; }
+    if (req.method === "GET" && req.url === "/api/llm/log") { send(200, { logs: llmService.getLogs() }); return; }
     if (req.method === "POST" && req.url === "/api/llm/test") {
       const { text } = JSON.parse(await body());
       const t0 = Date.now();
-      const out = await llmClassify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/inspect(完整巡检)/change(变更)/diag(诊断)/null(无关)", text || "");
-      send(200, { output: out, ms: Date.now() - t0, provider: currentLLM });
+      const out = await llmService.classify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/inspect(完整巡检)/change(变更)/diag(诊断)/null(无关)", text || "");
+      send(200, { output: out, ms: Date.now() - t0, provider: llmService.getCurrent() });
       return;
     }
     if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks: taskService.listTasks() }); return; }
