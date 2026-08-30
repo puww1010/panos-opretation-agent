@@ -12,6 +12,7 @@ function createPanosAdapter({
   sourcePath,
   workingDirectory,
   directFirewall,
+  loadDirectApiKey,
   toolRoutes,
   callMcpTool,
   callDirectTool,
@@ -46,7 +47,16 @@ async function connect() {
 
 
 const DIRECT_FW = directFirewall || (cfgPath && fs.existsSync(cfgPath) ? (JSON.parse(fs.readFileSync(cfgPath, "utf-8")).firewalls[0] || {}) : {});
-const DIRECT_KEY = DIRECT_FW.api_key || "";
+function readDirectApiKey(firewallName) {
+  if (!firewallName) return "";
+  try {
+    const { Entry } = require(path.join(PANOS_MCP_DIR, "node_modules", "@napi-rs", "keyring"));
+    return new Entry("panos-mcp", firewallName).getPassword() || "";
+  } catch {
+    return "";
+  }
+}
+const DIRECT_KEY = DIRECT_FW.api_key || (loadDirectApiKey || readDirectApiKey)(DIRECT_FW.name) || "";
 const DIRECT_HOST = (() => { const h = DIRECT_FW.host || ""; return h.startsWith("http") ? h.replace(/^https?:\/\//, "").replace(/\/$/, "").replace(/:\d+$/, "") : h.replace(/\/$/, ""); })();
 const DIRECT_PORT = 443;
 

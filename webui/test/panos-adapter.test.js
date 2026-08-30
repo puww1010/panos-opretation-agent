@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const https = require("node:https");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
@@ -42,4 +44,34 @@ test("adapter exposes only the default firewall display target", () => {
   const adapter = createPanosAdapter({ directFirewall: { name: "lab-fw", host: "198.51.100.1", api_key: "test-secret" } });
 
   assert.deepEqual(adapter.getDefaultFirewall(), { name: "lab-fw", host: "198.51.100.1" });
+});
+
+test("adapter reuses the credential provider for direct tools after config key migration", async () => {
+  const originalRequest = https.request;
+  let requestedPath = "";
+  https.request = (options, callback) => {
+    requestedPath = options.path;
+    const response = new EventEmitter();
+    process.nextTick(() => {
+      callback(response);
+      response.emit("data", "<response status='success'><result><num-active>7</num-active></result></response>");
+      response.emit("end");
+    });
+    const request = new EventEmitter();
+    request.end = () => {};
+    return request;
+  };
+
+  try {
+    const adapter = createPanosAdapter({
+      directFirewall: { name: "lab-fw", host: "198.51.100.1" },
+      loadDirectApiKey: (name) => name === "lab-fw" ? "TEST_KEY" : "",
+      toolRoutes: { routes: { get_active_sessions: "direct" }, _default: "mcp" },
+    });
+
+    assert.match((await adapter.callTool("get_active_sessions", {})).raw, /num-active/);
+    assert.match(requestedPath, /key=TEST_KEY/);
+  } finally {
+    https.request = originalRequest;
+  }
 });
