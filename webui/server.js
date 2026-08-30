@@ -5,6 +5,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { createPanosAdapter } = require("./adapters/panos-adapter");
+const { createAuthService } = require("./services/auth-service");
 const { createDashboardService } = require("./services/dashboard-service");
 const { createLlmService } = require("./services/llm-service");
 const { createTaskService, normalizeChangeParams } = require("./services/task-service");
@@ -107,28 +108,22 @@ function authTouch(token) {
   if (Date.now() - _lastAuthWrite > 60000) { _lastAuthWrite = Date.now(); saveAuth(); }
 }
 function authCheck(req) {
-  // 从 Authorization: Bearer <t> 或 ?token=<t> 读取；internal_token 同样有效（飞书 bridge 用，不受空闲超时影响）
-  const h = req.headers["authorization"] || "";
-  let t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-  if (!t && req.url.includes("token=")) t = decodeURIComponent((req.url.match(/[?&]token=([^&]*)/) || [])[1] || "");
-  if (!t) return false;
-  if (t === authData.internal_token) return true; // 内部令牌不走用户会话空闲超时
-  return authValid(t);
+  return authService.checkRequest(req);
 }
 // 用户主动操作类接口：通过认证后刷新 lastSeen（轮询类 GET 不在此列——挂机不续命）
 function authTouchIfUserAction(req, token) {
-  if (!token || token === authData.internal_token) return;
+  if (!token || authService.isInternalToken(token)) return;
   const p = req.url.split("?")[0];
   if (/^\/api\/task\//.test(p) || p === "/api/llm/select" || p === "/api/llm/save" || p === "/api/llm/del"
     || p === "/api/auth/change-password" || p === "/api/feishu/send" || p === "/api/feishu/push-report"
     || p === "/api/tasks/clean" || p === "/api/auth/keepalive") {
-    authTouch(token);
+    authService.touch(token);
   }
 }
-loadAuth();
 
 const LLM_CONFIG_PATH = process.env.LLM_CONFIG || path.join(__dirname, "llm-config.json");
 const LLM_CHOICE_FILE = process.env.LLM_CHOICE_FILE || path.join(__dirname, "..", "cfgs", "llm-choice.json");
+const authService = createAuthService({ authFile: AUTH_FILE });
 
 const dashboardService = createDashboardService({
   callTool,
@@ -808,32 +803,28 @@ const server = http.createServer(async (req, res) => {
         // 登录：校验用户名密码，签发会话 token（带空闲超时配置）
         let cred = {};
         try { cred = JSON.parse(await body()); } catch (e) { cred = {}; }
-        if (cred.username === authData.username && sha256(cred.password || "") === authData.password_hash) {
-          send(200, { ok: true, token: authIssueToken(), username: authData.username, expiresIn: AUTH_SESSION_DAYS * 86400, idleMinutes: IDLE_MINUTES });
+        const login = authService.login(cred);
+        if (login.ok) {
+          send(200, login);
         } else {
           send(401, { error: "用户名或密码错误" });
         }
         return;
       }
       if (req.method === "POST" && urlPath0 === "/api/auth/logout") {
-        const h = req.headers["authorization"] || "";
-        const t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-        if (t && authData.sessions[t]) { delete authData.sessions[t]; saveAuth(); }
-        send(200, { ok: true });
+        send(200, authService.logout(authService.tokenFromRequest(req)));
         return;
       }
       if (req.method === "GET" && urlPath0 === "/api/auth/check") {
         const ok = authCheck(req);
-        send(ok ? 200 : 401, ok ? { ok: true, username: authData.username, idleMinutes: IDLE_MINUTES } : { error: "未认证" });
+        send(ok ? 200 : 401, ok ? { ok: true, username: authService.getUsername(), idleMinutes: authService.idleMinutes } : { error: "未认证" });
         return;
       }
       // 保持登录（空闲警告弹窗点击"保持登录"时调用，刷新 lastSeen）
       if (req.method === "POST" && urlPath0 === "/api/auth/keepalive") {
         if (!authCheck(req)) { send(401, { error: "未认证或登录已过期" }); return; }
-        const h = req.headers["authorization"] || "";
-        const t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-        if (t && t !== authData.internal_token) authTouch(t);
-        send(200, { ok: true, idleMinutes: IDLE_MINUTES });
+        authService.touch(authService.tokenFromRequest(req));
+        send(200, { ok: true, idleMinutes: authService.idleMinutes });
         return;
       }
       // 修改密码：需已认证 + 校验旧密码；成功后清空所有会话（含当前），强制重新登录
@@ -841,15 +832,8 @@ const server = http.createServer(async (req, res) => {
         if (!authCheck(req)) { send(401, { error: "未认证或登录已过期，请重新登录" }); return; }
         let cred = {};
         try { cred = JSON.parse(await body()); } catch (e) { cred = {}; }
-        const oldPw = String(cred.old_password || "");
-        const newPw = String(cred.new_password || "");
-        if (sha256(oldPw) !== authData.password_hash) { send(400, { error: "旧密码不正确" }); return; }
-        if (newPw.length < 8) { send(400, { error: "新密码至少 8 位" }); return; }
-        if (newPw === oldPw) { send(400, { error: "新密码不能与旧密码相同" }); return; }
-        authData.password_hash = sha256(newPw);
-        authData.sessions = {}; // 清空全部会话，强制重新登录
-        fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2));
-        send(200, { ok: true, message: "密码已修改，请重新登录" });
+        const changed = authService.changePassword(authService.tokenFromRequest(req), cred);
+        send(changed.ok ? 200 : 400, changed.ok ? changed : { error: changed.error });
         return;
       }
       // 其余 API：统一认证拦截（401 让前端显示登录页）；用户主动操作类接口通过后刷新 lastSeen
