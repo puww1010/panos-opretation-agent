@@ -24,3 +24,15 @@ test("static router serves the root page and rejects traversal-like paths", () =
   assert.equal(router.handle({ method: "GET", url: "/assets/%2e%2e/server.js" }, traversal), false);
   assert.equal(traversal.state.status, null);
 });
+
+test("topology page exposes data-driven views, semantic zoom, and a node detail drawer", () => {
+  const router = createStaticRouter({ rootDirectory: path.join(__dirname, "..") });
+  const root = response();
+
+  assert.equal(router.handle({ method: "GET", url: "/" }, root), true);
+  assert.match(root.state.body, /id="topoModeStructure"/);
+  assert.match(root.state.body, /id="topoModeRisk"/);
+  assert.match(root.state.body, /id="topoDrawer"/);
+  assert.match(root.state.body, /function setTopoMode\(mode\)/);
+  assert.match(root.state.body, /function syncTopoSemanticZoom\(\)/);
+  assert.match(root.state.body, /ARP 推断邻居关系/);

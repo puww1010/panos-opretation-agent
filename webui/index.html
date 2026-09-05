@@ -390,8 +390,11 @@
   .topo-scroll { flex:1; overflow-y:auto; padding:16px 22px 30px; }
   .topo-inner { max-width:1200px; margin:0 auto; }
   .topo-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+  .topo-mode { display:inline-flex; padding:2px; border:1px solid var(--border); border-radius:9px; background:var(--card); }
+  .topo-mode .btn { border:0; padding:4px 10px; font-size:11.5px; }
+  .topo-mode .btn.active { color:#fff; background:var(--accent); }
   .topo-canvas { position:relative; background:var(--card); border:1px solid var(--border); border-radius:14px;
-    overflow:hidden; box-shadow:0 1px 3px rgba(15,23,42,.05); }
+    overflow:hidden; min-height:580px; box-shadow:0 1px 3px rgba(15,23,42,.05); }
   .topo-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:13px; }
   .topo-tip { position:absolute; top:12px; right:12px; max-width:300px; background:var(--card); border:1px solid var(--border2);
     border-radius:10px; padding:10px 13px; font-size:12px; color:var(--text); box-shadow:0 8px 24px rgba(15,23,42,.14);
@@ -403,13 +406,35 @@
   .topo-legend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:-1px; }
   .topo-n { cursor:pointer; }
   .topo-n:hover .tn-box { filter:brightness(.94); }
+  .topo-n.selected .tn-box { stroke:var(--accent); stroke-width:2.5; filter:drop-shadow(0 0 7px rgba(22,104,220,.45)); }
+  .topo-n.selected > rect { stroke:var(--accent); stroke-width:2.5; filter:drop-shadow(0 0 7px rgba(22,104,220,.45)); }
   .topo-n .tn-label { font-size:11px; fill:var(--text); font-weight:600; }
   .topo-n .tn-sub { font-size:9.5px; fill:var(--muted); font-family:var(--mono); }
-  .topo-edge { stroke:#cbd5e1; stroke-width:1.5; }
+  .topo-edge { stroke:#cbd5e1; stroke-width:1.5; fill:none; }
+  .topo-edge.confirmed { stroke:#2563eb; stroke-width:1.8; }
+  .topo-edge.inferred { stroke:#94a3b8; stroke-dasharray:4 4; }
+  .topo-edge.down { stroke:var(--red); stroke-dasharray:5 3; }
   .topo-edge-label { font-size:9px; fill:#94a3b8; font-family:var(--mono); }
   .topo-zone { font-size:10px; font-weight:600; letter-spacing:1px; }
   .topo-if-state { font-size:8.5px; font-weight:700; }
   .topo-fw-box { filter:drop-shadow(0 4px 10px rgba(22,104,220,.25)); }
+  .topo-zone-box { fill:color-mix(in srgb, var(--accent) 4%, transparent); stroke:#93c5fd; stroke-dasharray:5 4; }
+  .topo-zone-box.risk { fill:rgba(220,38,38,.04); stroke:#fca5a5; }
+  .topo-drawer { position:absolute; top:12px; right:12px; width:min(330px,calc(100% - 24px)); max-height:calc(100% - 24px); overflow:auto;
+    background:var(--card); border:1px solid var(--border2); border-radius:12px; padding:14px; z-index:8; box-shadow:0 14px 38px rgba(15,23,42,.18); }
+  .topo-drawer-head { display:flex; align-items:flex-start; gap:10px; margin-bottom:10px; }
+  .topo-drawer-title { flex:1; font-size:14px; font-weight:700; color:var(--title); }
+  .topo-drawer-sub { font-size:11px; color:var(--muted); margin-top:2px; }
+  .topo-drawer-close { border:0; background:transparent; color:var(--muted); font-size:20px; line-height:1; cursor:pointer; }
+  .topo-drawer dl { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:6px 12px; margin:10px 0 14px; font-size:12px; }
+  .topo-drawer dt { color:var(--dim); }
+  .topo-drawer dd { margin:0; color:var(--text); overflow-wrap:anywhere; font-family:var(--mono); }
+  .topo-truth { display:inline-flex; gap:6px; align-items:center; padding:4px 7px; border-radius:6px; background:var(--card2); color:var(--muted); font-size:11px; }
+  .topo-truth i { width:7px; height:7px; border-radius:50%; background:#2563eb; }
+  .topo-truth.inferred i { background:#94a3b8; }
+  #topoSvg.topo-compact .topo-detail { display:none; }
+  #topoSvg.topo-minimal .topo-detail, #topoSvg.topo-minimal .topo-device { display:none; }
+  #topoSvg.topo-risk .topo-n.healthy { opacity:.4; }
   .dash-inner { max-width:1200px; margin:0 auto; }
   .health-summary { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; margin-bottom:14px; border:1px solid var(--border); border-radius:12px; background:var(--card2); color:var(--muted); font-size:12.5px; line-height:1.55; }
   .health-summary strong { color:var(--text); white-space:nowrap; }
@@ -676,20 +701,26 @@
         <div class="topo-inner">
           <div class="topo-toolbar">
             <span class="pill" id="topoCount">—</span>
-            <span style="font-size:11.5px;color:var(--dim)">滚轮缩放 · 拖拽平移 · 悬停看详情 · 点击节点查流量</span>
+            <div class="topo-mode" aria-label="拓扑视图模式">
+              <button class="btn active" id="topoModeStructure" onclick="setTopoMode('structure')">结构</button>
+              <button class="btn" id="topoModeRisk" onclick="setTopoMode('risk')">风险</button>
+            </div>
+            <span style="font-size:11.5px;color:var(--dim)">滚轮缩放 · 拖拽平移 · 点击节点看详情与排障</span>
             <button class="btn" onclick="loadTopology(true)" style="margin-left:auto;padding:4px 12px;font-size:12px"><svg class="ic sm"><use href="#i-refresh"/></svg>刷新</button>
           </div>
           <div class="topo-canvas" id="topoCanvas">
             <svg id="topoSvg" viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;cursor:grab"></svg>
             <div class="topo-empty" id="topoEmpty">拓扑加载中…</div>
             <div class="topo-tip" id="topoTip" hidden></div>
+            <aside class="topo-drawer" id="topoDrawer" hidden aria-label="拓扑节点详情"></aside>
           </div>
           <div class="topo-legend">
             <span><i class="tl-dot" style="background:#1668dc"></i>防火墙</span>
-            <span><i class="tl-dot" style="background:#059669"></i>接口</span>
+            <span><i class="tl-dot" style="background:#059669"></i>接口 UP</span>
+            <span><i class="tl-dot" style="background:#dc2626"></i>接口 DOWN / 风险</span>
             <span><i class="tl-dot" style="background:#f59e0b"></i>网关/路由</span>
-            <span><i class="tl-dot" style="background:#64748b"></i>主机/设备</span>
-            <span><i class="tl-dot" style="background:#94a3b8"></i>Internet</span>
+            <span style="display:inline-flex;align-items:center;gap:5px"><i style="width:18px;height:0;border-radius:0;background:none;border-top:2px solid #2563eb"></i>已确认接口/路由关系</span>
+            <span style="display:inline-flex;align-items:center;gap:5px"><i style="width:18px;height:0;border-radius:0;background:none;border-top:2px dashed #94a3b8"></i>ARP 推断邻居关系</span>
           </div>
         </div>
       </div>
@@ -1398,11 +1429,13 @@ function renderPlatform(p) {
 
 // ── 网络拓扑（纯 SVG 渲染，零依赖）──
 let _topoTimer = null, _topoZoom = 1, _topoPan = { x: 0, y: 0 }, _topoDrag = null;
+let _topoData = null, _topoNodes = {}, _topoMode = "structure", _topoSelected = "";
 function loadTopology(force) {
   fetch("/api/topology")
     .then((r) => r.json())
     .then((d) => {
       if (d.error) throw new Error(d.error);
+      _topoData = d;
       renderTopology(d);
       const empty = document.getElementById("topoEmpty");
       if (empty) empty.style.display = "none";
@@ -1431,7 +1464,7 @@ function orthoLink(x1, y1, x2, y2, bendY) {
 
 // 生成拓扑 SVG：三层分层（L3 WAN → L2 防火墙 → L1 接口 → L0 设备）+ 分组虚线框 + 正交连线
 // 生成拓扑 SVG v3：防火墙横跨 WAN/LAN 两簇 · Internet→网关→e1/3→防火墙左 · e1/4→汇聚→设备网格
-function renderTopology(d) {
+function renderTopologyLegacy(d) {
   const svg = document.getElementById("topoSvg");
   if (!svg) return;
   const fw = d.fw || {};
@@ -1589,6 +1622,188 @@ function renderTopology(d) {
     if (empty) { empty.textContent = "未获取到拓扑数据（防火墙不可达？）"; empty.style.display = "flex"; }
   }
 }
+
+// 数据驱动拓扑：接口与路由为已确认关系；ARP 仅表示观察到的三层邻居，不能证明物理直连。
+function renderTopology(d) {
+  if (!Array.isArray(d.zones)) return renderTopologyLegacy(d);
+  const svg = document.getElementById("topoSvg");
+  if (!svg) return;
+  const interfaces = new Map((d.interfaces || []).filter((item) => item && item.name).map((item) => [item.name, item]));
+  const zones = d.zones.filter((zone) => zone && zone.name).map((zone) => ({ ...zone, interfaces: (zone.interfaces || []).filter((name) => interfaces.has(name)) }));
+  const unassigned = [...interfaces.keys()].filter((name) => !zones.some((zone) => zone.interfaces.includes(name)));
+  if (unassigned.length) zones.push({ name: "未分区", interfaces: unassigned });
+  const gateways = d.gateways || [];
+  const devices = d.devices || [];
+  const isUp = (item) => /(^|[-_ ])up($|[-_ ])/i.test(item.state || "") || /admin-up/i.test(item.state || "");
+  const isRisk = (item) => !isUp(item);
+  const nodes = {};
+  const addNode = (key, node) => { nodes[key] = node; return key; };
+  const selected = _topoSelected;
+  const nodeClass = (key, risk) => "topo-n " + (risk ? "risk" : "healthy") + (key === selected ? " selected" : "");
+  const node = (key, x, y, w, h, cls, body) => '<g class="' + cls + '" data-topo-key="' + key + '" transform="translate(' + x + ',' + y + ')">' + body + "</g>";
+  const edge = (path, confidence, risk) => '<path d="' + path + '" class="topo-edge ' + confidence + (risk ? " down" : "") + '"/>';
+
+  _topoNodes = nodes;
+  const cardW = 320, gap = 22, margin = 24;
+  const columns = Math.min(3, Math.max(1, zones.length));
+  const zoneLayouts = zones.map((zone) => {
+    const items = zone.interfaces.map((name) => {
+      const iface = interfaces.get(name);
+      return {
+        iface,
+        gateways: gateways.filter((gateway) => gateway.viaIf === name),
+        devices: devices.filter((device) => device.iface === name),
+      };
+    });
+    const rows = items.reduce((total, item) => total + 1 + Math.ceil((item.gateways.length + item.devices.length) / 2), 0);
+    return { zone, items, h: Math.max(150, 52 + rows * 61) };
+  });
+  const rowHeights = [];
+  zoneLayouts.forEach((layout, index) => {
+    const row = Math.floor(index / columns);
+    rowHeights[row] = Math.max(rowHeights[row] || 0, layout.h);
+  });
+  const rowOffsets = [];
+  rowHeights.forEach((height, row) => { rowOffsets[row] = row ? rowOffsets[row - 1] + rowHeights[row - 1] + gap : 210; });
+  zoneLayouts.forEach((layout, index) => {
+    layout.x = margin + (index % columns) * (cardW + gap);
+    layout.y = rowOffsets[Math.floor(index / columns)];
+  });
+  const width = Math.max(900, columns * (cardW + gap) + margin * 2 - gap);
+  const fw = d.fw || {};
+  const fwW = 310, fwH = 92, fwX = (width - fwW) / 2, fwY = 42;
+  const anyRisk = [...interfaces.values()].some(isRisk);
+  addNode("firewall", {
+    title: fw.hostname || fw.model || "防火墙",
+    kind: "防火墙",
+    truth: "已确认：防火墙自身状态",
+    task: "设备状态",
+    details: { "管理地址": fw.ip || "—", "型号": fw.model || "—", "序列号": fw.serial || "—", "PAN-OS": fw.swVersion || "—" },
+  });
+  let h = '<defs><linearGradient id="topoFwG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d75e8"/><stop offset="1" stop-color="#0b4ea8"/></linearGradient></defs>';
+  h += '<g id="topoG" transform="translate(' + _topoPan.x + ',' + _topoPan.y + ') scale(' + _topoZoom + ')">';
+  h += node("firewall", fwX, fwY, fwW, fwH, nodeClass("firewall", anyRisk),
+    '<rect width="' + fwW + '" height="' + fwH + '" rx="16" fill="url(#topoFwG)" stroke="#0b4ea8" stroke-width="2"/>' +
+    '<circle cx="25" cy="26" r="6" fill="' + (anyRisk ? "#fbbf24" : "#86efac") + '"/>' +
+    '<text x="' + (fwW / 2) + '" y="34" text-anchor="middle" font-size="17" font-weight="700" fill="#fff">' + esc(fw.hostname || fw.model || "防火墙") + '</text>' +
+    '<text class="topo-detail" x="' + (fwW / 2) + '" y="55" text-anchor="middle" font-size="11" fill="#dbeafe" font-family="var(--mono)">' + esc(fw.ip || "未获取管理地址") + '</text>' +
+    '<text class="topo-detail" x="' + (fwW / 2) + '" y="74" text-anchor="middle" font-size="9.5" fill="#bfdbfe">' + esc(fw.model || "PAN-OS 防火墙") + (fw.swVersion ? " · " + esc(fw.swVersion) : "") + '</text>');
+
+  const fullHeight = Math.max(540, ...zoneLayouts.map((layout) => layout.y + layout.h + 28));
+  for (const layout of zoneLayouts) {
+    h += '<rect class="topo-zone-box" x="' + layout.x + '" y="' + layout.y + '" width="' + cardW + '" height="' + layout.h + '" rx="16"/>';
+    h += '<text x="' + (layout.x + 18) + '" y="' + (layout.y + 28) + '" class="topo-zone">ZONE · ' + esc(layout.zone.name) + '</text>';
+    let cursorY = layout.y + 46;
+    for (const item of layout.items) {
+      const iface = item.iface;
+      const key = "if-" + [...interfaces.keys()].indexOf(iface.name);
+      const risk = isRisk(iface);
+      addNode(key, {
+        title: iface.name,
+        kind: "防火墙接口",
+        truth: "已确认：防火墙接口状态与 Zone 归属",
+        task: iface.ip ? "查一下 IP " + iface.ip + " 最近 1 小时流量" : "设备状态",
+        details: { "状态": iface.state || "—", "IP 地址": iface.ip || "未配置", "Zone": iface.zone || layout.zone.name, "速率": iface.speed || "—", "MAC": iface.mac || "—" },
+      });
+      const ifX = layout.x + 18, ifY = cursorY, ifW = cardW - 36, ifH = 43;
+      const targetX = ifX + ifW / 2;
+      h += edge(orthoLink(fwX + fwW / 2, fwY + fwH, targetX, ifY, 169), "confirmed", risk);
+      h += node(key, ifX, ifY, ifW, ifH, nodeClass(key, risk),
+        '<rect width="' + ifW + '" height="' + ifH + '" rx="9" fill="#fff" stroke="' + (risk ? "#dc2626" : "#059669") + '" stroke-width="1.5"/>' +
+        '<circle cx="15" cy="15" r="4.5" fill="' + (risk ? "#dc2626" : "#16a34a") + '"/>' +
+        '<text x="27" y="18" font-size="11" font-weight="700" fill="#0f172a" font-family="var(--mono)">' + esc(iface.name) + '</text>' +
+        '<text class="topo-detail" x="27" y="34" font-size="9.5" fill="#64748b" font-family="var(--mono)">' + esc(iface.ip || "未配置 IP") + ' · ' + esc((iface.state || "—").toUpperCase()) + '</text>');
+      const attachments = [
+        ...item.gateways.map((gateway) => ({ type: "gateway", data: gateway, confidence: "confirmed" })),
+        ...item.devices.map((device) => ({ type: "device", data: device, confidence: "inferred" })),
+      ];
+      attachments.forEach((attachment, index) => {
+        const col = index % 2, row = Math.floor(index / 2);
+        const childW = 132, childH = 42, childX = layout.x + 18 + col * 152, childY = ifY + 57 + row * 56;
+        const childKey = attachment.type === "gateway" ? "gw-" + gateways.indexOf(attachment.data) : "dev-" + devices.indexOf(attachment.data);
+        const label = attachment.type === "gateway" ? (attachment.data.isInternet ? "默认路由" : "路由网关") : (attachment.data.name || attachment.data.ip);
+        const nodeRisk = attachment.type === "gateway" ? false : false;
+        addNode(childKey, {
+          title: label,
+          kind: attachment.type === "gateway" ? "路由下一跳" : "ARP 邻居",
+          truth: attachment.type === "gateway" ? "已确认：路由表下一跳" : "推断：ARP 表中观察到的邻居，非物理直连证明",
+          task: "查一下 IP " + attachment.data.ip + " 最近 1 小时流量",
+          details: attachment.type === "gateway"
+            ? { "下一跳": attachment.data.ip || "—", "目的网段": attachment.data.dest || "—", "出接口": attachment.data.viaIf || iface.name }
+            : { "IP 地址": attachment.data.ip || "—", "MAC": attachment.data.mac || "—", "观察接口": attachment.data.iface || iface.name, "设备类别": attachment.data.icon || "未知" },
+        });
+        h += edge(orthoLink(targetX, ifY + ifH, childX + childW / 2, childY, ifY + ifH + 20), attachment.confidence, nodeRisk);
+        h += node(childKey, childX, childY, childW, childH, nodeClass(childKey, nodeRisk),
+          '<rect width="' + childW + '" height="' + childH + '" rx="8" fill="#fff" stroke="' + (attachment.confidence === "inferred" ? "#94a3b8" : "#f59e0b") + '" stroke-width="1.2"/>' +
+          '<text x="10" y="17" font-size="10" font-weight="600" fill="#334155">' + esc(label) + '</text>' +
+          '<text class="topo-detail" x="10" y="33" font-size="8.8" fill="#64748b" font-family="var(--mono)">' + esc(attachment.data.ip || "—") + (attachment.confidence === "inferred" ? " · ARP" : "") + '</text>');
+      });
+      cursorY += 61 + Math.ceil(attachments.length / 2) * 56;
+    }
+  }
+  h += "</g>";
+  svg.setAttribute("viewBox", "0 0 " + width + " " + fullHeight);
+  svg.innerHTML = h;
+  svg.onclick = (event) => {
+    let target = event.target;
+    while (target && target !== svg && !(target.dataset && target.dataset.topoKey)) target = target.parentNode;
+    if (target && target.dataset && target.dataset.topoKey) openTopoDrawer(target.dataset.topoKey);
+  };
+  const count = document.getElementById("topoCount");
+  if (count) count.textContent = zones.length + " Zone · " + interfaces.size + " 接口 · " + devices.length + " ARP 邻居";
+  const empty = document.getElementById("topoEmpty");
+  if (empty) empty.style.display = zones.length ? "none" : "flex";
+  syncTopoSemanticZoom();
+  if (selected && _topoNodes[selected]) openTopoDrawer(selected);
+}
+
+function setTopoMode(mode) {
+  _topoMode = mode === "risk" ? "risk" : "structure";
+  const structure = document.getElementById("topoModeStructure");
+  const risk = document.getElementById("topoModeRisk");
+  if (structure) structure.classList.toggle("active", _topoMode === "structure");
+  if (risk) risk.classList.toggle("active", _topoMode === "risk");
+  const svg = document.getElementById("topoSvg");
+  if (svg) svg.classList.toggle("topo-risk", _topoMode === "risk");
+}
+
+function syncTopoSemanticZoom() {
+  const svg = document.getElementById("topoSvg");
+  if (!svg) return;
+  svg.classList.toggle("topo-compact", _topoZoom < 0.85);
+  svg.classList.toggle("topo-minimal", _topoZoom < 0.6);
+  svg.classList.toggle("topo-risk", _topoMode === "risk");
+}
+
+function openTopoDrawer(key) {
+  const item = _topoNodes[key];
+  if (!item) return;
+  _topoSelected = key;
+  document.querySelectorAll("#topoSvg .topo-n.selected").forEach((element) => element.classList.remove("selected"));
+  const target = document.querySelector('#topoSvg [data-topo-key="' + key + '"]');
+  if (target) target.classList.add("selected");
+  const drawer = document.getElementById("topoDrawer");
+  if (!drawer) return;
+  const rows = Object.entries(item.details || {}).map(([name, value]) => '<dt>' + esc(name) + '</dt><dd>' + esc(value == null || value === "" ? "—" : value) + "</dd>").join("");
+  drawer.innerHTML = '<button class="topo-drawer-close" type="button" aria-label="关闭详情" onclick="closeTopoDrawer()">×</button>' +
+    '<div class="topo-drawer-kind">' + esc(item.kind) + '</div><h3>' + esc(item.title) + '</h3>' +
+    '<p class="topo-truth">' + esc(item.truth) + '</p><dl>' + rows + '</dl>' +
+    (item.task ? '<button class="btn primary" type="button" onclick="topoQuickTask(\'' + key + '\')">以此节点发起排障</button>' : "");
+  drawer.hidden = false;
+}
+
+function closeTopoDrawer() {
+  _topoSelected = "";
+  const drawer = document.getElementById("topoDrawer");
+  if (drawer) drawer.hidden = true;
+  document.querySelectorAll("#topoSvg .topo-n.selected").forEach((element) => element.classList.remove("selected"));
+}
+
+function topoQuickTask(key) {
+  const item = _topoNodes[key];
+  if (item && item.task) quickTask(item.task);
+}
+
 // 接口名规范化（id 用）
 function normIf(n) { return String(n || "").toLowerCase().replace(/[.\/]/g, "-"); }
 // 云形 path（Internet 图标，替代 Unicode ☁）

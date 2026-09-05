@@ -56,5 +56,55 @@ test("dashboard service builds topology with the injected firewall host instead 
 
   assert.equal(topology.fw.ip, "198.51.100.1");
   assert.equal(topology.interfaces[0].zone, "Trust");
+  assert.deepEqual(topology.zones, [{ name: "Trust", interfaces: ["ethernet1/1"] }]);
+  assert.deepEqual(topology.relations, [{
+    from: "firewall",
+    to: "interface:ethernet1/1",
+    kind: "interface",
+    confidence: "confirmed",
+  }]);
   assert.equal(topology.ok, true);
+});
+
+test("dashboard topology merges physical-state and IP records for the same interface", async () => {
+  const service = createDashboardService({
+    callTool: async (name) => ({
+      get_firewall_info: { hostname: "fw-a" },
+      get_interfaces: { entry: [
+        { name: "ethernet1/1", state: "up" },
+        { name: "ethernet1/1", ip: "192.0.2.1", speed: "1000" },
+      ] },
+      get_zones: { zone: { entry: [{ "@_name": "Trust", network: { layer3: { member: "ethernet1/1" } } }] } },
+    })[name],
+    directOp: async () => "",
+    xmlEntries: () => [],
+    topologyNames: () => ({ devices: {}, extra_nodes: {} }),
+  });
+
+  const topology = await service.getTopology();
+
+  assert.equal(topology.interfaces.length, 1);
+  assert.equal(topology.interfaces[0].name, "ethernet1/1");
+  assert.equal(topology.interfaces[0].state, "up");
+  assert.equal(topology.interfaces[0].ip, "192.0.2.1");
+  assert.equal(topology.interfaces[0].speed, "1000");
+  assert.equal(topology.interfaces[0].zone, "Trust");
+  assert.deepEqual(topology.zones, [{ name: "Trust", interfaces: ["ethernet1/1"] }]);
+});
+
+test("dashboard topology does not expose numeric interface roles as Zone names", async () => {
+  const service = createDashboardService({
+    callTool: async (name) => ({
+      get_firewall_info: { hostname: "fw-a" },
+      get_interfaces: { entry: [{ name: "ethernet1/5", state: "down", type: "0" }] },
+      get_zones: { zone: { entry: [] } },
+    })[name],
+    directOp: async () => "",
+    xmlEntries: () => [],
+    topologyNames: () => ({ devices: {}, extra_nodes: {} }),
+  });
+
+  const topology = await service.getTopology();
+
+  assert.deepEqual(topology.zones, [{ name: "未分区", interfaces: ["ethernet1/5"] }]);
 });

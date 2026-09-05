@@ -157,7 +157,24 @@ function createDashboardService({
     const zones = rawZones?.zone?.entry || rawZones?.entry || [];
     const zoneByInterface = {};
     for (const zone of zones) for (const members of [zone.network?.layer2?.member, zone.network?.layer3?.member, zone.network?.["virtual-wire"]?.member]) for (const member of members == null ? [] : Array.isArray(members) ? members : [members]) zoneByInterface[member] = zone["@_name"];
-    const interfaces = parseInterfaces(rawInterfaces).map((item) => ({ type: "interface", ...item, zone: zoneByInterface[item.name] || item.role || "" }));
+    const interfaceMap = new Map();
+    for (const item of parseInterfaces(rawInterfaces)) {
+      if (!item.name) continue;
+      const current = interfaceMap.get(item.name);
+      if (!current) interfaceMap.set(item.name, { ...item });
+      else for (const field of ["state", "ip", "speed", "mac", "role"]) if (!current[field] && item[field]) current[field] = item[field];
+    }
+    const interfaces = [...interfaceMap.values()].map((item) => {
+      const zone = zoneByInterface[item.name] || item.role || "";
+      return { type: "interface", ...item, zone: /^\d+$/.test(String(zone)) ? "" : zone };
+    });
+    const zoneMap = new Map();
+    for (const item of interfaces) {
+      const name = item.zone || "未分区";
+      if (!zoneMap.has(name)) zoneMap.set(name, []);
+      zoneMap.get(name).push(item.name);
+    }
+    const topologyZones = [...zoneMap.entries()].map(([name, members]) => ({ name, interfaces: members }));
     const gateways = [...new Map(routes.map((route) => [route.nexthop || route["ip-address"], route]).filter(([ip]) => ip && ip !== "0.0.0.0").map(([ip, route]) => [ip, { ip, isInternet: String(route.destination || "").includes("0.0.0.0"), viaIf: route.interface || "", dest: route.destination || "" }])).values()];
     const devices = new Map();
     for (const entry of arp) {
@@ -169,7 +186,11 @@ function createDashboardService({
     for (const [ip, config] of Object.entries(names.extra_nodes || {})) if (!devices.has(ip)) devices.set(ip, { ip, mac: config.mac || "", iface: config.iface || "", name: config.name || ip, icon: config.icon || "pc" });
     devices.delete(fwNode.ip);
     for (const device of devices.values()) device.agg = ["switch", "router", "ap"].includes(device.icon) ? 1 : 0;
-    topologyCache = { ts: clock(), fw: fwNode, interfaces, gateways, devices: [...devices.values()], hasDefault: gateways.some((gateway) => gateway.isInternet), ok: Boolean(fwNode.hostname || fwNode.ip) };
+    const topologyDevices = [...devices.values()];
+    const relations = interfaces.map((item) => ({ from: "firewall", to: "interface:" + item.name, kind: "interface", confidence: "confirmed" }));
+    for (const gateway of gateways) if (gateway.viaIf) relations.push({ from: "interface:" + gateway.viaIf, to: "gateway:" + gateway.ip, kind: "route", confidence: "confirmed" });
+    for (const device of topologyDevices) if (device.iface) relations.push({ from: "interface:" + device.iface, to: "device:" + device.ip, kind: "arp", confidence: "inferred" });
+    topologyCache = { ts: clock(), fw: fwNode, interfaces, zones: topologyZones, gateways, devices: topologyDevices, relations, hasDefault: gateways.some((gateway) => gateway.isInternet), ok: Boolean(fwNode.hostname || fwNode.ip) };
     topologyTs = clock();
     return topologyCache;
   }
