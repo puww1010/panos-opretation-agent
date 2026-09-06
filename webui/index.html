@@ -353,6 +353,8 @@
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   body.side-collapsed .side-item .txt { display:none; }
   .side-badge { margin-left:auto; background:var(--accent); color:#fff; font-size:10px; font-weight:600; padding:1px 7px; border-radius:10px; }
+  .side-badge.warn { background:var(--amber); }
+  .side-badge.alert { background:var(--red); }
   body.side-collapsed .side-badge { display:none; }
   .side-foot { padding:8px; border-top:1px solid var(--border); }
   /* 网络状态组：后端地址 + 强刷 + 测网络（位于顶栏退出按钮左侧） */
@@ -588,19 +590,29 @@
       <button class="side-fold btn" onclick="toggleSidebar()" title="折叠 / 展开菜单"><svg class="ic sm" id="foldIcon"><use href="#i-left"/></svg></button>
     </div>
     <nav class="side-nav">
-      <button class="side-item" data-view="dashboard" onclick="showView('dashboard')"><svg class="ic"><use href="#i-grid"/></svg><span class="txt">概览</span></button>
-      <button class="side-item" data-view="chat" onclick="showView('chat')"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">任务对话<span class="side-item-sub">用自然语言发起任务请求</span></span><b class="side-badge" id="sideTaskBadge" style="display:none">0</b></button>
-      <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-phone"/></svg><span class="txt">飞书移动端</span></button>
-      <div class="side-sep">快捷入口</div>
-      <button class="side-item" onclick="quickTask('设备资产')"><svg class="ic"><use href="#i-file"/></svg><span class="txt">设备资产</span></button>
-      <button class="side-item" onclick="quickTask('设备状态')"><svg class="ic"><use href="#i-device"/></svg><span class="txt">设备状态</span></button>
+      <div class="side-sep">运行态</div>
+      <button class="side-item" data-view="dashboard" onclick="showView('dashboard')"><svg class="ic"><use href="#i-grid"/></svg><span class="txt">运营总览<span class="side-item-sub">健康、风险与待处理事项</span></span></button>
+      <button class="side-item" onclick="openOpsOverview()"><svg class="ic"><use href="#i-alert"/></svg><span class="txt">告警与待办</span><b class="side-badge" id="sideRiskBadge" style="display:none">0</b></button>
+      <button class="side-item" onclick="openOpsOverview()"><svg class="ic"><use href="#i-device"/></svg><span class="txt">设备健康</span></button>
       <button class="side-item" data-view="topology" onclick="showView('topology')"><svg class="ic"><use href="#i-network"/></svg><span class="txt">网络拓扑</span></button>
+
+      <div class="side-sep">处置与变更</div>
+      <button class="side-item" data-view="chat" onclick="openTaskCenter()"><svg class="ic"><use href="#i-chat"/></svg><span class="txt">任务中心<span class="side-item-sub">执行、审批与任务历史</span></span><b class="side-badge" id="sideTaskBadge" style="display:none">0</b></button>
+      <button class="side-item" onclick="openAssistant()"><svg class="ic"><use href="#i-robot"/></svg><span class="txt">智能助手<span class="side-item-sub">自然语言查询与诊断</span></span></button>
+      <button class="side-item" onclick="openTaskCenter('change')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">变更与审批</span><b class="side-badge warn" id="sideApprovalBadge" style="display:none">0</b></button>
       <button class="side-item" onclick="quickTask('安全策略')"><svg class="ic"><use href="#i-shield"/></svg><span class="txt">安全策略</span></button>
-      <button class="side-item" onclick="quickTask('流量日志')"><svg class="ic"><use href="#i-list"/></svg><span class="txt">流量日志</span></button>
-      <button class="side-item" onclick="quickTask('威胁日志')"><svg class="ic"><use href="#i-alert"/></svg><span class="txt">威胁日志</span></button>
-      <button class="side-item" onclick="quickTask('审计记录')"><svg class="ic"><use href="#i-clock"/></svg><span class="txt">审计记录</span></button>
-      <button class="side-item" onclick="quickTask('完整巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">完整巡检</span></button>
-      <div class="side-sep">系统</div>
+
+      <div class="side-sep">分析与追溯</div>
+      <button class="side-item" onclick="quickTask('流量日志')"><svg class="ic"><use href="#i-list"/></svg><span class="txt">流量分析</span></button>
+      <button class="side-item" onclick="quickTask('威胁日志')"><svg class="ic"><use href="#i-alert"/></svg><span class="txt">威胁事件</span></button>
+      <button class="side-item" onclick="quickTask('审计记录')"><svg class="ic"><use href="#i-clock"/></svg><span class="txt">审计追溯</span></button>
+
+      <div class="side-sep">资产与保障</div>
+      <button class="side-item" onclick="quickTask('设备资产')"><svg class="ic"><use href="#i-file"/></svg><span class="txt">设备资产</span></button>
+      <button class="side-item" onclick="openAssistant('完整巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">巡检中心<span class="side-item-sub">发起巡检与查看执行记录</span></span></button>
+
+      <div class="side-sep">协作与系统</div>
+      <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-phone"/></svg><span class="txt">飞书通知与报告</span></button>
       <button class="side-item" id="settingsBtn" onclick="toggleSettingsMenu()">
         <svg class="ic"><use href="#i-settings"/></svg>
         <span class="txt">设置</span>
@@ -612,7 +624,7 @@
   <!-- 主区：顶栏 + 视图 -->
   <div class="main">
     <header class="topbar">
-      <h2 class="view-title" id="viewTitle">任务对话</h2>
+      <h2 class="view-title" id="viewTitle">运营总览</h2>
       <div class="spacer"></div>
       <div class="top-ctrl">
         <!-- 网络状态组：后端地址 + 强刷 + 测网络（放退出按钮左侧） -->
@@ -635,9 +647,9 @@
           <div class="chat-panel">
             <div class="chat-panel-head">
               <svg class="ic sm"><use href="#i-chat"/></svg>
-              <span>任务对话</span>
+              <span>任务中心</span>
               <span class="pill" id="chatCount">—</span>
-              <button class="btn" onclick="showView('feishu')" title="切换到飞书移动端" style="margin-left:auto;padding:3px 11px;font-size:12px"><svg class="ic sm" style="margin-right:3px"><use href="#i-chat"/></svg>飞书移动端</button>
+              <button class="btn" onclick="showView('feishu')" title="切换到飞书通知与报告" style="margin-left:auto;padding:3px 11px;font-size:12px"><svg class="ic sm" style="margin-right:3px"><use href="#i-chat"/></svg>飞书通知与报告</button>
             </div>
             <!-- 气泡流主体（pollTasks → renderChat 填充） -->
             <div id="chat"><div class="empty" style="text-align:center;padding:30px 0">⏳ 加载任务…</div></div>
@@ -674,9 +686,9 @@
         <div class="feishu-inner">
           <div class="fs-fold" id="fsFold" style="border-radius:14px">
             <div class="fs-fold-head" style="cursor:default">
-              <span><svg class="ic sm"><use href="#i-chat"/></svg>飞书移动端</span>
+              <span><svg class="ic sm"><use href="#i-chat"/></svg>飞书通知与报告</span>
               <span class="pill"><span class="dot green" id="fsDot"></span><span id="fsTxt">飞书检测中</span></span>
-              <button class="btn" onclick="showView('chat')" style="margin-left:auto;padding:2px 9px;font-size:11px" title="返回任务对话">← 返回任务对话</button>
+              <button class="btn" onclick="showView('chat')" style="margin-left:auto;padding:2px 9px;font-size:11px" title="返回任务中心">← 返回任务中心</button>
             </div>
             <div class="fs-fold-body" style="display:block">
               <div style="display:flex;gap:8px;margin-bottom:10px">
@@ -848,7 +860,7 @@ function toggleTheme() {
   applyTheme(dark);
 })();
 // ── 视图切换 + 侧边栏（方案C 混合模型）──
-const VIEW_NAMES = { dashboard: "概览", chat: "任务对话", feishu: "飞书移动端", topology: "网络拓扑" };
+const VIEW_NAMES = { dashboard: "运营总览", chat: "任务中心", feishu: "飞书通知与报告", topology: "网络拓扑" };
 function showView(name) {
   document.querySelectorAll(".view").forEach(v => { v.hidden = v.id !== "view-" + name; });
   document.querySelectorAll(".side-item[data-view]").forEach(b => { b.classList.toggle("on", b.getAttribute("data-view") === name); });
@@ -874,7 +886,39 @@ function quickTask(text) {
   if (q) { q.value = text; autoGrow(q); }
   submit();
 }
-// 飞书移动端：菜单项/按钮统一通过 showView('feishu') 进入独立视图，此函数已废弃
+function openOpsOverview() {
+  showView("dashboard");
+  requestAnimationFrame(() => {
+    const health = document.getElementById("healthSummary");
+    if (health) health.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+function openTaskCenter(mode) {
+  showView("chat");
+  requestAnimationFrame(() => {
+    const chat = document.getElementById("chat");
+    if (chat) chat.scrollIntoView({ behavior: "smooth", block: "start" });
+    const live = document.getElementById("liveTxt");
+    if (mode === "change" && live) live.textContent = "任务中心：请处理待审批或待确认的变更任务";
+  });
+}
+function openAssistant(prompt) {
+  showView("chat");
+  requestAnimationFrame(() => {
+    const input = document.getElementById("q");
+    if (!input) return;
+    if (prompt) { input.value = prompt; autoGrow(input); }
+    input.focus();
+  });
+}
+function updateSideBadge(id, count, tone) {
+  const badge = document.getElementById(id);
+  if (!badge) return;
+  badge.style.display = count ? "" : "none";
+  badge.textContent = count || "0";
+  badge.className = "side-badge" + (tone ? " " + tone : "");
+}
+// 飞书通知与报告：菜单项/按钮统一通过 showView('feishu') 进入独立视图
 // ── 侧栏「设置」下拉（点击弹出设置菜单；底部网络组已独立）──
 function toggleSettingsMenu() {
   const b = document.getElementById("settingsBtn");
@@ -903,7 +947,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSetti
 // 恢复视图/侧栏状态（登录后 init 前调用；窄屏默认折叠）
 function initShell() {
   let v = null; try { v = localStorage.getItem("panos_view"); } catch (e) {}
-  showView(v === "dashboard" ? "dashboard" : v === "feishu" ? "feishu" : "chat");
+  showView(["dashboard", "chat", "feishu", "topology"].includes(v) ? v : "dashboard");
   let side = null; try { side = localStorage.getItem("panos_side"); } catch (e) {}
   const collapsed = side === "1" || (window.innerWidth < 960 && side !== "0");
   if (collapsed) {
@@ -1321,6 +1365,7 @@ function renderHealth(health) {
   const level = ["normal", "attention", "alert"].includes(health.level) ? health.level : "normal";
   const labels = { normal: "设备健康：正常", attention: "设备健康：需关注", alert: "设备健康：需处理" };
   const items = Array.isArray(health.items) ? health.items : [];
+  updateSideBadge("sideRiskBadge", items.length, level === "alert" ? "alert" : "warn");
   box.className = "health-summary " + level;
   box.innerHTML = "<strong>" + labels[level] + "</strong>" +
     (items.length
@@ -2092,8 +2137,9 @@ async function pollTasks() {
     if (cc) cc.textContent = tasks.length + " 条消息";
     // 侧栏任务徽章：活跃任务数（含待审批）
     const activeN = tasks.filter(t => ["pending", "running", "executing", "committing", "awaiting_approval", "awaiting_selection", "awaiting_commit"].includes(t.status)).length;
-    const badge = document.getElementById("sideTaskBadge");
-    if (badge) { badge.style.display = activeN ? "" : "none"; badge.textContent = activeN; }
+    updateSideBadge("sideTaskBadge", activeN);
+    const approvalN = tasks.filter(t => ["awaiting_approval", "awaiting_selection", "awaiting_commit"].includes(t.status)).length;
+    updateSideBadge("sideApprovalBadge", approvalN, "warn");
     renderDashEvents();
     const chat = document.getElementById("chat");
     // 重建前记录滚动位置（瞬时恢复，配合已移除的 scroll-behavior:smooth，

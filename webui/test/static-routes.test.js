@@ -36,3 +36,20 @@ test("topology page exposes data-driven views, semantic zoom, and a node detail 
   assert.match(root.state.body, /function setTopoMode\(mode\)/);
   assert.match(root.state.body, /function syncTopoSemanticZoom\(\)/);
   assert.match(root.state.body, /ARP 推断邻居关系/);
+});
+
+test("sidebar is organized around operations work and uses live risk and approval badges", () => {
+  const router = createStaticRouter({ rootDirectory: path.join(__dirname, "..") });
+  const root = response();
+
+  assert.equal(router.handle({ method: "GET", url: "/" }, root), true);
+  assert.match(root.state.body, /运行态/);
+  assert.match(root.state.body, /处置与变更/);
+  assert.match(root.state.body, /分析与追溯/);
+  assert.match(root.state.body, /资产与保障/);
+  assert.match(root.state.body, /协作与系统/);
+  assert.match(root.state.body, /id="sideRiskBadge"/);
+  assert.match(root.state.body, /id="sideApprovalBadge"/);
+  assert.match(root.state.body, /function openOpsOverview\(\)/);
+  assert.match(root.state.body, /function openTaskCenter\(mode\)/);
+});
