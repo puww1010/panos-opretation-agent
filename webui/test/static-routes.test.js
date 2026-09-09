@@ -53,3 +53,14 @@ test("sidebar is organized around operations work and uses live risk and approva
   assert.match(root.state.body, /function openOpsOverview\(\)/);
   assert.match(root.state.body, /function openTaskCenter\(mode\)/);
 });
+
+test("backend monitoring is available from settings while data flow status lives in the sidebar", () => {
+  const router = createStaticRouter({ rootDirectory: path.join(__dirname, "..") });
+  const root = response();
+
+  assert.equal(router.handle({ method: "GET", url: "/" }, root), true);
+  assert.match(root.state.body, /id="sideConnectionStatus"/);
+  assert.match(root.state.body, /后端监控/);
+  assert.match(root.state.body, /function showBackendMonitor\(\)/);
+  assert.doesNotMatch(root.state.body, /position:fixed;top:0;left:50%/);
+});

@@ -357,15 +357,22 @@
   .side-badge.alert { background:var(--red); }
   body.side-collapsed .side-badge { display:none; }
   .side-foot { padding:8px; border-top:1px solid var(--border); }
-  /* 网络状态组：后端地址 + 强刷 + 测网络（位于顶栏退出按钮左侧） */
-  .side-net { display:flex; align-items:center; gap:5px; padding:4px 8px;
-    border:1px solid var(--border); border-radius:8px; background:var(--card2); }
-  .side-net .sn-label { font-size:10.5px; color:var(--dim); font-family:var(--mono); flex-shrink:0; }
-  .side-net .sn-url { font-size:11px; color:var(--accent); font-family:var(--mono); flex:1; min-width:0;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .side-net .sn-btn { padding:3px 5px; border:1px solid var(--border2); background:var(--card);
-    border-radius:5px; cursor:pointer; color:var(--muted); display:flex; align-items:center; transition:all .15s; }
-  .side-net .sn-btn:hover { border-color:var(--accent); color:var(--accent); background:var(--run-bg); }
+  .side-connection { display:grid; grid-template-columns:10px minmax(0,1fr); column-gap:8px; width:100%; padding:8px 9px;
+    border:1px solid var(--border); border-radius:8px; background:var(--card2); color:var(--muted); cursor:pointer; text-align:left; }
+  .side-connection:hover { border-color:var(--accent); background:var(--run-bg); color:var(--run-fg); }
+  .side-connection .dot { margin-top:4px; }
+  .side-connection-title { font-size:11.5px; font-weight:600; line-height:1.3; }
+  .side-connection-meta { grid-column:2; font-size:10.5px; color:var(--dim); line-height:1.3; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  body.side-collapsed .side-foot { padding:8px 10px; }
+  body.side-collapsed .side-connection { display:flex; justify-content:center; padding:9px 0; }
+  body.side-collapsed .side-connection-title, body.side-collapsed .side-connection-meta { display:none; }
+  .backend-toast { position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:9999; display:flex; align-items:center; gap:8px;
+    max-width:min(560px,calc(100vw - 32px)); padding:8px 14px; border:1px solid var(--border2); border-radius:9px; background:var(--card); color:var(--text);
+    box-shadow:0 10px 28px rgba(15,23,42,.18); font-size:12.5px; }
+  .backend-toast[hidden] { display:none; }
+  .backend-toast.warn { border-color:rgba(217,119,6,.45); color:var(--warn-fg); }
+  .backend-toast.err { border-color:rgba(220,38,38,.45); color:var(--err-fg); }
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
   /* 设置下拉（body 级 fixed，从"设置"菜单项右侧飞出） */
   .settings-popup { position:fixed; min-width:172px;
     background:var(--card); border:1px solid var(--border); border-radius:10px; padding:6px;
@@ -555,13 +562,10 @@
   </div>
 </noscript>
 
-<!-- 数据状态条：固定顶部中央大字，永远可见（即使开了 DevTools 也不被遮挡），染色分明 -->
-<div id="liveBadge" style="position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9999;font-size:13px;font-weight:600;
-  padding:6px 16px;border-radius:0 0 10px 10px;background:rgba(34,197,94,.95);color:#fff;box-shadow:0 2px 12px rgba(0,0,0,.18);
-  font-family:var(--mono,monospace);min-width:280px;text-align:center;letter-spacing:.3px;">
-  <span id="liveDot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fff;margin-right:7px;vertical-align:middle;box-shadow:0 0 4px #fff;"></span>
-  <span id="liveTxt">⏳ 初始化（首次加载）...</span>
-  <span id="liveBack" style="margin-left:10px;font-size:11px;opacity:.85"></span>
+<!-- 后端异常提示：仅在警告或错误时出现，正常状态收进侧栏底部 -->
+<div id="backendToast" class="backend-toast" role="status" aria-live="polite" hidden>
+  <span id="backendToastDot" class="dot amber"></span>
+  <span id="backendToastText"></span>
 </div>
 
 <!-- 登录覆盖层：未认证时阻止整个控制台操作（保护防火墙管理入口） -->
@@ -619,6 +623,14 @@
         <svg class="ic sm" style="margin-left:auto;opacity:.55"><use href="#i-down"/></svg>
       </button>
     </nav>
+    <div class="side-foot">
+      <button class="side-connection" id="sideConnectionStatus" type="button" onclick="showBackendMonitor()" title="查看后端监控">
+        <span id="liveDot" class="dot amber"></span>
+        <span class="side-connection-title" id="connectionTxt">数据连接初始化中</span>
+        <span class="side-connection-meta" id="connectionMeta">点击查看后端监控</span>
+      </button>
+      <span id="liveTxt" class="sr-only" aria-live="polite"></span>
+    </div>
   </aside>
 
   <!-- 主区：顶栏 + 视图 -->
@@ -627,13 +639,6 @@
       <h2 class="view-title" id="viewTitle">运营总览</h2>
       <div class="spacer"></div>
       <div class="top-ctrl">
-        <!-- 网络状态组：后端地址 + 强刷 + 测网络（放退出按钮左侧） -->
-        <span class="side-net" id="sideNet">
-          <span class="sn-label">后端→</span>
-          <code class="sn-url" id="backendUrl">http://localhost:8080</code>
-          <button class="sn-btn" onclick="location.reload(true)" title="强刷（Ctrl+R）"><svg class="ic sm"><use href="#i-refresh"/></svg></button>
-          <button class="sn-btn" onclick="testBackend()" title="网络健康检测"><svg class="ic sm"><use href="#i-pulse"/></svg></button>
-        </span>
         <button class="btn" onclick="doLogout()" title="退出登录（发布公网后保护管理入口）" style="padding:3px 10px;font-size:12px"><svg class="ic-btn"><use href="#i-lock"/></svg>退出</button>
       </div>
     </header>
@@ -829,6 +834,7 @@
 <!-- 设置下拉（body 级 fixed 定位，避开侧栏 overflow 裁剪） -->
 <div class="settings-popup" id="settingsPopup" hidden>
   <button class="cp-item" onclick="configAction('llm')"><svg class="ic sm"><use href="#i-settings"/></svg>模型配置</button>
+  <button class="cp-item" onclick="configAction('backend')"><svg class="ic sm"><use href="#i-pulse"/></svg>后端监控</button>
   <button class="cp-item" onclick="configAction('input')"><svg class="ic sm"><use href="#i-pencil"/></svg>输入任务</button>
   <button class="cp-item" onclick="configAction('theme')"><svg class="ic sm" id="configThemeIcon"><use href="#i-moon"/></svg><span id="configThemeTxt">深色模式</span></button>
   <div class="cp-sep"></div>
@@ -933,6 +939,7 @@ function closeSettingsMenu() { const p = document.getElementById("settingsPopup"
 function configAction(key) {
   closeSettingsMenu();
   if (key === "llm") showLLMConfig();
+  else if (key === "backend") showBackendMonitor();
   else if (key === "input") focusInput();
   else if (key === "theme") toggleTheme();
   else if (key === "pwd") showChangePwd();
@@ -984,12 +991,42 @@ window.addEventListener("unhandledrejection", (ev) => {
   pulseLiveBadge("err");
 });
 const _loc = location.origin || (location.protocol + "//" + location.host);
-const _bu = document.getElementById("backendUrl"); if (_bu) _bu.textContent = _loc;
+let _lastBeat = Date.now();
+let _backendState = "warn";
+let _lastBackendCheck = [];
+let _lastBackendCheckAt = null;
+
+function showBackendMonitor() {
+  document.getElementById("backendMonitorMask")?.remove();
+  const mask = document.createElement("div");
+  mask.id = "backendMonitorMask";
+  mask.className = "modal-mask";
+  mask.innerHTML = '<div class="modal-box" style="max-width:560px"><h2>后端监控</h2>' +
+    '<div style="font-size:12.5px;color:var(--muted);margin:-4px 0 14px;line-height:1.6">控制台连接状态与核心 API 检测结果。仅检测，不执行防火墙配置变更。</div>' +
+    '<div id="backendMonitorData"></div>' +
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn" onclick="location.reload()">刷新页面</button><button class="btn primary" onclick="testBackend()">重新检测</button><button class="btn" onclick="closeBackendMonitor()">关闭</button></div></div>';
+  document.body.appendChild(mask);
+  renderBackendMonitor();
+}
+function closeBackendMonitor() { document.getElementById("backendMonitorMask")?.remove(); }
+function renderBackendMonitor() {
+  const box = document.getElementById("backendMonitorData");
+  if (!box) return;
+  const ageSeconds = Math.max(0, Math.round((Date.now() - _lastBeat) / 1000));
+  const stateLabel = { ok: "正常", warn: "注意", err: "异常" }[_backendState] || "未知";
+  const stateColor = _backendState === "err" ? "var(--red)" : _backendState === "warn" ? "var(--amber)" : "var(--green)";
+  const checkedAt = _lastBackendCheckAt ? _lastBackendCheckAt.toLocaleTimeString() : "尚未手动检测";
+  const rows = _lastBackendCheck.length
+    ? _lastBackendCheck.map((item) => '<div style="display:flex;gap:8px;padding:7px 0;border-top:1px solid var(--border);font-family:var(--mono);font-size:11.5px"><span style="color:' + (item.ok ? "var(--green)" : "var(--red)") + '">' + (item.ok ? "✓" : "✗") + '</span><span style="flex:1">' + esc(item.endpoint) + '</span><span style="color:var(--muted)">' + esc(item.detail) + '</span></div>').join("")
+    : '<div style="padding:9px 0;color:var(--muted);font-size:12.5px">尚未运行手动检测；可点击“重新检测”。</div>';
+  box.innerHTML = '<div style="display:grid;grid-template-columns:110px 1fr;gap:8px 12px;font-size:13px"><span style="color:var(--muted)">当前状态</span><b style="color:' + stateColor + '">' + stateLabel + '</b><span style="color:var(--muted)">控制台后端</span><code style="color:var(--accent)">' + esc(_loc) + '</code><span style="color:var(--muted)">数据新鲜度</span><span>' + ageSeconds + ' 秒前成功更新</span><span style="color:var(--muted)">最近检测</span><span>' + checkedAt + '</span></div><div style="margin-top:16px;font-size:12px;font-weight:600;color:var(--text)">核心接口健康</div>' + rows;
+}
 
 // ── 网络诊断：点击 [🩺 测网络] 按钮会并行 ping 4 个核心接口，结果打到 heartbeat + console ──
 async function testBackend() {
-  const txt = document.getElementById("liveTxt"); const back = document.getElementById("liveBack");
-  pulseLiveBadge("warn"); if (txt) txt.textContent = "⏳ 诊断网络…"; if (back) back.textContent = "";
+  const txt = document.getElementById("liveTxt");
+  if (txt) txt.textContent = "⏳ 正在检测后端接口…";
+  pulseLiveBadge("warn");
   const endpoints = ["/api/overview", "/api/llm", "/api/tasks", "/api/feishu/status"];
   const results = [];
   for (const ep of endpoints) {
@@ -999,31 +1036,46 @@ async function testBackend() {
       const r = await fetch(_loc + ep, { cache: "no-store", signal: ac.signal });
       clearTimeout(tm);
       const ms = Date.now() - t0;
-      results.push((r.ok ? "✓" : "✗") + " " + ep + " " + r.status + " " + ms + "ms");
+      results.push({ endpoint: ep, ok: r.ok, detail: r.status + " · " + ms + "ms" });
       console.log("[diag]", ep, r.status, ms + "ms");
     } catch (e) {
       clearTimeout(tm);
-      results.push("✗ " + ep + " " + e.name + ": " + (e.message || ""));
+      results.push({ endpoint: ep, ok: false, detail: e.name + ": " + (e.message || "") });
       console.error("[diag]", ep, e.name, e.message);
     }
   }
-  if (back) back.textContent = " | " + results.map(s => s.split(" ").slice(0, 2).join(" ")).join(" / ");
-  const okCount = results.filter(r => r.startsWith("✓")).length;
-  if (okCount === 0) { pulseLiveBadge("err"); if (txt) txt.textContent = "❌ 4 个接口全失败。浏览器无法访问 " + _loc + "（可能：服务挂了 / 网络代理阻断 / 跨域）"; console.error("[diag] ALL FAIL", results); }
-  else if (okCount < 4) { pulseLiveBadge("warn"); if (txt) txt.textContent = "⚠️ " + okCount + "/4 接口可达：" + results.join("；"); }
-  else { pulseLiveBadge("ok"); if (txt) txt.textContent = "✅ 4/4 接口正常 · 网络通"; }
+  _lastBackendCheck = results;
+  _lastBackendCheckAt = new Date();
+  const okCount = results.filter(r => r.ok).length;
+  if (okCount === 0) { if (txt) txt.textContent = "❌ 4 个接口全失败。浏览器无法访问后端"; pulseLiveBadge("err"); console.error("[diag] ALL FAIL", results); }
+  else if (okCount < 4) { if (txt) txt.textContent = "⚠️ " + okCount + "/4 后端接口可达"; pulseLiveBadge("warn"); }
+  else { if (txt) txt.textContent = "数据连接正常"; pulseLiveBadge("ok"); }
+  renderBackendMonitor();
 }
 window.testBackend = testBackend;
 
 // ── 数据心跳：每个 fetcher 都打点，超时无心跳在状态条红色告警 ──
-let _lastBeat = Date.now();
-function beat() { _lastBeat = Date.now(); const txt=document.getElementById("liveTxt"); if(txt) txt.textContent="数据流: 正常 (" + new Date().toLocaleTimeString() + ")"; pulseLiveBadge("ok"); }
+function beat() { _lastBeat = Date.now(); const txt=document.getElementById("liveTxt"); if(txt) txt.textContent="数据连接正常"; pulseLiveBadge("ok"); }
 function pulseLiveBadge(state) {
-  const b=document.getElementById("liveBadge"), d=document.getElementById("liveDot"), t=document.getElementById("liveTxt");
-  if(!b||!d||!t) return;
+  const b=document.getElementById("sideConnectionStatus"), d=document.getElementById("liveDot"), t=document.getElementById("liveTxt"), label=document.getElementById("connectionTxt"), meta=document.getElementById("connectionMeta");
+  if(!b||!d||!t||!label||!meta) return;
+  _backendState = state;
   if (state === "warn") { b.style.background="rgba(217,119,6,.14)"; b.style.color="#b45309"; b.style.borderColor="rgba(217,119,6,.4)"; d.style.background="#d97706"; }
   else if (state === "err") { b.style.background="rgba(220,38,38,.14)"; b.style.color="#b91c1c"; b.style.borderColor="rgba(220,38,38,.4)"; d.style.background="#dc2626"; }
   else { b.style.background="rgba(34,197,94,.12)"; b.style.color="#15803d"; b.style.borderColor="rgba(34,197,94,.3)"; d.style.background="#22c55e"; }
+  const toast = document.getElementById("backendToast"), toastText = document.getElementById("backendToastText"), toastDot = document.getElementById("backendToastDot");
+  if (!toast || !toastText || !toastDot) return;
+  const render = () => {
+    if (_backendState !== state) return;
+    label.textContent = state === "ok" ? "数据连接正常" : t.textContent || "数据连接需要关注";
+    meta.textContent = state === "ok" ? new Date(_lastBeat).toLocaleTimeString() + " 更新" : "点击查看后端监控";
+    toast.className = "backend-toast" + (state === "ok" ? "" : " " + state);
+    toastDot.className = "dot " + (state === "err" ? "red" : "amber");
+    if (state === "ok") toast.hidden = true;
+    else { toastText.textContent = label.textContent; toast.hidden = false; }
+  };
+  render();
+  queueMicrotask(render);
 }
 setInterval(() => {
   const age = Date.now() - _lastBeat;
