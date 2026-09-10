@@ -2403,17 +2403,18 @@ async function cleanAndRefresh() {
 function renderTaskMessages(t, animate) {
   const LIVE = ["pending", "running", "executing", "committing"];
   const isLive = LIVE.includes(t.status);
+  const canReusePrompt = ["done", "failed", "cancelled"].includes(t.status);
   const animCls = animate ? " msg-new" : "";
   const stHtml = '<span class="st ' + t.status + '">' + statusText(t.status) + '</span>' + (isLive ? ' <span class="live-badge">LIVE</span>' : "");
   // 用户气泡（右对齐蓝）：输入 + 状态徽章 + 时间
   let h = '<div class="msg-row user' + animCls + '"><div class="msg-bubble">' +
     '<div class="msg-input">' + esc(t.input) + '</div>' +
     '<div class="msg-meta">' + stHtml + '<span>' + esc(t.createdAt || "") + '</span></div>' +
-    '<div class="msg-actions">' +
+    (canReusePrompt ? '<div class="msg-actions">' +
       '<button onclick="copyTaskPrompt(' + t.id + ')">' + ic("copy", "sm") + ' 复制提问</button>' +
       '<button onclick="editTaskPrompt(' + t.id + ')">' + ic("pencil", "sm") + ' 修改提问</button>' +
       '<button onclick="resendTaskPrompt(' + t.id + ')">' + ic("zap", "sm") + ' 重新发送</button>' +
-    '</div>' +
+    '</div>' : '') +
     '</div></div>';
   // AI 气泡（左对齐）：结果/操作/步骤 + 悬停操作条（↩ 追问这条 / ⧉ 复制 / 取消）
   h += '<div class="msg-row ai' + animCls + '"><div class="msg-avatar">' + ic("robot", "lg") + '</div><div class="msg-bubble">' +

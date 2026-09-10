@@ -89,4 +89,6 @@ test("task center exposes copy, edit, and resend actions for user prompts", () =
   const resend = root.state.body.match(/async function resendTaskPrompt\(id\) \{[\s\S]*?\n\}/)?.[0] || "";
   assert.match(resend, /JSON\.stringify\(\{ query: task\.input, firewall: currentFirewall\(\) \}\)/);
   assert.doesNotMatch(resend, /replyTo/);
+  assert.match(root.state.body, /const canReusePrompt = \["done", "failed", "cancelled"\]\.includes\(t\.status\);/);
+  assert.match(root.state.body, /canReusePrompt \? '<div class="msg-actions">'/);
 });

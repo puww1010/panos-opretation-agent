@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为任务中心每个用户提问气泡增加复制、修改和重新发送操作，以复用原始问法而不更改历史任务。
+**Goal:** 为任务中心每个已完成、失败或已取消的用户提问气泡增加复制、修改和重新发送操作，以复用原始问法而不更改历史任务。
 
 **Architecture:** 改动仅位于 `webui/index.html`。用户气泡复用已有的悬停操作条样式；复制和修改只操作浏览器状态，重新发送直接调用既有 `POST /api/task` 接口并传入原始 `input` 与当前防火墙，不传 `replyTo`。
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- 只操作用户气泡，不改变机器人回复气泡的操作。
+- 只操作状态为 `done`、`failed` 或 `cancelled` 的用户气泡，不改变机器人回复气泡的操作。
 - 不新增 API、服务层、任务持久化字段或任务状态。
 - 修改只回填输入框，不自动发送，也不保留 `replyTo`。
 - 重新发送只发送原始 `input` 和当前防火墙，不附带 `replyTo` 或 `@#任务号`。
@@ -123,14 +123,20 @@ async function resendTaskPrompt(id) {
 
 - [ ] **Step 3: 在用户气泡渲染中加入悬停操作条**
 
-将 `renderTaskMessages(t, animate)` 的用户气泡结构改为在输入和元信息之后追加：
+将 `renderTaskMessages(t, animate)` 的用户气泡结构改为先定义：
 
 ```js
-'<div class="msg-actions">' +
+const canReusePrompt = ["done", "failed", "cancelled"].includes(t.status);
+```
+
+再仅在 `canReusePrompt` 为真时、于输入和元信息之后追加：
+
+```js
+canReusePrompt ? '<div class="msg-actions">' +
   '<button onclick="copyTaskPrompt(' + t.id + ')">' + ic("copy", "sm") + ' 复制提问</button>' +
   '<button onclick="editTaskPrompt(' + t.id + ')">' + ic("pencil", "sm") + ' 修改提问</button>' +
   '<button onclick="resendTaskPrompt(' + t.id + ')">' + ic("zap", "sm") + ' 重新发送</button>' +
-'</div>'
+'</div>' : ''
 ```
 
 保持现有 `.msg-actions` 的悬停显示样式，不新增布局组件。
