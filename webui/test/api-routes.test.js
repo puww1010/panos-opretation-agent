@@ -73,3 +73,25 @@ test("LLM manual test retains the legacy action catalog", async () => {
   assert.match(prompt, /device\(设备状态\).*diag\(诊断\)/);
   assert.equal(sent[0].code, 200);
 });
+
+test("task router exposes traffic-log pages and export only through Task Service", async () => {
+  const sent = [];
+  const calls = [];
+  const router = createApiRouter({
+    dashboardService: {},
+    taskService: {
+      getTrafficLogPage: (id, page, size) => { calls.push(["page", id, page, size]); return { page, size, total: 2, rows: [{ action: "allow" }] }; },
+      exportTrafficLogs: (id) => { calls.push(["export", id]); return { rows: [{ action: "allow" }, { action: "deny" }] }; },
+    },
+  });
+  const send = (code, body) => sent.push({ code, body });
+
+  assert.equal(await router.handleTasks({ method: "GET", url: "/api/task/42/logs?page=2&size=50" }, send, async () => "", null, null), true);
+  assert.equal(await router.handleTasks({ method: "GET", url: "/api/task/42/logs/export" }, send, async () => "", null, null), true);
+
+  assert.deepEqual(calls, [["page", 42, 2, 50], ["export", 42]]);
+  assert.deepEqual(sent, [
+    { code: 200, body: { page: 2, size: 50, total: 2, rows: [{ action: "allow" }] } },
+    { code: 200, body: { rows: [{ action: "allow" }, { action: "deny" }] } },
+  ]);
+});

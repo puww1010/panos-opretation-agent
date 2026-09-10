@@ -384,6 +384,48 @@ test("query execution runs its tools, summarizes results, and records history", 
   assert.deepEqual(history, [{ input: "查看设备状态", action: "status", label: "设备状态" }]);
 });
 
+test("query execution forwards an explicit log count without a time window", async () => {
+  const calls = [];
+  const service = createTaskService({
+    actionDefinitions: { traffic: { label: "流量日志", tools: ["get_traffic_logs"] } },
+    toolCaller: async (tool, args) => { calls.push({ tool, args }); return { entry: [] }; },
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 30, type: "query", status: "pending", input: "最新20条流量日志", action: "traffic", nlogs: 20, steps: [] });
+
+  await service.runQuery(service.getTask(30), "traffic");
+
+  assert.deepEqual(calls, [{ tool: "get_traffic_logs", args: { nlogs: 20 } }]);
+});
+
+test("ten-minute traffic queries keep a compact preview while exposing loaded rows by page and export", async () => {
+  const rows = Array.from({ length: 70 }, (_, index) => ({
+    receive_time: "2024/06/01 12:" + String(index % 10).padStart(2, "0") + ":00",
+    src: "198.51.100." + (index % 3), dst: "203.0.113.10", app: "ssl", action: index % 2 ? "allow" : "deny",
+  }));
+  const calls = [];
+  const service = createTaskService({
+    actionDefinitions: { traffic: { label: "流量日志", tools: ["get_traffic_logs"] } },
+    toolCaller: async (tool, args) => { calls.push({ tool, args }); return { entry: rows }; },
+    querySummarizer: async (_input, _action, results) => "日志样本 " + results[0].data.entry.length + " 条",
+    taskStore: memoryStore(), auditStore: memoryStore(),
+  });
+  service.seedTask({ id: 31, type: "query", status: "pending", input: "流量日志", action: "traffic", minutes: 10, steps: [] });
+
+  await service.runQuery(service.getTask(31), "traffic");
+
+  const task = service.getTask(31);
+  assert.deepEqual(calls, [{ tool: "get_traffic_logs", args: { minutes: 10, nlogs: 1000 } }]);
+  assert.equal(task.result.traffic.total, 70);
+  assert.equal(task.result.traffic.preview.length, 50);
+  assert.equal(task.result.traffic.truncated, false);
+  assert.equal(task.result.traffic.timeline.length, 10);
+  assert.equal(task.result.results[0].data.entry.length, 50);
+  assert.equal(task.result.summary, "日志样本 50 条");
+  assert.deepEqual(service.getTrafficLogPage(31, 2, 20), { page: 2, size: 20, total: 70, rows: rows.slice(20, 40) });
+  assert.deepEqual(service.exportTrafficLogs(31).rows, rows);
+});
+
 test("inspection execution scores collected evidence and writes a report", async () => {
   let report;
   const now = new Date(2023, 10, 14, 22, 13).getTime();

@@ -108,6 +108,38 @@ function ipMatchDest(destination, ip) {
   return (ipNumber & mask) === (networkNumber & mask);
 }
 
+const TRAFFIC_LOG_LIMIT = 1000;
+const TRAFFIC_PREVIEW_SIZE = 50;
+
+function buildTrafficSummary(rows, minutes, limit) {
+  const countBy = (field) => Object.entries(rows.reduce((counts, row) => {
+    const value = row[field] || "?";
+    counts[value] = (counts[value] || 0) + 1;
+    return counts;
+  }, {})).sort((left, right) => right[1] - left[1]).slice(0, 10);
+  const buckets = new Map();
+  for (const row of rows) {
+    const value = String(row.receive_time || "");
+    const timestamp = Date.parse(value.replace(/\//g, "-"));
+    if (Number.isNaN(timestamp)) continue;
+    const bucket = Math.floor(timestamp / 60000) * 60000;
+    const actions = buckets.get(bucket) || {};
+    const action = row.action || "?";
+    actions[action] = (actions[action] || 0) + 1;
+    buckets.set(bucket, actions);
+  }
+  const times = rows.map((row) => row.receive_time).filter(Boolean).sort();
+  return {
+    minutes, total: rows.length, preview: rows.slice(0, TRAFFIC_PREVIEW_SIZE),
+    limit, truncated: rows.length >= limit,
+    timeRange: times.length ? times[0] + " → " + times[times.length - 1] : "",
+    top: { src: countBy("src"), dst: countBy("dst"), app: countBy("app"), action: countBy("action") },
+    timeline: [...buckets.entries()].sort((left, right) => left[0] - right[0]).map(([timestamp, actions]) => ({
+      time: new Date(timestamp).toISOString().slice(11, 16), actions,
+    })),
+  };
+}
+
 function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile, auditFile, maxTasks, logger, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, diagnosticDependencies, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   taskStore = taskStore || (taskFile && createFileBackedTaskStore(taskFile, { maxTasks, logger }));
   auditStore = auditStore || (auditFile && createFileBackedAuditStore(auditFile, { logger }));
@@ -115,6 +147,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
   const tasks = taskStore.load();
   const auditEvents = auditStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
+  const trafficLogRows = new Map();
 
   function saveTasks() { taskStore.save(tasks); }
 
@@ -280,6 +313,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
     if (!definition || !toolCaller) throw new Error("未配置查询动作或工具调用器: " + action);
     task.status = "running";
     const results = [];
+    let traffic = null;
     for (const tool of definition.tools) {
       if (task.cancelled) {
         task.status = "cancelled";
@@ -288,7 +322,19 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
       const step = { tool, status: "running", startMs: clock() };
       task.steps.push(step);
       try {
-        results.push({ tool, data: await toolCaller(tool, task.minutes ? { minutes: task.minutes } : {}, task.firewall) });
+        const args = {};
+        if (task.minutes) args.minutes = task.minutes;
+        if (task.nlogs) args.nlogs = task.nlogs;
+        if (action === "traffic" && tool === "get_traffic_logs" && task.minutes && !args.nlogs) args.nlogs = TRAFFIC_LOG_LIMIT;
+        const data = await toolCaller(tool, args, task.firewall);
+        if (action === "traffic" && tool === "get_traffic_logs" && task.minutes) {
+          const rows = Array.isArray(data?.entry) ? data.entry : [];
+          trafficLogRows.set(task.id, rows);
+          traffic = buildTrafficSummary(rows, task.minutes, args.nlogs);
+          results.push({ tool, data: { entry: traffic.preview } });
+        } else {
+          results.push({ tool, data });
+        }
         step.status = "ok";
         step.ms = clock() - step.startMs;
       } catch (error) {
@@ -301,9 +347,9 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
     if (task.status !== "cancelled") {
       try {
         const summary = querySummarizer ? await querySummarizer(task.input, action, results, task.conversationId) : null;
-        task.result = { label: definition.label, results, summary };
+        task.result = { label: definition.label, results, summary, ...(traffic ? { traffic } : {}) };
       } catch {
-        task.result = { label: definition.label, results };
+        task.result = { label: definition.label, results, ...(traffic ? { traffic } : {}) };
       }
       task.status = "done";
       if (queryHistoryRecorder) queryHistoryRecorder({ input: String(task.input), action, label: definition.label });
@@ -893,10 +939,26 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
     const terminal = new Set(["done", "cancelled", "failed"]);
     const before = tasks.length;
     for (let index = tasks.length - 1; index >= 0; index -= 1) {
-      if (terminal.has(tasks[index].status)) tasks.splice(index, 1);
+      if (terminal.has(tasks[index].status)) {
+        trafficLogRows.delete(tasks[index].id);
+        tasks.splice(index, 1);
+      }
     }
     saveTasks();
     return { removed: before - tasks.length, remain: tasks.length };
+  }
+
+  function getTrafficLogPage(id, page = 1, size = TRAFFIC_PREVIEW_SIZE) {
+    const rows = trafficLogRows.get(Number(id));
+    if (!rows) return null;
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeSize = Math.max(1, Math.min(100, Number(size) || TRAFFIC_PREVIEW_SIZE));
+    return { page: safePage, size: safeSize, total: rows.length, rows: rows.slice((safePage - 1) * safeSize, safePage * safeSize) };
+  }
+
+  function exportTrafficLogs(id) {
+    const rows = trafficLogRows.get(Number(id));
+    return rows ? { rows } : null;
   }
 
   return {
@@ -905,7 +967,9 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
     cleanTasks,
     createTask,
     dispatchTask,
+    exportTrafficLogs,
     getTask,
+    getTrafficLogPage,
     listAuditEvents: () => auditEvents,
     listTasks: () => tasks,
     prepareRuleSelection: setAwaitingSelection,

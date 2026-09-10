@@ -62,9 +62,14 @@ function createTaskPlanner({ taskService, llmService, actions, changeTemplates, 
   async function createTaskFromInput(input, firewall, source, options = {}) {
     dedupeActiveTask(input);
     const conversation = resolveConversation(options.replyTo);
-    let action = null, fromLlm = false, minutes = null;
+    let action = null, fromLlm = false, minutes = null, nlogs = null;
     for (const [key, value] of Object.entries(actions)) if (key === input || value.label === input) action = key;
     if (!action) { const resolved = await llmService.resolveAction(input, { conversationId: conversation.conversationId, actions }); if (resolved) { action = resolved.action; minutes = resolved.minutes; fromLlm = Boolean(action); } }
+    if (action === "traffic" && !minutes) {
+      const count = String(input).match(/(?:最新|最近)\s*(\d{1,4})\s*条/);
+      if (count) nlogs = Math.max(1, Math.min(1000, Number(count[1])));
+      else minutes = 10;
+    }
     if (action === "change") {
       const change = await llmService.extractChange(input, { conversationId: conversation.conversationId, changeTemplates });
       if (!change) return { error: "无法解析变更意图（支持：创建/删除地址对象、封禁/放行 IP、移动/删除/禁用/启用安全策略）" };
@@ -79,7 +84,7 @@ function createTaskPlanner({ taskService, llmService, actions, changeTemplates, 
     if (action === "audit") { const audit = await llmService.parseAudit(input); const task = taskService.dispatchTask("audit", input, { firewall, source, audit, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, (item) => { item.llm = llmService.getCurrent(); item.decision = `LLM 规划 → 审计查询（${audit.minutes} 分钟内${audit.object}）（${providerLabel()}）`; item.steps.push(item.decision); }, (item) => taskService.runAudit(item)); return { taskId: task.id, status: task.status, type: "audit" }; }
     if (action === "diag") { const diagnostic = await llmService.parseDiagnostic(input, conversation.conversationId); if (!diagnostic?.type) return createFreeAnswer(input, firewall, source, conversation); const task = taskService.dispatchTask("diag", input, { firewall, source, diag: diagnostic, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, (item) => { item.llm = llmService.getCurrent(); item.decision = `LLM 规划 → 诊断 ${diagnostic.type}（${providerLabel()}）`; item.steps.push(item.decision); }, (item) => taskService.runDiagnostic(item)); return { taskId: task.id, status: task.status, type: "diag" }; }
     if (action === "inspect") { const task = taskService.dispatchTask("inspect", input, { firewall, source, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, null, (item) => taskService.runInspect(item)); return { taskId: task.id, status: task.status, type: "inspect" }; }
-    if (action && actions[action]) { const task = taskService.dispatchTask("query", input, { action, firewall, source, minutes, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, (item) => { if (fromLlm) item.llm = llmService.getCurrent(); item.decision = fromLlm ? `LLM 规划 → 动作 ${action}（${providerLabel()}）${minutes ? "，时间窗口 " + minutes + " 分钟" : ""}` : `关键词匹配 → 动作 ${action}`; item.steps.push(item.decision); }, (item) => taskService.runQuery(item, action)); return { taskId: task.id, status: task.status, type: "query", label: actions[action].label }; }
+    if (action && actions[action]) { const task = taskService.dispatchTask("query", input, { action, firewall, source, minutes, nlogs, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, (item) => { if (fromLlm) item.llm = llmService.getCurrent(); const detail = minutes ? "，时间窗口 " + minutes + " 分钟" : nlogs ? "，最新 " + nlogs + " 条" : ""; item.decision = fromLlm ? `LLM 规划 → 动作 ${action}（${providerLabel()}）${detail}` : `关键词匹配 → 动作 ${action}${detail}`; item.steps.push(item.decision); }, (item) => taskService.runQuery(item, action)); return { taskId: task.id, status: task.status, type: "query", label: actions[action].label }; }
     return createFreeAnswer(input, firewall, source, conversation);
   }
   return { createTaskFromInput };

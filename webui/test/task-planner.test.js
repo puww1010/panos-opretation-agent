@@ -27,3 +27,35 @@ test("task planner gives a new address-object plan the ip-netmask default", asyn
   assert.equal(result.plan, "类型:ip-netmask");
   assert.equal(saved[0].params.type, "ip-netmask");
 });
+
+test("traffic queries default to ten minutes while explicit windows and counts win", async () => {
+  const tasks = [];
+  const planner = createTaskPlanner({
+    actions: { traffic: { label: "流量日志" } },
+    callTool: async () => null,
+    llmService: {
+      getCurrent: () => "keyword",
+      resolveAction: async (input) => input.includes("30分钟")
+        ? { action: "traffic", minutes: 30 }
+        : { action: "traffic", minutes: null },
+    },
+    taskService: {
+      dispatchTask: (_type, input, extra, prepare) => {
+        const task = { id: tasks.length + 1, input, status: "pending", steps: [], ...extra };
+        prepare(task);
+        tasks.push(task);
+        return task;
+      },
+      listTasks: () => [],
+    },
+  });
+
+  await planner.createTaskFromInput("流量日志", "lab", "web");
+  await planner.createTaskFromInput("最近30分钟流量日志", "lab", "web");
+  await planner.createTaskFromInput("最新20条流量日志", "lab", "web");
+
+  assert.equal(tasks[0].minutes, 10);
+  assert.equal(tasks[1].minutes, 30);
+  assert.equal(tasks[2].minutes, null);
+  assert.equal(tasks[2].nlogs, 20);
+});

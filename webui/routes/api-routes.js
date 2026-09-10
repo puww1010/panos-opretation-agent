@@ -34,6 +34,23 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
     return false;
   }
   async function handleTasks(req, send, readBody, taskCreator, ensureConnected) {
+    const parsed = new URL(req.url, "http://localhost");
+    const exportMatch = parsed.pathname.match(/^\/api\/task\/(\d+)\/logs\/export$/);
+    if (req.method === "GET" && exportMatch) {
+      const result = taskService.getTrafficLogPage && taskService.exportTrafficLogs(Number(exportMatch[1]));
+      if (!result) { send(404, { error: "该任务的原始流量日志已不在内存中，请重新运行查询" }); return true; }
+      send(200, result);
+      return true;
+    }
+    const pageMatch = parsed.pathname.match(/^\/api\/task\/(\d+)\/logs$/);
+    if (req.method === "GET" && pageMatch) {
+      const page = Math.max(1, parseInt(parsed.searchParams.get("page") || "1", 10) || 1);
+      const size = Math.max(1, Math.min(100, parseInt(parsed.searchParams.get("size") || "50", 10) || 50));
+      const result = taskService.getTrafficLogPage && taskService.getTrafficLogPage(Number(pageMatch[1]), page, size);
+      if (!result) { send(404, { error: "该任务的原始流量日志已不在内存中，请重新运行查询" }); return true; }
+      send(200, result);
+      return true;
+    }
     if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks: taskService.listTasks() }); return true; }
     if (req.method === "POST" && req.url === "/api/tasks/clean") { send(200, taskService.cleanTasks()); return true; }
     if (req.method === "POST" && req.url === "/api/task") { const { query, firewall, source, replyTo } = JSON.parse(await readBody()); await ensureConnected(); send(200, await taskCreator(query, firewall, source || "web", { replyTo })); return true; }

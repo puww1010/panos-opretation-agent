@@ -25,6 +25,16 @@ test("static router serves the root page and rejects traversal-like paths", () =
   assert.equal(traversal.state.status, null);
 });
 
+test("dashboard labels management CPU as an OS estimate, not the native WebUI metric", () => {
+  const router = createStaticRouter({ rootDirectory: path.join(__dirname, "..") });
+  const root = response();
+
+  assert.equal(router.handle({ method: "GET", url: "/" }, root), true);
+  assert.match(root.state.body, /管理面 OS CPU 估算/);
+  assert.match(root.state.body, /show system resources 的 us \+ sy \+ ni 汇总/);
+  assert.doesNotMatch(root.state.body, /Load 与防火墙 WebUI 一致/);
+});
+
 test("topology page exposes data-driven views, semantic zoom, and a node detail drawer", () => {
   const router = createStaticRouter({ rootDirectory: path.join(__dirname, "..") });
   const root = response();

@@ -1,6 +1,8 @@
-# Palo Alto Networks 防火墙监控运维数字员工
+# 防火墙监控运维控制台
 
 基于 PAN-OS API + LLM 的防火墙智能运维控制台。支持 Web 控制台与飞书双通道交互，任务引擎驱动 5 类运维场景（查询 / 巡检 / 诊断 / 审计 / 变更审批），LLM 参与意图规划与诊断推理。
+
+> 本目录是从原开发工作区迁出的独立本地项目。当前架构、阶段交付与后续工作请先阅读 [docs/PROJECT_HANDOVER.md](docs/PROJECT_HANDOVER.md)。
 
 > 🚀 **零 WorkBuddy 运行时依赖**：纯 Node.js 实现，可独立部署（见 `standalone/`）。打包交付方案见 [`docs/PACKAGING-DEPLOY.md`](docs/PACKAGING-DEPLOY.md)。
 
