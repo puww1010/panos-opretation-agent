@@ -315,11 +315,14 @@
   /* 用户气泡内状态徽章：反色（白底半透 + 白字 + 白点），原 .st.done 绿底在深蓝气泡上看不清 */
   .msg-row.user .msg-bubble .st { background:rgba(255,255,255,.18) !important; color:#fff !important; }
   .msg-row.user .msg-bubble .st::before { background:#fff !important; }
-  /* AI 气泡操作条（悬停显示） */
+  /* 消息气泡操作条（悬停显示） */
   .msg-actions { display:flex; gap:6px; margin-top:8px; padding-top:7px; border-top:1px dashed var(--border); opacity:0; transition:opacity .15s; flex-wrap:wrap; }
-  .msg-row.ai:hover .msg-actions { opacity:1; }
+  .msg-row:hover .msg-actions { opacity:1; }
   .msg-actions button { font-size:11px; padding:3px 10px; border-radius:6px; border:1px solid var(--border2); background:var(--card); color:var(--muted); cursor:pointer; transition:all .15s; }
   .msg-actions button:hover { border-color:var(--accent); color:var(--accent); background:var(--run-bg); }
+  .msg-row.user .msg-actions { border-color:rgba(255,255,255,.28); }
+  .msg-row.user .msg-actions button { border-color:rgba(255,255,255,.38); background:rgba(255,255,255,.14); color:#fff; }
+  .msg-row.user .msg-actions button:hover { border-color:#fff; color:#fff; background:rgba(255,255,255,.24); }
   /* 任务内部内容（复用原样式，限制在气泡内） */
   .msg-bubble .task-body { padding:0; }
   .msg-bubble table { font-size:12px; }
@@ -2336,7 +2339,46 @@ async function copyTaskText(id) {
   const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "✅ 已复制任务 #" + id + " 结果";
   pulseLiveBadge("ok");
 }
-let _taskCache = []; // copyTaskText 用：记录最近一次 pollTasks 的任务数组
+async function copyTaskPrompt(id) {
+  const task = _taskCache.find((item) => item.id === id);
+  if (!task) return;
+  try { await navigator.clipboard.writeText(task.input); } catch (e) {
+    const ta = document.createElement("textarea"); ta.value = task.input; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e2) {}
+    ta.remove();
+  }
+  const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "✅ 已复制任务 #" + id + " 提问";
+  pulseLiveBadge("ok");
+}
+function editTaskPrompt(id) {
+  const task = _taskCache.find((item) => item.id === id);
+  const input = document.getElementById("q");
+  if (!task || !input) return;
+  clearReplyChip();
+  input.value = task.input;
+  autoGrow(input);
+  focusInput();
+}
+async function resendTaskPrompt(id) {
+  const task = _taskCache.find((item) => item.id === id);
+  if (!task) return;
+  try {
+    const response = await fetch("/api/task", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: task.input, firewall: currentFirewall() }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "✅ 已重新发送任务 #" + id + " 的提问";
+    pulseLiveBadge("ok");
+    pollTasks();
+  } catch (e) {
+    const lt = document.getElementById("liveTxt"); if (lt) lt.textContent = "❌ 重新发送失败: " + (e.message || e);
+    pulseLiveBadge("err");
+  }
+}
+let _taskCache = []; // 任务气泡操作用：记录最近一次 pollTasks 的任务数组
 
 // 清除终态任务（done/cancelled/failed），只保留活跃与待审批任务，然后刷新气泡流
 // 按用户要求：不弹确认框，直接清除历史任务
@@ -2367,6 +2409,11 @@ function renderTaskMessages(t, animate) {
   let h = '<div class="msg-row user' + animCls + '"><div class="msg-bubble">' +
     '<div class="msg-input">' + esc(t.input) + '</div>' +
     '<div class="msg-meta">' + stHtml + '<span>' + esc(t.createdAt || "") + '</span></div>' +
+    '<div class="msg-actions">' +
+      '<button onclick="copyTaskPrompt(' + t.id + ')">' + ic("copy", "sm") + ' 复制提问</button>' +
+      '<button onclick="editTaskPrompt(' + t.id + ')">' + ic("pencil", "sm") + ' 修改提问</button>' +
+      '<button onclick="resendTaskPrompt(' + t.id + ')">' + ic("zap", "sm") + ' 重新发送</button>' +
+    '</div>' +
     '</div></div>';
   // AI 气泡（左对齐）：结果/操作/步骤 + 悬停操作条（↩ 追问这条 / ⧉ 复制 / 取消）
   h += '<div class="msg-row ai' + animCls + '"><div class="msg-avatar">' + ic("robot", "lg") + '</div><div class="msg-bubble">' +

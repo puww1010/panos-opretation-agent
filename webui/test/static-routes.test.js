@@ -74,3 +74,19 @@ test("backend monitoring is available from settings while data flow status lives
   assert.match(root.state.body, /function showBackendMonitor\(\)/);
   assert.doesNotMatch(root.state.body, /position:fixed;top:0;left:50%/);
 });
+
+test("task center exposes copy, edit, and resend actions for user prompts", () => {
+  const router = createStaticRouter({ rootDirectory: path.join(__dirname, "..") });
+  const root = response();
+
+  assert.equal(router.handle({ method: "GET", url: "/" }, root), true);
+  assert.match(root.state.body, /copyTaskPrompt\(/);
+  assert.match(root.state.body, /editTaskPrompt\(/);
+  assert.match(root.state.body, /resendTaskPrompt\(/);
+  assert.match(root.state.body, /复制提问/);
+  assert.match(root.state.body, /修改提问/);
+  assert.match(root.state.body, /重新发送/);
+  const resend = root.state.body.match(/async function resendTaskPrompt\(id\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(resend, /JSON\.stringify\(\{ query: task\.input, firewall: currentFirewall\(\) \}\)/);
+  assert.doesNotMatch(resend, /replyTo/);
+});
