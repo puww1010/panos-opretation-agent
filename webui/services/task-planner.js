@@ -1,3 +1,5 @@
+const { parseMonitorRequest } = require("./monitor/request");
+
 function createTaskPlanner({ taskService, llmService, actions, changeTemplates, normalizeChangeParams, planFingerprint, callTool, clock = Date.now }) {
   const sessionGapMs = 5 * 60 * 1000;
   const activeForDedupe = ["pending", "running", "executing", "awaiting_approval", "awaiting_selection", "awaiting_commit"];
@@ -39,7 +41,7 @@ function createTaskPlanner({ taskService, llmService, actions, changeTemplates, 
   function dedupeActiveTask(input) {
     const normalized = normalizeInput(input);
     if (!normalized) return null;
-    const duplicate = taskService.listTasks().find((task) => task.input && activeForDedupe.includes(task.status) && (normalizeInput(task.input) === normalized || distance(normalizeInput(task.input), normalized) <= 3));
+    const duplicate = taskService.listTasks().find((task) => task.type !== "monitor" && task.input && activeForDedupe.includes(task.status) && (normalizeInput(task.input) === normalized || distance(normalizeInput(task.input), normalized) <= 3));
     if (!duplicate) return null;
     duplicate.status = "cancelled";
     duplicate.steps.push("🔁 与新提交任务完全一致，被新任务自动取消");
@@ -60,11 +62,20 @@ function createTaskPlanner({ taskService, llmService, actions, changeTemplates, 
     return { taskId: task.id, status: task.status, type: "chat" };
   }
   async function createTaskFromInput(input, firewall, source, options = {}) {
+    const monitor = parseMonitorRequest(input);
+    if (monitor) {
+      const conversation = resolveConversation(options.replyTo);
+      const task = taskService.dispatchTask("monitor", input, { firewall, source, monitor, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, null, (item) => taskService.runMonitor(item));
+      return { taskId: task.id, status: task.status, type: "monitor" };
+    }
     dedupeActiveTask(input);
     const conversation = resolveConversation(options.replyTo);
     let action = null, fromLlm = false, minutes = null, nlogs = null;
     for (const [key, value] of Object.entries(actions)) if (key === input || value.label === input) action = key;
     if (!action) { const resolved = await llmService.resolveAction(input, { conversationId: conversation.conversationId, actions }); if (resolved) { action = resolved.action; minutes = resolved.minutes; fromLlm = Boolean(action); } }
+    if (action === "monitor") {
+      throw Object.assign(new Error("无法确定深度巡检范围，请使用明确请求，例如：深度健康巡检 / 深度巡检 威胁日志 最近5分钟"), { code: "MONITOR_INPUT" });
+    }
     if (action === "traffic" && !minutes) {
       const count = String(input).match(/(?:最新|最近)\s*(\d{1,4})\s*条/);
       if (count) nlogs = Math.max(1, Math.min(1000, Number(count[1])));

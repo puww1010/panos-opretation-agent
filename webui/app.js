@@ -6,6 +6,7 @@ const { createAuthService } = require("./services/auth-service");
 const { createDashboardService } = require("./services/dashboard-service");
 const { createLlmService } = require("./services/llm-service");
 const { createTaskPlanner } = require("./services/task-planner");
+const { createMonitorService } = require("./services/monitor/service");
 const { createApiRouter } = require("./routes/api-routes");
 const { createStaticRouter } = require("./routes/static-routes");
 const { createTaskService, normalizeChangeParams } = require("./services/task-service");
@@ -104,6 +105,7 @@ const llmService = createLlmService({
 // Task Service owns task/audit in-memory state and JSON persistence. The server only composes dependencies.
 taskService = createTaskService({
   panosAdapter,
+  monitorService: createMonitorService({ readSource: panosAdapter.readMonitorSource }),
   taskFile: TASKS_FILE,
   auditFile: AUDIT_FILE,
   auditLogReader: (firewall) => callTool("get_config_logs", { nlogs: 200 }, firewall),
@@ -129,6 +131,7 @@ taskService = createTaskService({
 });
 // ── 动作清单（查询用）──
 const ACTIONS = {
+  monitor:   { label: "深度健康巡检", tools: [], keywords: ["深度健康巡检", "深度巡检"] },
   device:    { label: "设备状态", tools: ["get_system_resources", "get_active_sessions", "get_ha_status"], keywords: ["状态", "负载", "cpu", "内存", "运行", "device", "status", "health", "resource", "load"] },
   inventory: { label: "设备清单", tools: ["get_firewall_info", "get_system_environmentals", "get_interfaces", "get_licenses", "get_content_versions"], keywords: ["设备", "清单", "资产", "inventory", "硬件", "型号", "序列号", "版本", "asset", "hardware", "serial", "model", "system"] },
   security:  { label: "安全策略", tools: ["get_security_rules"], keywords: ["策略", "放行", "policy", "security"] },

@@ -140,7 +140,7 @@ function buildTrafficSummary(rows, minutes, limit) {
   };
 }
 
-function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile, auditFile, maxTasks, logger, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, diagnosticDependencies, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
+function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile, auditFile, maxTasks, logger, auditLogReader, actionDefinitions, toolCaller, querySummarizer, queryHistoryRecorder, inspectReportWriter, diagnosticDependencies, monitorService, clock = Date.now, deferExecution = false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxCommitPolls = 200 }) {
   taskStore = taskStore || (taskFile && createFileBackedTaskStore(taskFile, { maxTasks, logger }));
   auditStore = auditStore || (auditFile && createFileBackedAuditStore(auditFile, { logger }));
   if (!taskStore || !auditStore) throw new TypeError("Task Service requires task and audit stores");
@@ -148,6 +148,8 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
   const auditEvents = auditStore.load();
   let taskSeq = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
   const trafficLogRows = new Map();
+  const monitorControllers = new Map();
+  const monitorDevices = new Set();
 
   function saveTasks() { taskStore.save(tasks); }
 
@@ -355,6 +357,35 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
       if (queryHistoryRecorder) queryHistoryRecorder({ input: String(task.input), action, label: definition.label });
     }
     saveTask(task);
+  }
+
+  async function runMonitor(task) {
+    if (!monitorService) throw new Error("深度巡检服务未配置");
+    const device = task.firewall || panosAdapter.getDefaultFirewall?.().name || "default";
+    if (monitorDevices.has(device)) throw new Error("该设备已有深度巡检运行，请等待完成或取消");
+    const controller = new AbortController();
+    monitorDevices.add(device);
+    monitorControllers.set(task.id, controller);
+    task.status = "running";
+    recordAudit(task, { taskId: task.id, action: "monitor_started", from: "pending", to: "running", at: new Date(clock()).toISOString() });
+    saveTask(task);
+    try {
+      const report = await monitorService.run({ firewall: device, ...(task.monitor || {}), signal: controller.signal, onProgress: (progress) => {
+        if (task.cancelled) return;
+        let step = task.steps.find((item) => item.monitorId === progress.id);
+        if (!step) { step = { monitorId: progress.id, tool: progress.label, status: "running", startMs: clock() }; task.steps.push(step); }
+        step.status = progress.status;
+        if (progress.check) { step.ms = progress.check.durationMs; step.msg = progress.check.collection + " · " + progress.check.severity; }
+        task.monitorProgress = { completed: progress.completed, total: progress.total, current: progress.label };
+        saveTask(task);
+      } });
+      task.result = { label: "深度健康巡检", monitor: report };
+      task.status = task.cancelled || report.executionStatus === "cancelled" ? "cancelled" : report.executionStatus === "failed" ? "failed" : "done";
+      if (task.status === "failed") task.error = "深度巡检未取得有效数据，请查看各检查项的采集原因";
+      for (const step of task.steps) if (step.status === "running") { step.status = "err"; step.msg = task.status === "cancelled" ? "已取消，未采用迟到结果" : "采集已中止"; }
+      recordAudit(task, { taskId: task.id, action: "monitor_finished", from: "running", to: task.status, executionStatus: report.executionStatus, at: new Date(clock()).toISOString() });
+      saveTask(task);
+    } finally { monitorDevices.delete(device); monitorControllers.delete(task.id); }
   }
 
   async function runInspect(task) {
@@ -827,6 +858,7 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
     }
     if (action === "cancel") {
       task.cancelled = true;
+      monitorControllers.get(task.id)?.abort();
       task.steps = task.steps || [];
       task.steps.push("手动取消");
     }
@@ -968,6 +1000,11 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
     createTask,
     dispatchTask,
     exportTrafficLogs,
+    exportMonitorReport: (id, format) => {
+      const task = getTask(Number(id));
+      if (task?.type !== "monitor" || !task.result?.monitor) return null;
+      return require("./monitor/report").exportMonitorReport(id, task.result.monitor, format);
+    },
     getTask,
     getTrafficLogPage,
     listAuditEvents: () => auditEvents,
@@ -976,6 +1013,8 @@ function createTaskService({ panosAdapter = {}, taskStore, auditStore, taskFile,
     runAudit,
     runCandidate,
     runInspect,
+    runMonitor,
+    listMonitorChecks: () => monitorService ? monitorService.listChecks() : [],
     runDiagnostic,
     runQuery,
     recordAudit,

@@ -1,6 +1,7 @@
 const fs = require("fs");
 const https = require("https");
 const path = require("path");
+const { SOURCES: MONITOR_SOURCES, sourceError, validateSourceResult, deviceLogWindow } = require("../services/monitor/sources");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
 
@@ -226,12 +227,13 @@ async function directHttpsPost(fullUrl) {
   });
 }
 
-async function callToolRaw(name, args = {}, firewall) {
+async function callToolRaw(name, args = {}, firewall, options = {}) {
   if (firewall) args.firewall = firewall;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 30000);
   try {
-    const r = await client.callTool({ name, arguments: args }, undefined, { signal: ac.signal });  // SDK 1.30 签名：callTool(params, resultSchema, options)——signal 必须放第 3 参，放第 2 参会被当成 zod schema 导致 v3Schema.safeParse 崩溃
+    const signal = options.signal ? AbortSignal.any([ac.signal, options.signal]) : ac.signal;
+    const r = await client.callTool({ name, arguments: args }, undefined, { signal });  // SDK 1.30 签名：callTool(params, resultSchema, options)——signal 必须放第 3 参，放第 2 参会被当成 zod schema 导致 v3Schema.safeParse 崩溃
     const txt = r.content && r.content[0] && r.content[0].text;
     try { return { ok: true, data: JSON.parse(txt) }; } catch { return { ok: true, data: { raw: String(txt) } }; }
   } catch (e) { return { ok: false, error: e }; }
@@ -476,6 +478,45 @@ async function directForTool(name, args = {}) {
     return { name: DIRECT_FW.name || "", host: DIRECT_FW.host || "" };
   }
 
+  async function readMonitorSource(source, firewall, options = {}) {
+    if (!Object.hasOwn(MONITOR_SOURCES, source)) throw new Error("未允许的监控数据源");
+    options.signal?.throwIfAborted();
+    try {
+      let tool = "run_op_command", args = { command: MONITOR_SOURCES[source] }, window;
+      if (source === "certificates") { tool = "get_certificates"; args = {}; }
+      if (source === "threat_logs") {
+        const system = await readMonitorSource("system", firewall, options);
+        window = deviceLogWindow(system?.system?.time || system?.time, options.minutes ?? 10);
+        tool = "get_threat_logs";
+        args = { nlogs: 1000, query: window.query };
+      }
+      const response = callMcpTool ? { ok: true, data: await callMcpTool(tool, args, firewall, options) }
+        : await callToolRaw(tool, args, firewall, options);
+      options.signal?.throwIfAborted();
+      if (!response.ok) throw response.error;
+      const data = validateSourceResult(response.data);
+      if (source === "certificates") {
+        const raw = data?.certificate?.entry ?? data?.entry;
+        const entries = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+        const allowed = ["@_name", "name", "not-valid-after", "expiry", "validity-end", "subject", "issuer", "algorithm", "status"];
+        return { scope: "candidate/shared", certificates: { entry: entries.map(entry => {
+          const metadata = Object.fromEntries(allowed.filter(key => typeof entry?.[key] === "string" || typeof entry?.[key] === "number").map(key => [key, entry[key]]));
+          if (!metadata["not-valid-after"] && typeof entry?.["public-key"] === "string") {
+            try { metadata["not-valid-after"] = new (require("node:crypto").X509Certificate)(entry["public-key"]).validTo; } catch {}
+          }
+          return metadata;
+        }) } };
+      }
+      if (!window) return data;
+      if (!data || typeof data !== "object" || (data.entry === undefined && Number(data["@_count"]) !== 0)) throw sourceError("unrecognized logs");
+      const entry = data.entry === undefined ? [] : Array.isArray(data.entry) ? data.entry : [data.entry];
+      return { entry, window: { start: window.start, end: window.end, clock: window.clock, minutes: window.minutes, limit: 1000, complete: entry.length < 1000 }, count: entry.length };
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason;
+      throw sourceError(error);
+    }
+  }
+
   return {
     connect,
     getDefaultFirewall,
@@ -483,6 +524,7 @@ async function directForTool(name, args = {}) {
     getMcpInfo,
     callTool,
     callToolRaw,
+    readMonitorSource,
     directCommit,
     directConfigDelete,
     directConfigMove,

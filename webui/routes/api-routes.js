@@ -35,6 +35,15 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
   }
   async function handleTasks(req, send, readBody, taskCreator, ensureConnected) {
     const parsed = new URL(req.url, "http://localhost");
+    if (req.method === "GET" && parsed.pathname === "/api/monitor/checks") { send(200, { checks: taskService.listMonitorChecks() }); return true; }
+    const monitorExport = parsed.pathname.match(/^\/api\/task\/(\d+)\/monitor\/export$/);
+    if (req.method === "GET" && monitorExport) {
+      const format = parsed.searchParams.get("format") || "json";
+      if (!["json", "html"].includes(format)) { send(400, { error: "报告格式仅支持 json 或 html" }); return true; }
+      const report = taskService.exportMonitorReport(Number(monitorExport[1]), format);
+      send(report ? 200 : 404, report || { error: "未找到该任务的深度巡检报告" });
+      return true;
+    }
     const exportMatch = parsed.pathname.match(/^\/api\/task\/(\d+)\/logs\/export$/);
     if (req.method === "GET" && exportMatch) {
       const result = taskService.getTrafficLogPage && taskService.exportTrafficLogs(Number(exportMatch[1]));
@@ -53,7 +62,7 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
     }
     if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks: taskService.listTasks() }); return true; }
     if (req.method === "POST" && req.url === "/api/tasks/clean") { send(200, taskService.cleanTasks()); return true; }
-    if (req.method === "POST" && req.url === "/api/task") { const { query, firewall, source, replyTo } = JSON.parse(await readBody()); await ensureConnected(); send(200, await taskCreator(query, firewall, source || "web", { replyTo })); return true; }
+    if (req.method === "POST" && req.url === "/api/task") { const { query, firewall, source, replyTo } = JSON.parse(await readBody()); await ensureConnected(); try { send(200, await taskCreator(query, firewall, source || "web", { replyTo })); } catch (error) { if (error.code !== "MONITOR_INPUT") throw error; send(400, { error: error.message }); } return true; }
     if (req.method === "POST" && req.url.startsWith("/api/task/")) { const parts = req.url.split("/"), id = Number(parts[3]), action = parts[4], name = parts[5] ? decodeURIComponent(parts[5]) : null, task = taskService.getTask(id); if (!task) { send(404, { error: "task not found" }); return true; } try { if (action === "select" && task.status === "awaiting_selection" && task._candidate) send(200, await taskService.actOnTask(id, "select", { params: { name, keyword: task._candidate.keyword }, firewall: task._candidate.firewall, step: `用户从候选选中：${name}` })); else if (action === "select-multi") send(200, await taskService.startBatchSelection(id, JSON.parse(await readBody()).names)); else if (["approve", "reject", "confirm", "cancel"].includes(action)) send(200, await taskService.actOnTask(id, action)); else { send(400, { error: "非法操作或状态不匹配: " + task.status }); return true; } } catch (error) { const message = String(error.message || error); send(message === "变更计划已变化，请重新生成候选计划" ? 409 : 400, { error: message }); } return true; }
     return false;
   }

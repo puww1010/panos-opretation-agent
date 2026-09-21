@@ -860,6 +860,7 @@
   <button class="cp-item" onclick="configAction('pwd')"><svg class="ic sm"><use href="#i-key"/></svg>改密</button>
 </div>
 
+<script src="/assets/monitor-ui.js"></script>
 <script>
 // ── 深色 / 浅色模式（方案A）：localStorage 记忆，无记录时跟随系统偏好 ──
 function applyTheme(dark) {
@@ -1337,7 +1338,7 @@ function renderQuickButtons() {
   const btns = document.getElementById("btns");
   btns.innerHTML = "";
   const DEF = { inspect: "完整巡检", inventory: "设备清单", device: "设备状态", security: "安全策略", traffic: "流量日志", threat: "威胁日志", licenses: "许可证" };
-  ["inspect", "inventory", "device", "security", "traffic", "threat", "licenses"].forEach(k => {
+  ["monitor", "inspect", "inventory", "device", "security", "traffic", "threat", "licenses"].forEach(k => {
     if (!BTN_LABELS[k]) return;
     const b = document.createElement("button");
     b.className = "chip" + (k === "inspect" ? "" : "");
@@ -2239,8 +2240,10 @@ async function pollTasks() {
     // 避免每次轮询重建触发平滑滚动回弹 → 新旧消息都"震动"）
     const sc = document.getElementById("chatScroll");
     const prevTop = sc ? sc.scrollTop : 0;
+    const monitorOpen = new Map([...chat.querySelectorAll('details[data-monitor-key]')].map(el => [el.dataset.monitorKey, el.open]));
     if (!tasks.length) { chat.innerHTML = '<div class="empty" style="text-align:center;padding:26px 0">暂无任务 · 从下方输入栏发起第一个任务</div>'; }
     else { chat.innerHTML = renderChat(tasks); }
+    for (const el of chat.querySelectorAll('details[data-monitor-key]')) if (monitorOpen.has(el.dataset.monitorKey)) el.open = monitorOpen.get(el.dataset.monitorKey);
     // 重建 DOM 后恢复多选 checkbox 状态
     tasks.filter(t => t.status === "awaiting_selection" && _selState[t.id]).forEach(t => _restoreSel(t.id));
     hadActive = tasks.some((t) => ["pending", "running", "executing", "committing"].includes(t.status));
@@ -2405,7 +2408,8 @@ function renderTaskMessages(t, animate) {
   const isLive = LIVE.includes(t.status);
   const canReusePrompt = ["done", "failed", "cancelled"].includes(t.status);
   const animCls = animate ? " msg-new" : "";
-  const stHtml = '<span class="st ' + t.status + '">' + statusText(t.status) + '</span>' + (isLive ? ' <span class="live-badge">LIVE</span>' : "");
+  const displayedStatus = t.type === "monitor" && t.result?.monitor?.executionStatus === "partial" ? "部分完成" : statusText(t.status);
+  const stHtml = '<span class="st ' + t.status + '">' + displayedStatus + '</span>' + (isLive ? ' <span class="live-badge">LIVE</span>' : "");
   // 用户气泡（右对齐蓝）：输入 + 状态徽章 + 时间
   let h = '<div class="msg-row user' + animCls + '"><div class="msg-bubble">' +
     '<div class="msg-input">' + esc(t.input) + '</div>' +
@@ -2417,7 +2421,7 @@ function renderTaskMessages(t, animate) {
     '</div>' : '') +
     '</div></div>';
   // AI 气泡（左对齐）：结果/操作/步骤 + 悬停操作条（↩ 追问这条 / ⧉ 复制 / 取消）
-  h += '<div class="msg-row ai' + animCls + '"><div class="msg-avatar">' + ic("robot", "lg") + '</div><div class="msg-bubble">' +
+  h += '<div class="msg-row ai' + (t.type === "monitor" ? " monitor-message" : "") + animCls + '"><div class="msg-avatar">' + ic("robot", "lg") + '</div><div class="msg-bubble">' +
     renderAiBody(t) +
     '<div class="msg-actions">' +
       '<button onclick="replyToTask(' + t.id + ')" title="针对这条结果继续追问（输入框将填入 @#N 前缀）">' + ic("reply", "sm") + ' 追问这条</button>' +
@@ -2570,6 +2574,10 @@ function renderAiBody(t) {
   }
 
   if (t.steps && t.steps.length) {
+    if (t.type === "monitor") {
+      if (t.result?.monitor) h += MonitorUI.renderMonitorReport(t.id, t.result.monitor);
+      else if (t.monitorProgress) h += '<div class="mon-report"><h3>深度健康巡检 · 只读</h3><progress class="mon-progress" max="' + Number(t.monitorProgress.total) + '" value="' + Number(t.monitorProgress.completed) + '"></progress><div>' + Number(t.monitorProgress.completed) + ' / ' + Number(t.monitorProgress.total) + ' 项 · ' + esc(t.monitorProgress.current) + '</div></div>';
+    }
     // 实时任务分解时间线：每步一个节点，当前执行步骤高亮；默认折叠（步数<=3 或非 live 直接展开）
     const total = t.steps.length;
     const runningIdx = t.steps.findIndex(s => typeof s === "object" && s.status === "running");
@@ -2663,6 +2671,17 @@ async function act(id, action, arg) {
   const url = "/api/task/" + id + "/" + action + (arg ? "/" + encodeURIComponent(arg) : "");
   try { await fetch(url, { method: "POST" }); } catch (e) {}
   pollTasks();
+}
+
+async function downloadMonitorReport(id, format) {
+  try {
+    const report = await fjs("/api/task/" + id + "/monitor/export?format=" + encodeURIComponent(format), { timeout: 15000 });
+    if (report.error || typeof report.content !== "string") throw new Error(report.error || "报告不可用");
+    const url = URL.createObjectURL(new Blob([report.content], { type: report.mime }));
+    const link = document.createElement("a"); link.href = url; link.download = report.filename;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { alert("报告下载失败：" + error.message); }
 }
 
 function renderTrafficLogSummary(taskId, traffic) {
