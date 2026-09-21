@@ -13,6 +13,7 @@ const { createTaskService, normalizeChangeParams } = require("./services/task-se
 const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
 const { planFingerprint } = require("./lib/task-governance");
 const { buildHealthSummary } = require("./lib/health");
+const { resolveFeishuRuntime } = require("./lib/feishu-runtime");
 
 function createApp({ apiRouter, staticRouter, buildSecurityHeaders, createTask, ensureConnected, touchIfUserAction }) {
   return http.createServer(async (req, res) => {
@@ -180,17 +181,12 @@ const CHANGE_TEMPLATES = {
 // ── 飞书桥（可选）──
 const { execFile } = require("child_process");
 const FEISHU_CHAT = process.env.FEISHU_CHAT_ID || "oc_0238b0ea1d6d7a74180cfce85b18cf67";
-// lark-cli 可由 LARK_CLI 环境变量指定；未配置则 PATH 中查找（飞书桥为可选功能）
-const LARK_CLI = process.env.LARK_CLI || "lark-cli";
-// lark-cli 是 `#!/usr/bin/env node` wrapper，且可能 spawn 自身依赖——确保 PATH 含 node 与 lark 目录
-(() => {
-  const add = (d) => { if (d && d !== "." && process.env.PATH && !process.env.PATH.split(":").includes(d)) process.env.PATH = d + ":" + process.env.PATH; };
-  add(path.dirname(NODE));
-  add(path.dirname(LARK_CLI));
-})();
+// 飞书命令与 Node 路径仅用于子进程，不依赖后台服务继承交互终端的 PATH。
+const feishuRuntime = resolveFeishuRuntime();
+const LARK_CLI = feishuRuntime.cli;
 function feishuSend(text) {
   return new Promise((resolve) => {
-    execFile(LARK_CLI, ["im", "+messages-send", "--chat-id", FEISHU_CHAT, "--msg-type", "text", "--text", text], { timeout: 15000 }, (err, stdout, stderr) => {
+    execFile(LARK_CLI, ["im", "+messages-send", "--chat-id", FEISHU_CHAT, "--msg-type", "text", "--text", text], { timeout: 15000, env: feishuRuntime.env }, (err, stdout, stderr) => {
       if (err) resolve({ ok: false, error: String(stderr || err.message).slice(0, 1000) });
       else {
         try { const d = JSON.parse(stdout); resolve({ ok: !!d.ok, data: d.data ? d.data.message_id : null, error: d.error ? JSON.stringify(d.error).slice(0, 200) : "" }); }
