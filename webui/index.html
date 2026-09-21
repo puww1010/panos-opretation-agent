@@ -632,7 +632,7 @@
 
       <div class="side-sep">资产与保障</div>
       <button class="side-item" onclick="quickTask('设备资产')"><svg class="ic"><use href="#i-file"/></svg><span class="txt">设备资产</span></button>
-      <button class="side-item" onclick="openAssistant('完整巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">巡检中心<span class="side-item-sub">发起巡检与查看执行记录</span></span></button>
+      <button class="side-item" onclick="openAssistant('深度健康巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">深度健康巡检<span class="side-item-sub">统一检查、进度与健康报告</span></span></button>
 
       <div class="side-sep">协作与系统</div>
       <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-phone"/></svg><span class="txt">飞书通知与报告</span></button>
@@ -686,7 +686,7 @@
                 </div>
                 <div id="replyChipWrap"></div>
                 <div class="input-row">
-                  <textarea id="q" rows="1" placeholder="下达任务：设备状态 / 完整巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 封禁 1.2.3.4 …（Shift+Enter 换行，Enter 发送）"
+                  <textarea id="q" rows="1" placeholder="下达任务：设备状态 / 深度健康巡检 / 流量日志 / 谁在10分钟前修改了策略 / 192.168.1.2 不能访问外网 / 封禁 1.2.3.4 …（Shift+Enter 换行，Enter 发送）"
                     oninput="autoGrow(this)"
                     onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();submit()}"></textarea>
                   <select class="select" id="llmSel" title="当前 LLM（新提交的任务会由它处理）">
@@ -718,7 +718,7 @@
               <div style="display:flex;gap:8px;margin-bottom:10px">
                 <input class="input" id="feishuMsg" placeholder="输入要发送到飞书群的消息...（回车发送）" style="flex:1;padding:12px 14px;font-size:14px" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();feishuSend();}">
                 <button class="btn primary" onclick="feishuSend()" style="padding:8px 18px"><svg class="ic-btn" style="margin-right:0"><use href="#i-zap"/></svg>发送</button>
-                <button class="btn" onclick="feishuPushReport()" style="padding:8px 14px">推送最新巡检报告</button>
+                <button class="btn" onclick="feishuPushReport()" style="padding:8px 14px">推送最新深度巡检摘要</button>
               </div>
               <div id="feishuResult" class="empty"></div>
               <div class="feishu-tip" style="margin-top:18px;padding-top:14px;border-top:1px dashed var(--border);font-size:12.5px;color:var(--muted);line-height:1.7">
@@ -824,7 +824,7 @@
             <div class="dash-card">
               <div class="dash-card-head"><svg class="ic sm"><use href="#i-zap"/></svg>快捷操作</div>
               <div class="dash-quick">
-                <button onclick="quickTask('完整巡检')"><svg class="ic sm"><use href="#i-check"/></svg>完整巡检</button>
+                <button onclick="quickTask('深度健康巡检')"><svg class="ic sm"><use href="#i-check"/></svg>深度健康巡检</button>
                 <button onclick="quickTask('设备状态')"><svg class="ic sm"><use href="#i-device"/></svg>设备状态</button>
                 <button onclick="quickTask('安全策略')"><svg class="ic sm"><use href="#i-shield"/></svg>安全策略</button>
                 <button onclick="quickTask('威胁日志')"><svg class="ic sm"><use href="#i-alert"/></svg>威胁日志</button>
@@ -1337,11 +1337,11 @@ async function init() {
 function renderQuickButtons() {
   const btns = document.getElementById("btns");
   btns.innerHTML = "";
-  const DEF = { inspect: "完整巡检", inventory: "设备清单", device: "设备状态", security: "安全策略", traffic: "流量日志", threat: "威胁日志", licenses: "许可证" };
-  ["monitor", "inspect", "inventory", "device", "security", "traffic", "threat", "licenses"].forEach(k => {
+  const DEF = { monitor: "深度健康巡检", inventory: "设备清单", device: "设备状态", security: "安全策略", traffic: "流量日志", threat: "威胁日志", licenses: "许可证" };
+  ["monitor", "inventory", "device", "security", "traffic", "threat", "licenses"].forEach(k => {
     if (!BTN_LABELS[k]) return;
     const b = document.createElement("button");
-    b.className = "chip" + (k === "inspect" ? "" : "");
+    b.className = "chip";
     b.textContent = BTN_LABELS[k] || DEF[k];
     b.onclick = () => { document.getElementById("q").value = BTN_LABELS[k] || DEF[k]; submit(); };
     btns.appendChild(b);
@@ -2537,6 +2537,7 @@ function renderAiBody(t) {
       h += '<div style="background:var(--chat-bg);border:1px solid var(--chat-border);border-left:3px solid #6d28d9;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:13.5px;color:var(--chat-fg);line-height:1.75;white-space:pre-wrap;word-break:break-word">' + esc(answerText) + '</div>';
     }
   } else if (t.status === "done" && t.type === "inspect" && t.result) {
+    h += '<div class="mon-meta">历史完整巡检报告 · 保留原始结果，旧评级不等同于深度巡检覆盖率</div>';
     h += '<div class="grade ' + (t.result.rate >= 75 ? (t.result.rate >= 90 ? "good" : "mid") : "bad") + '">评级 ' + esc(t.result.grade) + "（" + t.result.rate + "%）</div>";
     h += '<table><tr><th>检查项</th><th>结果</th></tr>' + (t.result.checks || []).map(c => "<tr><td>" + esc(c.name) + "</td><td>" + (c.pass ? ic("check", "sm") + ' 通过' : ic("x", "sm") + ' 不通过') + "</td></tr>").join("") + "</table>";
   } else if (t.status === "done" && t.type === "audit" && t.result) {
@@ -2671,6 +2672,15 @@ async function act(id, action, arg) {
   const url = "/api/task/" + id + "/" + action + (arg ? "/" + encodeURIComponent(arg) : "");
   try { await fetch(url, { method: "POST" }); } catch (e) {}
   pollTasks();
+}
+
+async function pushMonitorReport(id) {
+  if (!confirm("将任务 #" + id + " 的深度巡检摘要发送到当前配置的飞书会话？")) return;
+  try {
+    const result = await fjs("/api/feishu/push-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ taskId: id }), timeout: 15000 });
+    if (!result.ok) throw new Error(result.error || "推送失败");
+    alert("已推送任务 #" + result.taskId + " 的巡检摘要；完整证据请查看该任务报告。");
+  } catch (error) { alert("报告推送失败：" + error.message); }
 }
 
 async function downloadMonitorReport(id, format) {
@@ -2951,9 +2961,8 @@ async function feishuPushReport() {
   const out = document.getElementById("feishuResult");
   out.innerHTML = "推送中...";
   try {
-    const r = await fetch("/api/feishu/push-report", { method: "POST" });
-    const d = await r.json();
-    out.innerHTML = d.ok ? '<span style="color:var(--green)">✅ 已推送最新报告</span>' : '<span class="err">❌ ' + esc(d.error || "推送失败") + "</span>";
+    const d = await fjs("/api/feishu/push-report", { method: "POST", timeout: 15000 });
+    out.innerHTML = d.ok ? '<span style="color:var(--green)">✅ 已推送任务 #' + esc(d.taskId) + ' 的深度巡检摘要</span>' : '<span class="err">❌ ' + esc(d.error || "推送失败") + "</span>";
   } catch (e) { out.innerHTML = '<span class="err">❌ ' + esc(e.message) + "</span>"; }
 }
 

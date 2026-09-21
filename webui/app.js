@@ -42,7 +42,6 @@ const SRC = path.join(PANOS_MCP_DIR, "src", "index.ts");
 const CWD = PANOS_MCP_DIR;
 const CFG = process.env.PANOS_FIREWALLS_CONFIG || path.join(__dirname, "..", "cfgs", "firewalls.json");
 const PORT = process.env.PORT || 8080;
-const REPORTS_DIR = path.join(__dirname, "..", "reports");
 const TASKS_FILE = process.env.TASKS_FILE || path.join(__dirname, "..", "cfgs", "tasks.json");
 const AUDIT_FILE = process.env.AUDIT_FILE || path.join(__dirname, "..", "cfgs", "audit-events.json");
 const AUTH_FILE = path.join(__dirname, "..", "cfgs", "auth.json");
@@ -113,12 +112,6 @@ taskService = createTaskService({
   toolCaller: callTool,
   querySummarizer: (...args) => llmService.summarizeQuery(...args),
   queryHistoryRecorder: (entry) => dashboardService.recordHistory(entry),
-  inspectReportWriter: ({ date, markdown }) => {
-    if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
-    const file = path.join(REPORTS_DIR, "compliance-" + date + "-task.md");
-    fs.writeFileSync(file, markdown);
-    return file;
-  },
   diagnosticDependencies: {
     deepLog,
     filterByMinutes,
@@ -147,7 +140,6 @@ const ACTIONS = {
   vpn:       { label: "VPN", tools: ["get_ipsec_tunnels", "get_globalprotect_users"], keywords: ["vpn", "隧道", "ipsec", "globalprotect", "远程接入"] },
   wildfire:  { label: "WildFire", tools: ["get_wildfire_status"], keywords: ["wildfire", "沙箱", "wild"] },
   content:   { label: "内容库", tools: ["get_content_versions"], keywords: ["内容库", "更新", "版本", "content", "补丁"] },
-  inspect:   { label: "完整巡检", tools: ["get_firewall_info", "get_ha_status", "get_system_resources", "get_active_sessions", "get_licenses", "get_traffic_logs", "get_threat_logs", "get_wildfire_status", "get_security_rules", "get_content_versions"], keywords: ["巡检", "合规", "全部", "inspect", "audit", "报告"] },
 };
 
 // ── 变更模板（写操作，仅允许模板化，防幻觉）──
@@ -234,7 +226,6 @@ const apiRouter = createApiRouter({
   feishu: {
     status: async () => ({ chat: FEISHU_CHAT, running: await feishuDaemonRunning(), lark: LARK_CLI }),
     send: feishuSend,
-    latestReport: () => { const files = fs.existsSync(REPORTS_DIR) ? fs.readdirSync(REPORTS_DIR).filter((file) => file.startsWith("compliance-") && file.endsWith(".md")).sort().reverse() : []; return files.length ? "【PAN-OS 合规报告 " + files[0] + "】\n" + fs.readFileSync(path.join(REPORTS_DIR, files[0]), "utf-8").slice(0, 1500) : null; },
   },
 });
 

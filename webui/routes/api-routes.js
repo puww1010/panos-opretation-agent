@@ -30,12 +30,18 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
       send(400, { error: "「" + (value?.label || provider) + "」未配置 API key", hint: "请按以下步骤配置：\n\n1. 申请 API key：\n   " + (signup[provider] || value?.base_url || "https://...") + "\n\n2. 在 webui/start.sh 中添加环境变量：\n   export " + (value?.env || "?") + '=\"你的key\"\n\n3. 重启控制台：\n   cd webui && ./start.sh' });
       return true;
     }
-    if (req.method === "POST" && req.url === "/api/llm/test") { const { text } = JSON.parse(await readBody()); const started = Date.now(); const output = await llmService.classify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/inspect(完整巡检)/change(变更)/diag(诊断)/null(无关)", text || ""); send(200, { output, ms: Date.now() - started, provider: llmService.getCurrent() }); return true; }
+if (req.method === "POST" && req.url === "/api/llm/test") { const { text } = JSON.parse(await readBody()); const started = Date.now(); const output = await llmService.classify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/monitor(深度健康巡检)/change(变更)/diag(诊断)/null(无关)", text || ""); send(200, { output, ms: Date.now() - started, provider: llmService.getCurrent() }); return true; }
     return false;
   }
   async function handleTasks(req, send, readBody, taskCreator, ensureConnected) {
     const parsed = new URL(req.url, "http://localhost");
     if (req.method === "GET" && parsed.pathname === "/api/monitor/checks") { send(200, { checks: taskService.listMonitorChecks() }); return true; }
+    const notification = parsed.pathname.match(/^\/api\/task\/(\d+)\/monitor\/notification$/);
+    if (req.method === "GET" && notification) {
+      const report = taskService.getMonitorReportNotification({ taskId: Number(notification[1]) });
+      send(report ? 200 : 404, report || { error: "没有可读取的深度健康巡检报告" });
+      return true;
+    }
     const monitorExport = parsed.pathname.match(/^\/api\/task\/(\d+)\/monitor\/export$/);
     if (req.method === "GET" && monitorExport) {
       const format = parsed.searchParams.get("format") || "json";
@@ -70,7 +76,15 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
     if (req.method === "GET" && req.url === "/api/firewalls") { const list = firewalls(); send(200, { firewalls: list, multi: list.length > 1 }); return true; }
     if (req.url === "/api/feishu/status") { send(200, await feishu.status()); return true; }
     if (req.url === "/api/feishu/send") { const { text } = JSON.parse(await readBody()); if (!text) { send(400, { error: "消息不能为空" }); return true; } send(200, await feishu.send(text)); return true; }
-    if (req.url === "/api/feishu/push-report") { const report = feishu.latestReport(); if (!report) { send(400, { error: "没有合规报告" }); return true; } send(200, await feishu.send(report)); return true; }
+    if (req.method === "POST" && req.url === "/api/feishu/push-report") {
+      let input;
+      try { input = JSON.parse((await readBody()) || "{}"); } catch { send(400, { error: "请求格式错误" }); return true; }
+      if (!input || typeof input !== "object" || Array.isArray(input) || (input.taskId !== undefined && (!Number.isSafeInteger(input.taskId) || input.taskId < 1))) { send(400, { error: "taskId 必须为正整数" }); return true; }
+      const report = taskService.getMonitorReportNotification({ taskId: input.taskId });
+      if (!report) { send(input.taskId === undefined ? 400 : 404, { error: "没有可推送的深度健康巡检报告" }); return true; }
+      send(200, { ...await feishu.send(report.text), taskId: report.taskId });
+      return true;
+    }
     return false;
   }
   async function handleAuth(req, send, readBody, touchIfUserAction) {

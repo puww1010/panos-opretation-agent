@@ -26,7 +26,7 @@ function worstSeverity(findings) {
 }
 
 function createMonitorService({ readSource, clock = Date.now, definitions, sourceTimeoutMs = 30000, totalTimeoutMs = 600000 } = {}) {
-  const checks = definitions || [...require("./basic-checks").basicChecks, ...require("./device-checks").deviceChecks, ...require("./network-checks").networkChecks, ...require("./security-checks").securityChecks];
+  const checks = definitions || [...require("./basic-checks").basicChecks, ...require("./device-checks").deviceChecks, ...require("./network-checks").networkChecks, ...require("./security-checks").securityChecks, ...require("./compliance-checks").complianceChecks];
   const listChecks = () => checks.map(({ id, category, label }) => ({ id, category, categoryLabel: CATEGORIES[category], label }));
 
   async function run({ firewall, checks: ids, category, minutes = 10, signal, onProgress = () => {} } = {}) {

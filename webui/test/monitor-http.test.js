@@ -24,8 +24,8 @@ test('monitor HTTP catalog and exports require authentication; invalid scope is 
   assert.equal(login.ok, true);
   const headers = { authorization: 'Bearer ' + login.token };
   const catalog = await (await fetch(base + '/api/monitor/checks', { headers })).json();
-  assert.equal(catalog.checks.length, 29);
-  assert.equal(new Set(catalog.checks.map(c => c.id)).size, 29);
+  assert.equal(catalog.checks.length, 33);
+  assert.equal(new Set(catalog.checks.map(c => c.id)).size, 33);
   assert.equal(new Set(catalog.checks.map(c => c.category)).size, 8);
   assert.equal((await fetch(base + '/api/task/1/monitor/export', { headers })).status, 200);
   assert.equal((await fetch(base + '/api/task/2/monitor/export', { headers })).status, 404);
@@ -36,8 +36,12 @@ test('monitor HTTP catalog and exports require authentication; invalid scope is 
   assert.equal((await fetch(base + '/api/monitor/checks', { headers })).status, 401);
 });
 
-test('monitor request selection is bounded and leaves legacy inspection alone', () => {
-  assert.equal(parseMonitorRequest('完整巡检'), null);
+test('monitor request selection is bounded and accepts legacy aliases', () => {
+  assert.deepEqual(parseMonitorRequest('完整巡检'), { minutes: 10 });
+  assert.deepEqual(parseMonitorRequest('完整巡检 基础'), parseMonitorRequest('深度健康巡检 基础'));
+  assert.deepEqual(parseMonitorRequest('inspect 威胁日志 最近5分钟'), { minutes: 5, checks: ['threat_logs'] });
+  assert.deepEqual(parseMonitorRequest('深度巡检 策略最小权限、WildFire、内容库、日志链路'), { minutes: 10, checks: ['policy_hygiene', 'wildfire', 'content_versions', 'logging_health'] });
+  assert.throws(() => parseMonitorRequest('完整巡检 不存在项'), { code: 'MONITOR_INPUT' });
   assert.equal(parseMonitorRequest('深度健康巡检 基础').checks.length, 8);
   assert.deepEqual(parseMonitorRequest('深度巡检 证书、许可证'), { minutes: 10, checks: ['certificates', 'license'] });
   assert.equal(parseMonitorRequest('深度巡检 设备健康').category, 'device_health');

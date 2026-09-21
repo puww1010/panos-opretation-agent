@@ -1,11 +1,11 @@
 const { CATEGORIES } = require("./service");
 const BASIC = ["system", "environmentals", "resources", "sessions", "interfaces", "ha", "license", "certificates"];
-const LABELS = { system: "系统信息", environmentals: "硬件环境", resources: "资源性能", sessions: "会话", interfaces: "接口", ha: "HA", license: "许可证", certificates: "证书", disk_space: "磁盘", logdb_quota: "日志配额", software_status: "进程", global_counters: "全局丢包", app_stats: "应用统计", discard_sessions: "丢弃会话", transceivers: "光模块", routing: "路由", rule_hits: "规则命中", zone_protection: "区域防护", decryption: "解密", threat_logs: "威胁日志", ha_diagnostics: "HA深度诊断", jobs: "作业", edl: "EDL", fqdn: "FQDN", vpn: "VPN", globalprotect: "GlobalProtect", dns_proxy: "DNS代理", user_id: "User-ID", sdwan: "SD-WAN" };
+const LABELS = { system: "系统信息", environmentals: "硬件环境", resources: "资源性能", sessions: "会话", interfaces: "接口", ha: "HA", license: "许可证", certificates: "证书", disk_space: "磁盘", logdb_quota: "日志配额", software_status: "进程", global_counters: "全局丢包", app_stats: "应用统计", discard_sessions: "丢弃会话", transceivers: "光模块", routing: "路由", rule_hits: "规则命中", zone_protection: "区域防护", decryption: "解密", threat_logs: "威胁日志", ha_diagnostics: "HA深度诊断", jobs: "作业", edl: "EDL", fqdn: "FQDN", vpn: "VPN", globalprotect: "GlobalProtect", dns_proxy: "DNS代理", user_id: "User-ID", sdwan: "SD-WAN", policy_hygiene: "策略最小权限", wildfire: "WildFire", content_versions: "内容库", logging_health: "日志链路" };
 const invalid = message => Object.assign(new Error(message), { code: "MONITOR_INPUT" });
 
 function parseMonitorRequest(input) {
   const text = String(input || "").trim().replace(/[。！!？?]+$/, "");
-  const match = text.match(/^(?:请)?(?:执行|运行|开始)?\s*(?:深度健康巡检|深度巡检|panos-monitor|monitor)(?:\s*[:：]?\s*(.*))?$/i);
+  const match = text.match(/^(?:请)?(?:执行|运行|开始)?\s*(?:深度健康巡检|深度巡检|完整巡检|巡检|panos-monitor|monitor|inspect)(?:\s*[:：]?\s*(.*))?$/i);
   const short = text.match(/^(?:请)?检查(证书|HA|许可证|磁盘|光模块|SD-WAN)$/i);
   if (!match && !short) return null;
   let scope = (match ? match[1] : short[1]) || "全部";

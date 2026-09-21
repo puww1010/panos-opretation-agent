@@ -70,3 +70,84 @@ test('deprecated CLI and invalid argument responses cannot look like successful 
     await assert.rejects(() => adapter.readMonitorSource('routing', 'lab'), { code: 'unsupported' });
   }
 });
+test('compliance sources use the existing fixed tools with selected firewall and cancellation', async () => {
+  for (const [source, expected] of [['security_rules', 'get_security_rules'], ['wildfire', 'get_wildfire_status'], ['content_versions', 'get_content_versions']]) {
+    const controller = new AbortController();
+    const adapter = createPanosAdapter({ callMcpTool: async (tool, args, firewall, options) => {
+      assert.equal(tool, expected);
+      assert.deepEqual(args, {});
+      assert.equal(firewall, 'lab-b');
+      assert.equal(options.signal, controller.signal);
+      return { success: true, data: { observed: true } };
+    } });
+    assert.deepEqual(await adapter.readMonitorSource(source, 'lab-b', { signal: controller.signal }), { observed: true });
+  }
+});
+test('traffic logs use a capped device window and return counts without traffic details', async () => {
+  const calls = [];
+  const adapter = createPanosAdapter({ callMcpTool: async (tool, args, firewall, options) => {
+    calls.push({ tool, args, firewall, signal: options.signal });
+    if (tool === 'run_op_command') return { system: { time: '2026/09/21 00:05:00' } };
+    return { entry: Array.from({ length: 1000 }, () => ({ receive_time: '2026/09/21 00:04:00', src: '192.0.2.1' })) };
+  } });
+  const controller = new AbortController();
+  const data = await adapter.readMonitorSource('traffic_logs', 'lab-b', { minutes: 10, signal: controller.signal });
+  assert.equal(calls[1].tool, 'get_traffic_logs');
+  assert.equal(calls[1].args.nlogs, 1000);
+  assert.match(calls[1].args.query, /2026\/09\/20 23:55:00/);
+  assert.match(calls[1].args.query, /2026\/09\/21 00:05:00/);
+  assert(calls.every(call => call.firewall === 'lab-b' && call.signal === controller.signal));
+  assert.equal(data.count, 1000);
+  assert.equal(data.window.complete, false);
+  assert.equal(data.window.clock, 'device');
+  assert.deepEqual(Object.keys(data).sort(), ['count', 'window']);
+});
+test('traffic monitoring never queries logs using a missing or invalid device time', async () => {
+  for (const time of [undefined, '?', '2026/02/30 10:00:00']) {
+    let calls = 0;
+    const adapter = createPanosAdapter({ callMcpTool: async () => { calls += 1; return { system: { time } }; } });
+    await assert.rejects(() => adapter.readMonitorSource('traffic_logs', 'lab'), { code: 'clock' });
+    assert.equal(calls, 1);
+  }
+});
+test('traffic empty counts are valid observations but unknown response shapes fail collection', async () => {
+  for (const data of [{ '@_count': 0 }, { entry: [] }]) {
+    const adapter = createPanosAdapter({ callMcpTool: async tool => tool === 'run_op_command' ? { time: '2026/09/21 10:00:00' } : data });
+    const result = await adapter.readMonitorSource('traffic_logs', 'lab');
+    assert.equal(result.count, 0);
+    assert.equal(result.window.complete, true);
+  }
+  const adapter = createPanosAdapter({ callMcpTool: async tool => tool === 'run_op_command' ? { time: '2026/09/21 10:00:00' } : { status: 'success' } });
+  await assert.rejects(() => adapter.readMonitorSource('traffic_logs', 'lab'), { code: 'response' });
+});
+test('traffic collection rejects malformed rows, coerced zero counts and responses over the cap', async () => {
+  for (const data of [{ '@_count': false }, { '@_count': '' }, { entry: 'unexpected' }, { entry: [null] }, { entry: [{}] }, { entry: [], '@_count': 2 }, { entry: Array.from({ length: 1001 }, () => ({ receive_time: '2026/09/21 09:59:00' })) }]) {
+    const adapter = createPanosAdapter({ callMcpTool: async tool => tool === 'run_op_command' ? { time: '2026/09/21 10:00:00' } : data });
+    await assert.rejects(() => adapter.readMonitorSource('traffic_logs', 'lab'), { code: 'response' });
+  }
+});
+test('traffic observations require a recognizable receive time within the requested device window', async () => {
+  for (const entry of [{ unexpected: 'row' }, { receive_time: '?' }, { receive_time: '2026/09/21 09:30:00' }, { receive_time: '2026/09/21 10:01:00' }]) {
+    const adapter = createPanosAdapter({ callMcpTool: async tool => tool === 'run_op_command' ? { time: '2026/09/21 10:00:00' } : { entry } });
+    await assert.rejects(() => adapter.readMonitorSource('traffic_logs', 'lab'), { code: 'response' });
+  }
+});
+test('threat logs apply the same response and timestamp validation as traffic logs', async () => {
+  for (const data of [{ entry: 'unexpected' }, { entry: [{ receive_time: '2026/09/21 09:00:00' }] }, { entry: [{ severity: 'high' }] }, { '@_count': false }, { entry: [], '@_count': 1 }]) {
+    const calls = [];
+    const adapter = createPanosAdapter({ callMcpTool: async tool => {
+      calls.push(tool);
+      return tool === 'run_op_command' ? { time: '2026/09/21 10:00:00' } : data;
+    } });
+    await assert.rejects(() => adapter.readMonitorSource('threat_logs', 'lab', { minutes: 10 }), { code: 'response' });
+    assert.deepEqual(calls, ['run_op_command', 'get_threat_logs']);
+  }
+});
+test('valid threat logs retain entries after bounded device-window validation', async () => {
+  const entry = [{ receive_time: '2026/09/21 09:59:00', severity: 'high' }];
+  const adapter = createPanosAdapter({ callMcpTool: async tool => tool === 'run_op_command' ? { time: '2026/09/21 10:00:00' } : { entry, '@_count': 1 } });
+  const result = await adapter.readMonitorSource('threat_logs', 'lab', { minutes: 10 });
+  assert.deepEqual(result.entry, entry);
+  assert.equal(result.count, 1);
+  assert.equal(result.window.complete, true);
+});

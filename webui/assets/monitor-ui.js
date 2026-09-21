@@ -22,7 +22,7 @@
       '<div class="mon-meta">部分 ' + esc(coverage.partial ?? 0) + ' · 失败 ' + esc(coverage.error ?? 0) + ' · 不支持 ' + esc(coverage.unsupported ?? 0) + ' · 未知 ' + esc(coverage.unknown ?? 0) + ' · 未执行 ' + esc(coverage.not_run ?? 0) + '</div>';
     if (report.executionStatus !== "completed" || report.overallSeverity === "unknown") html += '<div class="mon-note">本次证据不完整，不代表全部正常。请查看未覆盖检查的具体原因；采集失败与健康告警分别统计。</div>';
     html += '<div class="mon-meta">覆盖率 =（有效检查 + 明确不适用）/ 所选检查；日志窗口 ' + esc(report.minutes) + ' 分钟，具体采样范围以该项证据为准。证据为脱敏限量预览，不是完整配置备份。</div>';
-    if (controls && Number.isSafeInteger(Number(taskId))) html += '<div class="mon-actions"><button onclick="downloadMonitorReport(' + Number(taskId) + ',\'json\')">导出 JSON</button><button onclick="downloadMonitorReport(' + Number(taskId) + ',\'html\')">下载中文报告</button></div>';
+    if (controls && Number.isSafeInteger(Number(taskId))) html += '<div class="mon-actions"><button onclick="downloadMonitorReport(' + Number(taskId) + ',\'json\')">导出 JSON</button><button onclick="downloadMonitorReport(' + Number(taskId) + ',\'html\')">下载中文报告</button><button onclick="pushMonitorReport(' + Number(taskId) + ')">推送此报告到飞书</button></div>';
     for (const [category, checks] of grouped) {
       const important = checks.some((check) => ["warning", "critical"].includes(check.severity));
       html += '<details data-monitor-key="' + esc(taskId + ':' + category) + '"' + (important ? " open" : "") + '><summary>' + esc(checks[0].categoryLabel || category) + ' · ' + checks.length + ' 项</summary>';

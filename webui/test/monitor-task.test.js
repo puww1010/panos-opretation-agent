@@ -13,15 +13,20 @@ function makeService(readSource) {
   return createTaskService({ taskStore: memoryStore(), auditStore: memoryStore(), monitorService: createMonitorService({ definitions: [definition], readSource }) });
 }
 
-test("deep inspection creates a monitor task without calling an LLM and preserves the legacy inspection", async () => {
+test("all fixed inspection aliases create monitor tasks without calling an LLM", async () => {
   const tasks = [];
   const service = { listTasks: () => [], dispatchTask(type, input, extra) { const task = { id: tasks.length + 1, type, input, status: "pending", steps: [], ...extra }; tasks.push(task); return task; } };
   const planner = createTaskPlanner({ actions: { inspect: { label: "完整巡检" } }, taskService: service, llmService: { resolveAction: () => { throw new Error("LLM must not be called"); } } });
   const result = await planner.createTaskFromInput("深度健康巡检", "lab", "web");
   assert.equal(result.type, "monitor");
   assert.equal(tasks[0].monitor.minutes, 10);
-  await planner.createTaskFromInput("完整巡检", "lab", "web");
-  assert.equal(tasks[1].type, "inspect");
+  for (const input of ["完整巡检", "巡检", "inspect", "请执行完整巡检 基础 最近5分钟"]) {
+    const result = await planner.createTaskFromInput(input, "lab", "web");
+    assert.equal(result.type, "monitor");
+  }
+  assert.ok(tasks.every(task => task.type === "monitor"));
+  assert.equal(tasks.at(-1).monitor.minutes, 5);
+  assert.equal(tasks.at(-1).monitor.checks.length, 8);
 });
 
 test("LLM classification cannot widen an unparsed monitor scope or discard its time window", async () => {
@@ -82,6 +87,26 @@ test("monitor reports and audit survive persistence while interrupted scans reco
 test("legacy fuzzy dedupe cannot silently cancel a live monitor", async () => {
   const monitor = { id: 1, type: 'monitor', input: '深度健康巡检', status: 'running', steps: [] };
   const planner = createTaskPlanner({ actions: { inspect: { label: '深度健康巡' } }, taskService: { listTasks: () => [monitor], saveTask() {}, dispatchTask: () => ({ id: 2, status: 'pending' }) } });
-  await planner.createTaskFromInput('深度健康巡', 'lab', 'web');
+  await assert.rejects(() => planner.createTaskFromInput('深度健康巡', 'lab', 'web'), { code: 'MONITOR_INPUT' });
   assert.equal(monitor.status, 'running');
+});
+
+test("cancelled monitor report and audit remain cancelled after store recovery", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "monitor-cancel-recovery-"));
+  try {
+    const options = { taskFile: path.join(dir, "tasks.json"), auditFile: path.join(dir, "audit.json"), logger: { log() {}, warn() {}, error() {} } };
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    const service = createTaskService({ ...options, monitorService: createMonitorService({ definitions: [definition], readSource: async () => { started(); return new Promise(() => {}); } }) });
+    const task = service.createTask("monitor", "完整巡检", { firewall: "lab" }); service.addTask(task);
+    const execution = service.runMonitor(task); await ready;
+    await service.actOnTask(task.id, "cancel"); await execution; await service.flushPersistence();
+    const report = service.exportMonitorReport(task.id, "json");
+    const restored = createTaskService(options);
+    assert.equal(restored.getTask(task.id).status, "cancelled");
+    assert.equal(restored.getTask(task.id).result.monitor.executionStatus, "cancelled");
+    assert.deepEqual(restored.exportMonitorReport(task.id, "json"), report);
+    assert.ok(restored.getMonitorReportNotification({ taskId: task.id }).text.includes("已取消"));
+    assert.ok(restored.listAuditEvents().some(event => event.action === "monitor_finished" && event.to === "cancelled"));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

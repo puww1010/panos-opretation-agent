@@ -39,6 +39,10 @@ const SOURCES = Object.freeze({
   sdwan: "<show><sdwan/></show>",
   path_monitor: "<show><routing><path-monitor/></routing></show>",
   threat_logs: null, // Bounded log query, handled through the existing log tool.
+  security_rules: null, // Existing read tools; candidate rules are scoped to vsys1.
+  wildfire: null,
+  content_versions: null,
+  traffic_logs: null, // Same device-clock window and limit as threat logs.
 });
 
 const ERROR_MESSAGES = Object.freeze({

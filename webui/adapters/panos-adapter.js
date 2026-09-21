@@ -484,10 +484,12 @@ async function directForTool(name, args = {}) {
     try {
       let tool = "run_op_command", args = { command: MONITOR_SOURCES[source] }, window;
       if (source === "certificates") { tool = "get_certificates"; args = {}; }
-      if (source === "threat_logs") {
+      const complianceTools = { security_rules: "get_security_rules", wildfire: "get_wildfire_status", content_versions: "get_content_versions" };
+      if (Object.hasOwn(complianceTools, source)) { tool = complianceTools[source]; args = {}; }
+      if (source === "threat_logs" || source === "traffic_logs") {
         const system = await readMonitorSource("system", firewall, options);
         window = deviceLogWindow(system?.system?.time || system?.time, options.minutes ?? 10);
-        tool = "get_threat_logs";
+        tool = source === "traffic_logs" ? "get_traffic_logs" : "get_threat_logs";
         args = { nlogs: 1000, query: window.query };
       }
       const response = callMcpTool ? { ok: true, data: await callMcpTool(tool, args, firewall, options) }
@@ -510,7 +512,15 @@ async function directForTool(name, args = {}) {
       if (!window) return data;
       if (!data || typeof data !== "object" || (data.entry === undefined && Number(data["@_count"]) !== 0)) throw sourceError("unrecognized logs");
       const entry = data.entry === undefined ? [] : Array.isArray(data.entry) ? data.entry : [data.entry];
-      return { entry, window: { start: window.start, end: window.end, clock: window.clock, minutes: window.minutes, limit: 1000, complete: entry.length < 1000 }, count: entry.length };
+      const reported = data["@_count"];
+      if (entry.length > 1000 || entry.some(item => !item || typeof item !== "object" || Array.isArray(item) || !Object.keys(item).length)
+        || reported !== undefined && (!(typeof reported === "number" || typeof reported === "string" && /^\d+$/.test(reported)) || Number(reported) !== entry.length)) throw sourceError("unrecognized logs");
+      for (const item of entry) {
+        let received;
+        try { received = deviceLogWindow(item.receive_time, window.minutes).end; } catch { throw sourceError("unrecognized logs"); }
+        if (received < window.start || received > window.end) throw sourceError("unrecognized logs");
+      }
+      return { ...(source === "threat_logs" ? { entry } : {}), window: { start: window.start, end: window.end, clock: window.clock, minutes: window.minutes, limit: 1000, complete: entry.length < 1000 }, count: entry.length };
     } catch (error) {
       if (options.signal?.aborted) throw options.signal.reason;
       throw sourceError(error);
