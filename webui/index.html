@@ -632,7 +632,7 @@
 
       <div class="side-sep">资产与保障</div>
       <button class="side-item" onclick="quickTask('设备资产')"><svg class="ic"><use href="#i-file"/></svg><span class="txt">设备资产</span></button>
-      <button class="side-item" onclick="openAssistant('深度健康巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">深度健康巡检<span class="side-item-sub">统一检查、进度与健康报告</span></span></button>
+      <button class="side-item" onclick="quickTask('深度健康巡检')"><svg class="ic"><use href="#i-check"/></svg><span class="txt">深度健康巡检<span class="side-item-sub">统一检查、进度与健康报告</span></span></button>
 
       <div class="side-sep">协作与系统</div>
       <button class="side-item" data-view="feishu" onclick="showView('feishu')"><svg class="ic"><use href="#i-phone"/></svg><span class="txt">飞书通知与报告</span></button>
@@ -2063,6 +2063,8 @@ window.addEventListener("keydown", (e) => {
   }
 });
 async function submit() {
+  const btn = document.getElementById("submitBtn");
+  if (btn.disabled) return;
   const qEl = document.getElementById("q");
   let raw = qEl.value;
   // 解析 @#N 前缀 → replyTo（后端并入该任务所在会话；与回复 chip 双向同步）
@@ -2071,7 +2073,6 @@ async function submit() {
   if (m) { replyTo = Number(m[1]); raw = raw.replace(m[0], ""); }
   const q = raw.trim();
   if (!q) return;
-  const btn = document.getElementById("submitBtn");
   btn.disabled = true;
   try {
     const body = { query: q, firewall: currentFirewall() };
