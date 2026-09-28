@@ -1,79 +1,66 @@
-# GitHub 发布操作手册
+# GitHub 维护与发布
 
-> 本仓库已 `git init` 并完成首次提交（main 分支，73 个文件），敏感配置已通过 `.gitignore` 排除。
-> 按下面步骤即可推到 GitHub 并对外发布。
+更新：2026-09-28。现有仓库为 [puww1010/panos-opretation-agent](https://github.com/puww1010/panos-opretation-agent)，无需再创建新仓库或重新 `git init`。
 
----
+## 1. 当前分支事实
 
-## 1. 创建 GitHub 远端仓库
+PR #2 已将 `codex/panos-monitor-native` 合入 `main`，合并提交 `bfd4b2b`，包含原生巡检、统一报告、飞书 CLI 路径修复和一键巡检。发布前仍应重新检查远端分支，不能把本地提交当作已经上传。
 
-在 github.com 上新建空仓库（**不要勾选** README / .gitignore / LICENSE，避免冲突），得到地址如：
+README、[架构说明](ARCHITECTURE.md) 与 [部署手册](DEPLOY.md) 需随实际发行代码更新。仓库 About 简介是 GitHub 元数据，不会因 README 提交而自动变化；默认分支、业务代码合并、Release 与安装包也是不同操作。
 
-```
-https://github.com/puww1010/panos-agent-console.git
-```
+## 2. 只提交明确范围
 
-## 2. 关联远端并推送
+先检查变更和当前分支，使用显式文件清单，不对脏工作区执行一揽子暂存：
 
 ```bash
-# 在项目根目录执行
-git remote add origin https://github.com/puww1010/panos-agent-console.git
-git push -u origin main
+git status --short --branch
+git diff --stat
+# 示例：只有本次确实修改这些文档时才执行
+git add README.md docs/ARCHITECTURE.md docs/DEPLOY.md
+git diff --cached --name-only
+git diff --cached --check
 ```
 
-> 推送前会要求 GitHub 认证：HTTPS 用 Personal Access Token（Settings → Developer settings → Tokens → Generate，勾选 `repo` 权限），SSH 用 `ssh-keygen` + 公钥配置。
+不要打印真实运行时配置来做“安全检查”。先按文件清单排除，再在不输出命中内容的前提下扫描待发布文件。禁止加入真实设备/模型配置、认证会话、任务/审计、`.env*`、私有报告、日志和备份。
 
-## 3. 推送后安全自查（必做）
+**已知历史跟踪**：`cfgs/tasks.json`、`cfgs/llm-choice.json` 仍可能出现在 Git 跟踪清单中；新增忽略规则不会取消跟踪。清理跟踪/历史是独立任务，不应在文档发布中擅自重写历史。发现疑似真实凭据暴露应先撤销或轮换，再协调当前文件和历史清理，不能只删一行就宣称安全。
+
+## 3. 验证、提交与推送
+
+- 文档：链接/锚点、示例配置、命令语法、依赖声明与代码归属一致。
+- 代码：使用对应提交快照运行回归，尤其避免依赖本机未提交文件。
+- 安装：在隔离目录测试公开源码与假数据，不复制开发机配置，不启动真实防火墙写操作。
+- 推送：正常快进更新，不强推、不覆盖他人提交；分支保护要求 PR 时使用 PR 流程。
+
+常用只读检查：
 
 ```bash
-# 1) 仓库里绝不能出现真实 API Key
-git grep -n "sk-" origin/main -- "*.json" 2>/dev/null | grep -v example || echo "✅ 无泄露"
-
-# 2) 确认真实配置不在仓库
-git ls-files | grep -E "llm-config\.json|firewalls\.json" | grep -v example || echo "✅ 无真实配置入库"
+git log -5 --oneline
+git diff --cached --stat
+git rev-list --left-right --count HEAD...@{upstream}
+git ls-remote origin refs/heads/main refs/heads/codex/panos-monitor-native
 ```
 
-**⚠️ 如果发现历史提交里有 key**：key 已失效的情况直接忽略；仍在用的必须立刻去对应平台（DeepSeek/百炼/Kimi）**吊销并重新生成**，然后 `git rm` + 重提交。
+提交后明确告知提交号、分支、测试结果、是否已到远端和未纳入项。不要把本机 10 分钟超时/新登录页等独立改动混入纯文档发布。
 
-## 4. 后续日常维护
+## 4. 安装包 / Release 是后续独立交付
 
-```bash
-# 查看状态 / 提交
-git status
-git add -A
-git commit -m "feat: 说明本次改动"
-git push
+当前没有经过最新版验收的 DMG / EXE，不能因存在旧 `.app` 脚本就创建“安装包已发布”的说明。选定 OS/CPU 后，按 [打包要求](PACKAGING-DEPLOY.md) 完成数据隔离、依赖锁定、许可、首次初始化、干净机器验收与校验和，再发布明确版本标签和 Release。
 
-# 拉取远端
-git pull --rebase
+本次文档维护不变更仓库名称、可见性、权限、默认分支、许可证或认证设置。
 
-# 打版本标签（配合 PACKAGING-DEPLOY.md 的发布流程）
-git tag v4.2.0
-git push --tags
-```
+## 5. 本次文档发布验证记录
 
-## 5. 常用 git 速查
+2026-09-28，基于合入 PR #2 后的源码：
 
-| 操作 | 命令 |
-|---|---|
-| 放弃未提交改动 | `git checkout -- .` |
-| 查看上次提交改了什么 | `git show --stat HEAD` |
-| 撤销上次提交（保留改动） | `git reset --soft HEAD~1` |
-| 查看忽略规则是否生效 | `git check-ignore -v webui/llm-config.json` |
-| 本地是否干净 | `git status --short`（空 = 干净） |
+| 检查 | 结果 |
+| --- | --- |
+| 已提交源码隔离回归 | 275/275 通过；隔离副本补齐根目录桥接源码后重跑 |
+| 当前工作区回归 | 277/277 通过；额外测试来自未纳入提交的本机改动 |
+| 文档静态检查 | 10 份文档、53 个相对链接、14 段 Shell 示例、1 段 JSON 示例通过 |
+| 隔离 HTTP | 首页 200、未认证任务 401、登录 200、已认证空任务列表、`idleMinutes: 0`、33 项目录与 404 通过 |
+| WebUI 全新依赖安装 | 在隔离目录完成 |
+| MCP 全新依赖安装 | npm 解析/下载持续过慢，中止；未作为安装通过或 MCP 握手通过的证据 |
+| 真实设备/飞书 | 本次未调用真实防火墙、未创建任务、未发送消息、未重启当前服务 |
 
-## 6. 已知仓库内容
-
-```
-73 个文件入库，无 node_modules / dist / reports / 真实配置
-├── README.md                 # 项目介绍 + 启动 + GitHub 发布说明
-├── .gitignore                # 敏感/依赖/产物排除
-├── docs/                     # DEPLOY / 规格 / 打包部署 3 份文档
-├── webui/                    # 控制台源码（6 文件 + llm-config.example.json）
-├── standalone/               # 零依赖部署包（8 文件）
-├── mcp/panos-mcp/            # MCP 层源码（46 文件，含 tsconfig/package.json）
-├── cfgs/firewalls.example.json
-├── scripts/build-app.sh      # macOS 打包（自动脱敏）
-├── feishu-bridge.py / panagent-supervisor.py
-└── diagrams/                 # 架构图
-```
+以上不是干净机器安装包验收，也不是生产安全审计。依赖下载和目标机器完整安装仍须在实际发行时单独完成。

@@ -1,5 +1,7 @@
 # PAN-OS 防火墙 Agent — 零 WorkBuddy 依赖部署包
 
+> **历史实现提示（2026-09-28）**：此目录是早期独立实现，下文只描述该旧代码，不代表当前完整控制台。最新架构、33 项深度巡检、统一报告及一键执行应使用主项目 `webui/` + `mcp/panos-mcp/`，见 [项目首页](../README.md) 和 [安装说明](../docs/DEPLOY.md)。不再将此目录作为第二套同步维护或打包发布来源。
+
 纯 Node.js 单服务 + 可选 Python 飞书桥接。**不依赖 WorkBuddy / MCP connector / lark-cli**。
 
 ## 架构

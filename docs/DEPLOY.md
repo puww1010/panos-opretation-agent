@@ -1,167 +1,162 @@
-# PAN-OS 防火墙管理 Agent — 部署与运维手册
+# 源码安装、配置与运行
 
-| 项 | 值 |
-|---|---|
-| 版本 | v1.0 |
-| 日期 | 2026-08-19 |
-| 目标设备 | PA-440 @ 192.168.0.250 (PAN-OS 11.2.4-h7) |
+更新：2026-09-28。适用于已合入 PR #2 的 `main`，功能基线 `bcb070a`、合并提交 `bfd4b2b`；不是旧 `standalone/`，也不是尚未完成的桌面安装包。
 
-## 1. 架构总览
+## 1. 运行位置
 
-```
-用户(WorkBuddy 对话)
-  │
-  ├─ Skill: panos-firewall-readonly   (P0 只读查询)
-  ├─ Skill: panos-firewall-write      (P1 写操作 8 步闭环)
-  ├─ Skill: panos-compliance-audit    (P2 合规巡检 8 项基线)
-  ├─ Skill: panos-log-analysis        (P2 日志深度分析)
-  ├─ Skill: panos-incident-response   (P2 封禁/回收模板)
-  │
-  └─ MCP: panos (apius-tech/Palo-MCP, 本地源码运行)
-       │  117 工具 (R70/W46/A1)
-       └─ PAN-OS XML API → PA-440 @ 192.168.0.250
-```
+控制台应部署在能访问防火墙管理 API 的电脑或内网主机。浏览器访问控制台，Node 后端及本地 MCP 子进程访问 PAN-OS；模型辅助功能需访问所选 LLM 提供方，飞书功能需访问飞书。
 
-## 2. 组件清单
+当前主要验证环境为 macOS Intel + Node 22.19.0。Linux 可按源码方式适配，但不能把本机验证当作 Linux 托管或 Windows 安装验收。自启动、HTTPS、桌面安装包和跨 CPU 兼容需分别验证。
 
-| 组件 | 位置 | 说明 |
-|---|---|---|
-| MCP server 源码 | `/Users/vpeng/.workbuddy/binaries/node/workspace/panos-mcp-local/` | apius-tech/Palo-MCP v1.3.29，import 已改 .ts |
-| 设备配置 | `~/.config/panos-mcp/firewalls.json` | 多设备清单（name/host/api_key） |
-| WorkBuddy MCP 配置 | `~/.workbuddy/mcp.json` | panos 条目，本地启动 |
-| 启动脚本 | `/Users/vpeng/.workbuddy/binaries/node/workspace/start-panos.sh` | 一键启动（自检+清代理） |
-| Skills | `~/.workbuddy/skills/panos-*/SKILL.md` | 5 个能力 skill |
-| 报告 | `<workspace>/reports/` | compliance/log-analysis/dashboard/audit |
-| 自动化 | PAN-OS 每日合规巡检 (每日 09:00) | automation-1787104486938 |
+## 2. 依赖与安装
 
-## 3. 启动与验证
+| 位置 | 依赖声明 | 用途 |
+| --- | --- | --- |
+| 系统 | Node.js ≥22.19.0、npm、Git、Bash | HTTP 服务、MCP TypeScript 源码运行、安装与启动 |
+| `webui/package.json` | `@modelcontextprotocol/sdk` ^1.30.0 | MCP Client / stdio 传输 |
+| `mcp/panos-mcp/package.json` | `@modelcontextprotocol/sdk` ^1.30.0、`zod` ^4.0 | MCP Server 与参数校验 |
+| 同上 | `fast-xml-parser` ^5.10.1、`undici` ^8.10.0、`socks` ^2.8.3 | XML、HTTP 与代理 |
+| 同上 | `@napi-rs/keyring` ^1.2.0 | 系统密钥链；包含平台相关依赖，须在目标系统安装 |
+| 可选 | `lark-cli` | 主控制台飞书消息和报告摘要发送 |
+| 可选 | Python 3 | 旧飞书消息桥接与守护脚本；不是 WebUI/深度巡检必需依赖 |
+
+以上是源码声明范围，不是锁定版本。MCP 开发工具另有 TypeScript、esbuild、Vitest 和 Node 类型声明，不属于源码运行必需的开发环境。
 
 ```bash
-# 手动启动（stdio，供调试）
-~/.../start-panos.sh
-
-# WorkBuddy 接入：Trust ~/.workbuddy/mcp.json 中 panos 条目后重连
-# 验证：list_firewalls → get_firewall_info → get_ha_status
+git clone --branch main --single-branch \
+  https://github.com/puww1010/panos-opretation-agent.git
+cd panos-opretation-agent
+node --version
+npm --version
+npm install --prefix webui --omit=dev --ignore-scripts
+npm install --prefix mcp/panos-mcp --omit=dev --ignore-scripts
 ```
 
-**排障速查**：
-| 症状 | 原因 | 处理 |
-|---|---|---|
-| Connection closed | 代理劫持 | 检查 env 已清空代理 + NO_PROXY=* |
-| TLS 失败 | 代理未绕过 | 同左 |
-| 工具未注册 | 需重连/重启 | 连接器页重连或重启 WorkBuddy |
-| keychain 警告 | 本机无 keychain | 正常，key 明文存 firewalls.json(600) |
+Adapter 直接启动 `node --experimental-strip-types mcp/panos-mcp/src/index.ts`，不要求生成 `dist/`。MCP 的 `prepare` 会触发 TypeScript 编译，上述命令显式跳过安装脚本；开发或编译 MCP 时须另装开发依赖并验证构建，不能把跳过脚本当作构建成功。
 
-## 4. 多设备接入
+仓库忽略了 `package-lock.json`，全新克隆没有可用于 `npm ci` 的锁文件。正式可重复发行还需锁定依赖。命令行为参考 [npm install](https://docs.npmjs.com/cli/v11/commands/npm-install)、[npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci) 和 [生命周期脚本](https://docs.npmjs.com/cli/v11/using-npm/scripts)。
 
-1. 编辑 `~/.config/panos-mcp/firewalls.json`：
+## 3. 首次配置与启动
+
+以下用于**全新源码安装**。已有服务升级不能用模板覆盖配置。
+
+### 3.1 创建自己的配置
+
+在项目根目录执行：
+
+```bash
+umask 077
+mkdir -p .state
+test -e cfgs/firewalls.json || cp cfgs/firewalls.example.json cfgs/firewalls.json
+test -e webui/llm-config.json || cp webui/llm-config.example.json webui/llm-config.json
+chmod 600 cfgs/firewalls.json webui/llm-config.json
+```
+
+用本地编辑器修改 `cfgs/firewalls.json` 的设备名称、管理地址与 API Key。下面仅说明格式，`192.0.2.10` 是文档地址，不能用于真实连接：
+
 ```json
-{ "firewalls": [
-    { "name": "pa-440", "host": "192.168.0.250", "api_key": "..." },
-    { "name": "fw-2",   "host": "192.168.0.251", "api_key": "..." }
-] }
+{
+  "firewalls": [
+    { "name": "YOUR_FIREWALL_NAME", "host": "192.0.2.10", "api_key": "YOUR_API_KEY_HERE" }
+  ]
+}
 ```
-2. 连接器页重连 panos
-3. 调用时传 `firewall: "fw-2"` 参数；不传则默认第一台
 
-## 5. 安全加固清单（建议按序执行）
+LLM 可先不配置；需要时在登录后的模型配置界面填写提供方、实际可用模型和密钥。模板中的模型名称不保证对你的账号可用。不要把密钥写入 `start.sh`、命令参数、提交或截图。
 
-| 优先级 | 项 | 操作 |
-|---|---|---|
-| 🔴 | **API key 轮换** | 当前 key 已明文出现于对话与配置文件。防火墙 Web UI → Device → Administrators → 重新生成 → 更新 firewalls.json |
-| 🔴 | **API key 算法** | Setup → Management → Authentication Settings → API Key Certificate（当前 deprecated algorithm） |
-| 🟡 | 管理面白名单 | Device → Setup → Management → Permitted IP：仅允许管理网段（如 192.168.0.0/24）访问管理口 |
-| 🟡 | 证书校验 | MCP server `verify_ssl` 默认 false；生产建议配 CA 证书后置 true |
-| 🟡 | 只读 key | 巡检/查询场景用只读 API key（角色只读），写操作单独用管理员 key |
-| 🟢 | 配置文件权限 | `chmod 600 firewalls.json mcp.json`（已执行） |
-| 🟢 | 生产网络隔离 | Agent 部署在管理网段，仅 API 出向，防火墙无需出站 |
+### 3.2 隐藏输入初始化密码并启动
 
-## 6. 运维手册
+当前没有首次启动图形化密码向导。首次创建 `cfgs/auth.json` 时，Auth Service 从 `PANOS_WEB_PASSWORD` 初始化管理员密码；不设置则随机生成且不输出，不能再按旧文档“到日志里找密码”。
 
-**日常**：每日 09:00 自动合规巡检（自动化任务），报告落盘 reports/compliance-YYYY-MM-DD.md
+下面在 Bash 中隐藏输入，不将实际密码放进命令历史；示例额外要求至少 12 位。仅用于尚无 `cfgs/auth.json` 的新安装：
 
-**写操作纪律**（panos-firewall-write）：
-- 8 步闭环：申请→预检→审批→candidate→验证→commit 确认→验证→审计
-- 高危操作（封禁/删策略）双确认；封禁前必查日志佐证（incident-response）
-
-**常见运维问答**：
-- "查策略" → readonly skill → get_security_rules
-- "封禁 IP X" → incident-response 模板（方向/时长/双确认）
-- "合规怎么样" → compliance-audit
-- "这个 IP 什么情况" → log-analysis 归因
-
-## 7. 已知限制
-
-- 本机无 keychain：API key 明文存 firewalls.json（权限 600 缓解）
-- 威胁日志断档（6-18 后无新事件）：待排查 Log Settings（未决）
-- WildFire 授权未启用：待整改（未决）
-- tsc/esbuild 本机易 OOM：源码改动后需在内存充足环境编译或用 strip-types 直跑
-
-## 8. IM 接入（飞书 / 企业微信）
-
-### 8.1 飞书（✅ 已打通：推送 + 读取 + 对话桥接）
-
-**工具**：`lark-cli`（v1.0.88，位于 cli-connector-packages/bin）
-
-**授权 scope（3 次 OAuth，均已授予 Peng Yun）**：
-| Scope | 用途 |
-|---|---|
-| im:chat:read | 列出群聊 |
-| im:message.send_as_user + im:message | 发送消息 |
-| im:message.group_msg:get_as_user + im:message.p2p_msg:get_as_user + im:message.reactions:read | 读取消息 |
-
-**关键对象**：
-- 内网群（可推可读）：`oc_0238b0ea1d6d7a74180cfce85b18cf67`
-- 外部群（受租户策略限制，发送报 230027）：`oc_f9801863a7e672b3391dbbdf3b734b77`
-
-**对话桥接**：`<workspace>/feishu-bridge.py`
-- 轮询群消息（每 120s，daemon 模式）
-- 命中触发词（18 个：防火墙/巡检/查/威胁/策略/状态/NAT/许可/会话/流量/接口/地址对象/区域/VPN/WildFire/内容库/PA-440/PA440）→ 调 WebUI `/api/query` → 摘要回复
-- Agent 回复带签名"—— WorkBuddy 防火墙 Agent"防循环
-- state 文件：`~/.workbuddy/panos-feishu-last.ts`（去重）
-
-**启动/停止**：
 ```bash
-# 启动（run_in_background 托管）
-python3 <workspace>/feishu-bridge.py --daemon
-# 停止
-pkill -f feishu-bridge.py
+bash -c '
+  read -r -s -p "设置首次登录密码（至少 12 位）: " PANOS_WEB_PASSWORD
+  printf "\n"
+  if [ "${#PANOS_WEB_PASSWORD}" -lt 12 ]; then
+    printf "密码长度不足，未启动。\n"
+    exit 1
+  fi
+  export PANOS_WEB_PASSWORD
+  export TASKS_FILE="$PWD/.state/tasks.json"
+  export AUDIT_FILE="$PWD/.state/audit-events.json"
+  export LLM_CHOICE_FILE="$PWD/.state/llm-choice.json"
+  umask 077
+  exec bash webui/start.sh
+'
 ```
 
-**验证**（2026-08-19）：
-- 推送巡检摘要 ✅（om_x100b67657db524b0c1ca193604d7eec）
-- 群发"防火墙状态" → Agent 自动回复设备信息 ✅
+浏览器访问 `http://localhost:8080`，账号 `admin`，使用刚输入的密码。`.state/` 保存这份新部署自己的任务、审计和模型选择，避免继承仓库历史跟踪的任务记录；这只是现有路径覆盖能力，不是新实现的统一用户数据目录。
 
-**排障**：
-| 症状 | 处理 |
-|---|---|
-| missing_scope | `lark-cli auth login --scope "<scope>"` 重新授权 |
-| 230027（外部群） | 改发同租户群，或管理员开放外部群策略 |
-| content 非 JSON | 用 `--text "..."` 而非 `--content` |
+**已有 `auth.json` 时环境变量不会重置密码**。使用原密码和界面改密流程，不要删除认证文件来“修复登录”。认证文件仍固定在 `cfgs/auth.json`。
 
-### 8.2 企业微信（⚠️ 授权完成，企业侧 API 受限待开通）
+后续启动沿用相同数据路径，无需再次设置初始化密码：
 
-**工具**：`wecom-cli`（v1.1.0）
+```bash
+umask 077
+export TASKS_FILE="$PWD/.state/tasks.json"
+export AUDIT_FILE="$PWD/.state/audit-events.json"
+export LLM_CHOICE_FILE="$PWD/.state/llm-choice.json"
+bash webui/start.sh
+```
 
-**状态**：
-- ✅ 机器人授权完成（Bot ID: aibnPycT_EnD-cvNIFJH5Fq7OcIJ_FJinr_，扫码自动获取 Bot ID/Secret）
-- ❌ 业务接口报 **errcode 853006**（"this tool is not available for your corporation"）：`chat groups list` 与 `message send` 均不可用
+前台运行可用当前终端 `Ctrl+C` 停止；先确认没有执行中的任务。不要同时启动两份服务写同一组 JSON 文件。
 
-**原因与恢复**（需企业管理员）：
-1. 企业未认证 → 管理后台完成企业认证
-2. 机器人应用未开通 API 权限 → 应用管理确认"消息发送"权限
-3. 接口未申请开通 → 开发者中心申请
+## 4. 配置与数据路径
 
-**恢复后接入步骤**（wecom-cli 已就绪）：
-1. `wecom-cli message send --chat-id <userid/群ID> --msg-type text --text '{"content":"..."}'` 验证发送
-2. 参照 feishu-bridge.py 编写 wecom-bridge.py（轮询 `chat messages` → WebUI → 回复）
-3. 加入 daemon 托管
+默认路径相对于项目位置；自行传入环境变量时建议使用绝对路径。
 
-## 9. 交接清单（给下一位维护者）
+| 项目 | 默认位置 / 变量 | 说明 |
+| --- | --- | --- |
+| HTTP 端口 | `PORT=8080` | 未显式绑定回环，不等于只允许本机访问 |
+| Node / MCP | `NODE_BIN`、`PANOS_MCP_DIR` | 启动子进程与源码目录 |
+| 防火墙连接 | `cfgs/firewalls.json` / `PANOS_FIREWALLS_CONFIG` | 可含敏感 API Key |
+| 认证 | `cfgs/auth.json` | 没有 `AUTH_FILE` 环境变量覆盖；含密码哈希、会话和内部令牌 |
+| 任务 / 审计 | `cfgs/tasks.json` / `TASKS_FILE`；`cfgs/audit-events.json` / `AUDIT_FILE` | 本文新安装改放 `.state/`，父目录须先存在 |
+| 模型配置 / 选择 | `webui/llm-config.json` / `LLM_CONFIG`；`cfgs/llm-choice.json` / `LLM_CHOICE_FILE` | 配置可含密钥，选择为运行时状态 |
+| 工具路由 | `webui/tools-config.json` / `TOOLS_CONFIG` | `mcp`、`direct`、`auto`；新安装不必先改路由 |
+| 拓扑命名 | `cfgs/topology.json` | 可选；当前路径固定 |
+| 飞书发送 | `LARK_CLI`、`FEISHU_CHAT_ID` | 主服务 CLI 与群配置；不自动完成飞书授权 |
 
-- [ ] 熟悉 5 个 skill 的职责边界
-- [ ] 验证每日巡检自动化输出
-- [ ] 完成 🔴 安全加固项（key 轮换 + API Key Certificate）
-- [ ] 排障速查表可用
-- [ ] 飞书桥接 daemon 状态（pkill 后需重启）
-- [ ] 企业微信 853006 恢复后补 wecom-bridge
+## 5. 只读验证与测试
+
+未登录时检查页面和认证边界，不创建任务：
+
+```bash
+curl --silent --output /dev/null --write-out '%{http_code}\n' http://localhost:8080/
+curl --silent --output /dev/null --write-out '%{http_code}\n' http://localhost:8080/api/tasks
+```
+
+预期分别 `200`、`401`。随后浏览器登录，查看概览、任务列表和巡检目录。MCP 握手仅证明子进程能通信，不证明防火墙认证成功。
+
+在项目根目录运行回归：
+
+```bash
+node --test webui/test/*.test.js
+```
+
+自动测试不代表真实设备支持所有指令；不在安装验证中创建候选配置、审批、commit 或发送飞书消息。
+
+## 6. 飞书是可选集成
+
+主控制台使用 `lark-cli` 发送消息。目标机器需自行安装、登录正确应用身份并明确配置目标群，机器人必须在群内且拥有权限。`LARK_CLI` 可指定路径；代码会查 PATH 并兼容旧机器的 WorkBuddy 安装位置，但该路径不是发行依赖。
+
+不要沿用代码内的开发群默认值。主服务的 `FEISHU_CHAT_ID` 不会自动改写旧 `feishu-bridge.py`：后者仍有固定群、固定 `localhost:8080` 和独立 `.state` 游标。双向桥接须单独核对这些设置、权限和回执，不能以“daemon 运行中”证明链路健康；也不能把 `standalone/` 的飞书配置方式套到主程序。
+
+- `spawn lark-cli ENOENT`：核对可执行路径与后台进程的 Node 路径。
+- `230002`：核对当前机器人身份是否加入目标群。
+- `230027`：继续核对权限和租户策略；发送成功不证明读取/自动回执也成功。
+- `/api/feishu/push-report` 返回 400：先核对是否已有结束的新版巡检报告及请求格式；旧 `inspect` 历史不是新版推送来源。
+
+## 7. 升级、备份与限制
+
+- 升级前检查分支/未提交改动并记录旧提交；无执行任务后，将实际配置、任务、审计、认证备份到受保护的本地目录，不上传 GitHub。
+- 先确认数据路径再切换代码；本手册不提供覆盖运行目录、强制重置或一键删除数据的命令。
+- 历史任务默认上限 200，不是无限归档；重启中断的任务不自动重放。清理任务可能同时清掉随任务保存的巡检报告，重要报告应先导出。
+- 流量全量明细仅在内存，摘要和 50 条预览可恢复；重启后原始明细需重新查询。
+- 本分支 `idleMinutes: 0`；维护者本机的 10 分钟超时与新登录页尚未独立提交，本次不混入代码改动。
+- 原生 HTTP 无内建 HTTPS；部分 PAN-OS 直连禁用证书校验，缺少多用户 RBAC/SSO，应限定可信网络并另做生产安全评审。
+- Linux 托管、Windows 安装、macOS 签名/公证和自动升级尚未完成当前版本验收；旧打包/守护脚本不能直接当成发行方案。
+
+排障顺序：浏览器到 HTTP → 登录认证 → MCP 子进程 → 防火墙 API → 指令支持情况。只分享脱敏错误、版本与路径结构，不分享完整配置或令牌。

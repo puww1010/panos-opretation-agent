@@ -1,257 +1,46 @@
-# PAN-OS Agent 打包部署指南
+# 安装包现状与交付要求
 
-> 面向交付工程师：把 PAN-OS 防火墙 Agent 控制台打成独立安装包分发给客户。
-> 覆盖：依赖盘点 / macOS .app 打包 / Windows exe / Linux systemd / 安全脱敏 / 客户初始化。
+更新：2026-09-28。当前可用方式为 [源码部署](DEPLOY.md)，主程序是 `webui/` + `mcp/panos-mcp/`；不要再以旧 `standalone/` 作为完整功能发行来源。
 
----
+## 1. 已有文件不等于已验收产品
 
-## 1. 依赖盘点（零 WorkBuddy 依赖）
+| 形式 | 当前状态 |
+| --- | --- |
+| 源码运行 | 已有启动入口与测试；目标机器需安装 Node 和两组依赖 |
+| macOS `.app` | 存在早期 `scripts/build-app.sh`，未适配并验收最新版 |
+| DMG / Windows EXE 安装包 | 尚未发布当前版本验收产物 |
+| Linux 常驻服务 | 可基于源码适配；旧守护脚本不等于通用安装服务 |
+| 签名、公证、自动更新 | 尚未完成；不承诺在其他机器无安全提示 |
 
-控制台本体为纯 Node.js 实现，**不依赖 WorkBuddy 运行时**，可完全脱离独立部署。
+旧 macOS 脚本不能直接作为交付命令：默认 Node 路径绑定旧机器，launcher 用 Node 调用 Python supervisor，复制整个 WebUI/MCP 目录再清少数字段不能保证排除所有私有数据，数据仍与程序目录混放，端口检查也不是严格的应用实例识别。本次只更新说明，不运行或修复该脚本。
 
-| 组件 | 依赖项 | 说明 |
-|---|---|---|
-| `webui/server.js` | Node 22+ · `@modelcontextprotocol/sdk` | 唯一第三方 npm 依赖（webui/node_modules ≈ 21MB） |
-| `mcp/panos-mcp` | Node 22+（`--experimental-strip-types`）· TypeScript 源码 | MCP 增强层（node_modules ≈ 65MB）；不启用则走纯 direct 模式 |
-| 飞书桥接 | `lark-cli`（可选）或 Python 3 | `standalone/feishu-bridge.py` 为纯飞书 API 实现（零依赖） |
-| 常驻保活 | Python 3 | `panagent-supervisor.py`（可选，无则手动启动） |
+## 2. 推荐方向，尚待选定平台
 
-> ✅ 结论：客户环境只需 **Node 22+（或随包内嵌）**；飞书/Python 均为可选能力。
+本地 Mac 试用优先考虑 `.app` + DMG：携带运行环境、启动本地 Web 服务并打开现有浏览器界面。保留同一套 Router / Service / Adapter 代码，不额外维护一套精简后端。
 
-### 1.1 MCP 通道架构（脱离 WorkBuddy 如何工作）
+Windows 或内网服务器应分别设计启动器和托管方式。不能把 Intel Mac 的 Node、系统密钥链依赖或 `node_modules` 直接装到 Apple 芯片、Windows 或 Linux，也不能把“生成压缩包”当作跨平台验收。
 
-控制台自包含一套完整的 MCP 实现（**MCP Client + 内置 MCP Server**），与 WorkBuddy 的 MCP 连接器完全无关，独立部署后照常工作：
+## 3. 正式打包前必须完成
 
-```
-浏览器 WebUI
-   │  HTTP / JS
-   ▼
-Node 后端 webui/server.js ──────────────┬───────────────────────────────┐
-   │  MCP Client（官方 @modelcontextprotocol/sdk）   │  直连层 direct*() 函数          │
-   │  stdio 进程通信                    │  HTTPS（Node https 模块）       │
-   ▼                                    ▼                               ▼
-mcp/panos-mcp 子进程（项目自带）    ──HTTPS──▶   PAN-OS 防火墙 XML API
-```
+1. **固定发布来源**：指定提交，检查未提交工作和许可证，锁定依赖；不直接打包整个开发目录。
+2. **程序/数据分离**：统一可写数据路径，补齐当前固定的 Auth/拓扑路径；升级不覆盖任务、审计、配置。
+3. **安全初始化**：首次设置管理员密码和设备连接；不携带真实密钥、登录会话、任务/审计、飞书状态、私有报告、日志或备份。
+4. **运行环境**：按 OS/CPU 携带并验证 Node、MCP 和原生依赖；飞书 CLI/Python 的可选安装与授权必须明确。
+5. **生命周期**：正确识别已有实例、端口冲突、停止/退出及异常，不能误停其他 Node 服务。
+6. **网络边界**：本地版默认访问范围需明确；不因打包自动公开 HTTP 或防火墙管理口。
+7. **发行验证**：干净机器无开发环境启动、登录、只读设备查询、报告导出、重启恢复、升级/卸载保留数据。
+8. **发行材料**：签名/公证、校验和、版本说明、许可声明及安装/回滚说明。
 
-- **MCP Client**：`webui/server.js` 用官方 npm 包 `@modelcontextprotocol/sdk`，`connect()` 通过 `StdioClientTransport` 拉起项目自带的 `mcp/panos-mcp/src/index.ts` 子进程（`NODE --experimental-strip-types`）。两边用 **stdio 管道**通信——纯本地进程间通信，不注册任何外部平台。
-- **MCP Server**：`mcp/panos-mcp` 是项目源码，读 `cfgs/firewalls.json` 的 API Key，调用 PAN-OS XML API。
-- **直连层**：`directOp()` / `directConfigSet()` / `directConfigDelete()` / `directConfigMove()` / `directLog()` 等函数用 Node `https` 模块**直接**调 PAN-OS，不经过 MCP。原因：MCP 部分工具（如 `move_security_rule`）v3Schema 校验存在故障，故封禁/删除/移动/禁用等变更操作默认走直连，MCP 仅作查询兜底。
-- **路由规则**：`webui/tools-config.json` 可对每个工具指定 `mcp` / `direct` / `auto`（默认 auto：direct 优先，失败回退 MCP）。
-- **结论**：脱离 WorkBuddy 后唯一外部对象是被管理的 **PAN-OS 防火墙本身**；MCP 只是"本地两个进程之间的消息协议"，不是外部依赖。
+## 4. 包内文件采用允许清单
 
----
-
-## 2. 安全脱敏（打包强制步骤）
+可以包含经过审核的源码、前端资源、运行依赖、公共配置模板与许可声明。不要采用“先复制所有文件，再搜索一个 Key 前缀删除”的方式。
 
-**开发机上的真实凭据不得进入安装包**，打包脚本已内置脱敏：
+必须排除真实配置、`.env*`、`cfgs/auth.json`、任务/审计/模型选择、`.state/`、报告、日志、备份与本机路径信息。`.gitignore` 不是打包过滤器，也不会移除历史已经跟踪的文件。
 
-| 敏感文件 | 打包前 | 打包后（安装包内） |
-|---|---|---|
-| `webui/llm-config.json` | 真实 LLM API Key ×3 | providers 结构保留，**key 清空** |
-| `cfgs/firewalls.json` | 真实 PA 设备 IP + api_key | 设备占位，**api_key 清空** |
-| `standalone/start.sh` | （已移除硬编码 key） | 仅保留 export 占位 |
+迁移当前用户数据应是独立、受控、可回滚的本地操作，不与面向其他人的公共安装包混在一起。云部署仍需独立解决到防火墙内网的连通性。
 
-脱敏由 `scripts/build-app.sh` 的 **2b 步骤**自动完成（Python 内联脚本），无需人工干预。
+## 5. 验收标准
 
----
+“文件生成”只说明构建产物存在。“可安装”至少需验证安装、首次配置、启动/停止、认证、真实只读链路、持久化与升级。真实设备变更和飞书发送需独立授权，不由打包验收自动触发。
 
-## 3. 打包方案
-
-### 3.1 macOS（已实现，`scripts/build-app.sh`）
-
-产物：`dist/PAN-OS Agent.app`（≈197MB，内嵌 Node 运行时，双击即用）。
-
-```bash
-# 指定 Node 二进制来源后一键打包
-NODE_SRC="$(command -v node)" bash scripts/build-app.sh
-# 产物验证（必须）
-grep -r "sk-" "dist/PAN-OS Agent.app" --include="*.json" | wc -l   # 期望 0
-```
-
-安装包结构：
-
-```
-PAN-OS Agent.app/
-├── Contents/
-│   ├── Info.plist                 # Bundle 元信息（v4.1.0）
-│   ├── MacOS/launcher             # 启动器：拉起 supervisor + 自动开浏览器
-│   └── Resources/
-│       ├── node-dir/node          # 内嵌 Node 运行时（110MB）
-│       └── console/               # 控制台全量（已脱敏）
-│           ├── webui/             # 前端 + server.js + llm-config.json（key 空）
-│           ├── mcp/panos-mcp/     # MCP 层（含 node_modules）
-│           ├── cfgs/firewalls.json（api_key 空）
-│           ├── panagent-supervisor.py
-│           └── feishu-bridge.py
-```
-
-客户使用：拖到 `/Applications` → 双击启动 → 自动打开 `http://localhost:8080`。
-已运行实例再双击仅打开浏览器（launcher 检测 8080 端口）。
-
-### 3.2 Windows（建议，未实现）
-
-推荐 **pkg**（Node 官方）打包成单 exe：
-
-```bash
-# 在 webui/ 下
-npx pkg server.js --targets node22-win-x64 --output "PAN-OS-Agent.exe"
-```
-
-要点：
-- 需把 `index.html`、`llm-config.json` 作为 `assets` 打进 pkg（pkg 不自动含静态文件）
-- MCP 增强层若启用，同样打 `mcp/panos-mcp`（或直接随目录分发 + `PANOS_MCP_DIR` 环境变量）
-- 建议配合 `node-windows` 或 NSSM 注册 Windows 服务实现开机自启
-- 防火墙放行 8080 端口
-
-### 3.3 Linux（建议，未实现）
-
-产物：`tar.gz` + systemd 服务。
-
-```bash
-# 打包
-tar -czf panos-agent-linux.tar.gz \
-  webui/ mcp/ cfgs/ panagent-supervisor.py feishu-bridge.py scripts/ \
-  --exclude='*/node_modules/.cache'
-```
-
-systemd 单元 `/etc/systemd/system/panos-agent.service`：
-
-```ini
-[Unit]
-Description=PAN-OS Agent Console
-After=network.target
-
-[Service]
-Type=simple
-User=panos
-WorkingDirectory=/opt/panos-agent
-Environment=NODE_BIN=/usr/bin/node
-ExecStart=/usr/bin/python3 /opt/panos-agent/panagent-supervisor.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now panos-agent
-# 查看状态/日志
-systemctl status panos-agent
-journalctl -u panos-agent -f
-```
-
-> Linux 版注意：Node 官方二进制适用于 glibc；若客户是 Alpine/musl，需换对应构建。
-
----
-
-## 4. 客户首次初始化（配置向导方案）
-
-### 4.0 WebUI 登录认证（发布公网 / 客户交付必读）
-
-- 首次启动自动生成 `cfgs/auth.json`：账号 `admin` + **随机密码**（打印在控制台日志，如 `[auth] ⚠️ 首次启动：WebUI 登录账号 = admin / 密码 = xxxxxxxx`）。
-- **所有 `/api/*` 接口需 `Authorization: Bearer <token>`**（用户登录会话或 `internal_token`）；未认证返回 401，前端显示登录覆盖层。
-- 登录：`POST /api/auth/login`（会话 7 天）；修改密码：右上角「🔑 改密」（校验旧密码 + 新密码 ≥8 位，成功后清空全部会话强制重登）。
-- 飞书 bridge 通过 `cfgs/auth.json` 的 `internal_token` 自动调用 API（或环境变量 `PANOS_WEB_INTERNAL_TOKEN`），无需人工登录。
-- 忘记密码：删除 `cfgs/auth.json` 重启，即重新生成随机密码。
-- **发布公网三阶段**：① 本认证 → ② 网络方案（云服务器 Nginx 反代 / 内网穿透 / 家庭公网 IP）→ ③ HTTPS 证书 + 安全组规则。无回环豁免（Nginx 反代也必须认证）。
-
-### 4.1 现状：手动填两个文件
-
-1. **防火墙连接**：编辑 `cfgs/firewalls.json`
-
-```json
-{
-  "firewalls": [{
-    "name": "pa-440",
-    "host": "192.168.0.250",
-    "api_key": "填入PA设备的API Key"
-  }]
-}
-```
-
-2. **LLM API Key**：控制台右上角「⚙️ 模型配置」弹窗填入（运行时生效，无需重启）
-
-### 4.2 建议：首次启动配置向导（未实现，推荐开发）
-
-- 检测 `firewalls.json` 的 `api_key` 为空 或 `llm-config.json` 的 providers key 全空 → 打开引导弹窗
-- 表单字段：设备名 / IP / API Key / 默认 LLM / 各 LLM API Key
-- 保存即写 `cfgs/firewalls.json` + `webui/llm-config.json`，随后自动刷新页面
-- 复用现有 `模型配置` 弹窗的保存逻辑，新增防火墙配置区块即可
-
----
-
-## 5. 客户初始化指引（随包分发）
-
-打包时自动生成 `客户初始化指引.md` 放入安装包 Resources（建议，未实现）。内容模板：
-
-```markdown
-# 初始化指引（首次使用 5 分钟）
-
-## 1. 启动
-- macOS：双击 PAN-OS Agent.app（或将 app 拖入 /Applications 后启动）
-- 浏览器自动打开 http://localhost:8080，或手动访问
-
-## 2. 配置防火墙连接
-编辑安装包内 console/cfgs/firewalls.json：
-  name    = 设备名（随意）
-  host    = PA 防火墙管理 IP
-  api_key = PA 管理 API Key（PAN-OS: Device > Setup > Operations > Generate API Key）
-
-## 3. 配置 AI 模型（可选）
-控制台右上角「⚙️ 模型配置」→ 填写 DeepSeek/通义千问/Kimi 的 API Key → 保存
-
-## 4. 飞书通知（可选）
-设置 FEISHU_WEBHOOK_URL 或 app_id/app_secret/chat_id 后重启
-
-## 5. 开始使用
-在命令中心输入自然语言即可：设备状态 / 完整巡检 / 流量日志 / 封禁 1.2.3.4 ...
-```
-
----
-
-## 6. 交付前自检清单
-
-| 检查项 | 命令 / 方法 | 通过标准 |
-|---|---|---|
-| 敏感信息脱敏 | `grep -r "sk-" <安装包> --include="*.json"` | 输出 0 |
-| 认证生效 | 未带 token 访问 `/api/overview` | HTTP 401 |
-| 登录可用 | `POST /api/auth/login`（admin + 日志随机密码） | 返回 `{ok:true,token}` |
-| 语法完整性 | 内嵌 node `--check webui/server.js` | 无报错 |
-| 依赖完整性 | 检查包内 `webui/node_modules`、`mcp/panos-mcp/node_modules` | 存在 |
-| 干净环境启动 | 在无 Node 的虚拟机双击 .app | 8080 可访问 |
-| 防火墙连通 | 首页 KPI 显示设备型号/会话数 | PA-440 等数据出现 |
-| LLM 生效 | 提交一个查询任务，卡片显示 `🟦 DeepSeek` 等标签 | 有结果 |
-| 任务持久化 | 提交任务 → 重启 → 任务列表仍在 | tasks.json 恢复 |
-
----
-
-## 7. 版本发布流程
-
-```bash
-# 1. 修改版本号
-sed -i '' 's/4\.1\.0/4.2.0/' webui/package.json scripts/build-app.sh
-
-# 2. 重新打包
-NODE_SRC="$(command -v node)" bash scripts/build-app.sh
-
-# 3. 自检（见第 6 节）
-
-# 4. 归档
-cd dist && zip -r "PANOS-Agent-4.2.0-macOS.zip" "PAN-OS Agent.app"
-```
-
----
-
-## 附：目录职责速查
-
-| 目录 | 职责 | 是否进安装包 |
-|---|---|---|
-| `webui/` | 控制台前端 + 后端 server.js | ✅（脱敏后） |
-| `mcp/panos-mcp/` | MCP 增强层 | ✅（含 node_modules） |
-| `cfgs/` | 防火墙连接配置 | ✅（脱敏后） |
-| `cfgs/auth.json` | WebUI 登录凭据（密码 sha256 + 会话 + internal_token） | ⚠️ **不随包**（客户首启自动生成） |
-| `reports/` | 合规巡检报告产物 | ⚠️ 客户运行期生成，不随包 |
-| `docs/` | 本文档及规格 | 可选 |
-| `.state/` | 飞书游标状态 | 打包时保留占位即可 |
+本次文档更新没有创建安装包、版本标签或 GitHub Release。开发与发布流程见 [GitHub 发布说明](GITHUB-RELEASE.md)。
