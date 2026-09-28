@@ -24,11 +24,11 @@ test("API router owns firewall, Feishu, and auth HTTP contracts", async () => {
   const touched = [];
   const router = createApiRouter({
     dashboardService: {},
+    taskService: { getMonitorReportNotification: () => null },
     firewalls: () => [{ name: "fw-a", host: "192.0.2.1" }],
     feishu: {
       status: async () => ({ running: false }),
       send: async (text) => ({ ok: true, text }),
-      latestReport: () => null,
     },
     authService: {
       checkRequest: (req) => req.headers?.authorization === "Bearer token",
@@ -51,13 +51,13 @@ test("API router owns firewall, Feishu, and auth HTTP contracts", async () => {
 
   assert.deepEqual(sent, [
     { code: 200, body: { firewalls: [{ name: "fw-a", host: "192.0.2.1" }], multi: false } },
-    { code: 400, body: { error: "没有合规报告" } },
+    { code: 400, body: { error: "没有可推送的深度健康巡检报告" } },
     { code: 200, body: { ok: true, token: "token" } },
   ]);
   assert.deepEqual(touched, ["token"]);
 });
 
-test("LLM manual test retains the legacy action catalog", async () => {
+test("LLM manual test advertises only the unified monitor action", async () => {
   let prompt = "";
   const router = createApiRouter({
     dashboardService: {},
@@ -71,6 +71,8 @@ test("LLM manual test retains the legacy action catalog", async () => {
 
   assert.equal(handled, true);
   assert.match(prompt, /device\(设备状态\).*diag\(诊断\)/);
+  assert.match(prompt, /monitor\(深度健康巡检\)/);
+  assert.doesNotMatch(prompt, /inspect\(/);
   assert.equal(sent[0].code, 200);
 });
 

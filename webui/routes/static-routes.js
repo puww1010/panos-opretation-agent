@@ -22,9 +22,9 @@ function createStaticRouter({ rootDirectory }) {
     if (!fs.existsSync(candidate)) return false;
     const real = fs.realpathSync(candidate);
     if (!real.startsWith(root + path.sep)) return false;
-    const mime = mimeByExtension[path.extname(real).toLowerCase()];
+    const mime = requestPath === "/assets/monitor-ui.js" && real === path.join(root, "assets", "monitor-ui.js") ? "text/javascript; charset=utf-8" : mimeByExtension[path.extname(real).toLowerCase()];
     if (!mime) return false;
-    res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=3600" });
+    res.writeHead(200, { "Content-Type": mime, "Cache-Control": requestPath === "/assets/monitor-ui.js" ? "no-store" : "public, max-age=3600" });
     res.end(fs.readFileSync(real));
     return true;
   }

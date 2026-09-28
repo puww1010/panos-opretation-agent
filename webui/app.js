@@ -6,12 +6,14 @@ const { createAuthService } = require("./services/auth-service");
 const { createDashboardService } = require("./services/dashboard-service");
 const { createLlmService } = require("./services/llm-service");
 const { createTaskPlanner } = require("./services/task-planner");
+const { createMonitorService } = require("./services/monitor/service");
 const { createApiRouter } = require("./routes/api-routes");
 const { createStaticRouter } = require("./routes/static-routes");
 const { createTaskService, normalizeChangeParams } = require("./services/task-service");
 const { buildSecurityHeaders, isSameOriginApiPath } = require("./lib/security");
 const { planFingerprint } = require("./lib/task-governance");
 const { buildHealthSummary } = require("./lib/health");
+const { resolveFeishuRuntime } = require("./lib/feishu-runtime");
 
 function createApp({ apiRouter, staticRouter, buildSecurityHeaders, createTask, ensureConnected, touchIfUserAction }) {
   return http.createServer(async (req, res) => {
@@ -41,7 +43,6 @@ const SRC = path.join(PANOS_MCP_DIR, "src", "index.ts");
 const CWD = PANOS_MCP_DIR;
 const CFG = process.env.PANOS_FIREWALLS_CONFIG || path.join(__dirname, "..", "cfgs", "firewalls.json");
 const PORT = process.env.PORT || 8080;
-const REPORTS_DIR = path.join(__dirname, "..", "reports");
 const TASKS_FILE = process.env.TASKS_FILE || path.join(__dirname, "..", "cfgs", "tasks.json");
 const AUDIT_FILE = process.env.AUDIT_FILE || path.join(__dirname, "..", "cfgs", "audit-events.json");
 const AUTH_FILE = path.join(__dirname, "..", "cfgs", "auth.json");
@@ -104,6 +105,7 @@ const llmService = createLlmService({
 // Task Service owns task/audit in-memory state and JSON persistence. The server only composes dependencies.
 taskService = createTaskService({
   panosAdapter,
+  monitorService: createMonitorService({ readSource: panosAdapter.readMonitorSource }),
   taskFile: TASKS_FILE,
   auditFile: AUDIT_FILE,
   auditLogReader: (firewall) => callTool("get_config_logs", { nlogs: 200 }, firewall),
@@ -111,12 +113,6 @@ taskService = createTaskService({
   toolCaller: callTool,
   querySummarizer: (...args) => llmService.summarizeQuery(...args),
   queryHistoryRecorder: (entry) => dashboardService.recordHistory(entry),
-  inspectReportWriter: ({ date, markdown }) => {
-    if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
-    const file = path.join(REPORTS_DIR, "compliance-" + date + "-task.md");
-    fs.writeFileSync(file, markdown);
-    return file;
-  },
   diagnosticDependencies: {
     deepLog,
     filterByMinutes,
@@ -129,6 +125,7 @@ taskService = createTaskService({
 });
 // ── 动作清单（查询用）──
 const ACTIONS = {
+  monitor:   { label: "深度健康巡检", tools: [], keywords: ["深度健康巡检", "深度巡检"] },
   device:    { label: "设备状态", tools: ["get_system_resources", "get_active_sessions", "get_ha_status"], keywords: ["状态", "负载", "cpu", "内存", "运行", "device", "status", "health", "resource", "load"] },
   inventory: { label: "设备清单", tools: ["get_firewall_info", "get_system_environmentals", "get_interfaces", "get_licenses", "get_content_versions"], keywords: ["设备", "清单", "资产", "inventory", "硬件", "型号", "序列号", "版本", "asset", "hardware", "serial", "model", "system"] },
   security:  { label: "安全策略", tools: ["get_security_rules"], keywords: ["策略", "放行", "policy", "security"] },
@@ -144,7 +141,6 @@ const ACTIONS = {
   vpn:       { label: "VPN", tools: ["get_ipsec_tunnels", "get_globalprotect_users"], keywords: ["vpn", "隧道", "ipsec", "globalprotect", "远程接入"] },
   wildfire:  { label: "WildFire", tools: ["get_wildfire_status"], keywords: ["wildfire", "沙箱", "wild"] },
   content:   { label: "内容库", tools: ["get_content_versions"], keywords: ["内容库", "更新", "版本", "content", "补丁"] },
-  inspect:   { label: "完整巡检", tools: ["get_firewall_info", "get_ha_status", "get_system_resources", "get_active_sessions", "get_licenses", "get_traffic_logs", "get_threat_logs", "get_wildfire_status", "get_security_rules", "get_content_versions"], keywords: ["巡检", "合规", "全部", "inspect", "audit", "报告"] },
 };
 
 // ── 变更模板（写操作，仅允许模板化，防幻觉）──
@@ -185,17 +181,12 @@ const CHANGE_TEMPLATES = {
 // ── 飞书桥（可选）──
 const { execFile } = require("child_process");
 const FEISHU_CHAT = process.env.FEISHU_CHAT_ID || "oc_0238b0ea1d6d7a74180cfce85b18cf67";
-// lark-cli 可由 LARK_CLI 环境变量指定；未配置则 PATH 中查找（飞书桥为可选功能）
-const LARK_CLI = process.env.LARK_CLI || "lark-cli";
-// lark-cli 是 `#!/usr/bin/env node` wrapper，且可能 spawn 自身依赖——确保 PATH 含 node 与 lark 目录
-(() => {
-  const add = (d) => { if (d && d !== "." && process.env.PATH && !process.env.PATH.split(":").includes(d)) process.env.PATH = d + ":" + process.env.PATH; };
-  add(path.dirname(NODE));
-  add(path.dirname(LARK_CLI));
-})();
+// 飞书命令与 Node 路径仅用于子进程，不依赖后台服务继承交互终端的 PATH。
+const feishuRuntime = resolveFeishuRuntime();
+const LARK_CLI = feishuRuntime.cli;
 function feishuSend(text) {
   return new Promise((resolve) => {
-    execFile(LARK_CLI, ["im", "+messages-send", "--chat-id", FEISHU_CHAT, "--msg-type", "text", "--text", text], { timeout: 15000 }, (err, stdout, stderr) => {
+    execFile(LARK_CLI, ["im", "+messages-send", "--chat-id", FEISHU_CHAT, "--msg-type", "text", "--text", text], { timeout: 15000, env: feishuRuntime.env }, (err, stdout, stderr) => {
       if (err) resolve({ ok: false, error: String(stderr || err.message).slice(0, 1000) });
       else {
         try { const d = JSON.parse(stdout); resolve({ ok: !!d.ok, data: d.data ? d.data.message_id : null, error: d.error ? JSON.stringify(d.error).slice(0, 200) : "" }); }
@@ -231,7 +222,6 @@ const apiRouter = createApiRouter({
   feishu: {
     status: async () => ({ chat: FEISHU_CHAT, running: await feishuDaemonRunning(), lark: LARK_CLI }),
     send: feishuSend,
-    latestReport: () => { const files = fs.existsSync(REPORTS_DIR) ? fs.readdirSync(REPORTS_DIR).filter((file) => file.startsWith("compliance-") && file.endsWith(".md")).sort().reverse() : []; return files.length ? "【PAN-OS 合规报告 " + files[0] + "】\n" + fs.readFileSync(path.join(REPORTS_DIR, files[0]), "utf-8").slice(0, 1500) : null; },
   },
 });
 

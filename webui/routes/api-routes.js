@@ -30,11 +30,26 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
       send(400, { error: "「" + (value?.label || provider) + "」未配置 API key", hint: "请按以下步骤配置：\n\n1. 申请 API key：\n   " + (signup[provider] || value?.base_url || "https://...") + "\n\n2. 在 webui/start.sh 中添加环境变量：\n   export " + (value?.env || "?") + '=\"你的key\"\n\n3. 重启控制台：\n   cd webui && ./start.sh' });
       return true;
     }
-    if (req.method === "POST" && req.url === "/api/llm/test") { const { text } = JSON.parse(await readBody()); const started = Date.now(); const output = await llmService.classify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/inspect(完整巡检)/change(变更)/diag(诊断)/null(无关)", text || ""); send(200, { output, ms: Date.now() - started, provider: llmService.getCurrent() }); return true; }
+if (req.method === "POST" && req.url === "/api/llm/test") { const { text } = JSON.parse(await readBody()); const started = Date.now(); const output = await llmService.classify("手动测试", "你是防火墙运维意图分类器。输出 JSON：{\"action\":\"<key>\"}。可选 key：device(设备状态)/security(安全策略)/threat(威胁日志)/traffic(流量日志)/monitor(深度健康巡检)/change(变更)/diag(诊断)/null(无关)", text || ""); send(200, { output, ms: Date.now() - started, provider: llmService.getCurrent() }); return true; }
     return false;
   }
   async function handleTasks(req, send, readBody, taskCreator, ensureConnected) {
     const parsed = new URL(req.url, "http://localhost");
+    if (req.method === "GET" && parsed.pathname === "/api/monitor/checks") { send(200, { checks: taskService.listMonitorChecks() }); return true; }
+    const notification = parsed.pathname.match(/^\/api\/task\/(\d+)\/monitor\/notification$/);
+    if (req.method === "GET" && notification) {
+      const report = taskService.getMonitorReportNotification({ taskId: Number(notification[1]) });
+      send(report ? 200 : 404, report || { error: "没有可读取的深度健康巡检报告" });
+      return true;
+    }
+    const monitorExport = parsed.pathname.match(/^\/api\/task\/(\d+)\/monitor\/export$/);
+    if (req.method === "GET" && monitorExport) {
+      const format = parsed.searchParams.get("format") || "json";
+      if (!["json", "html"].includes(format)) { send(400, { error: "报告格式仅支持 json 或 html" }); return true; }
+      const report = taskService.exportMonitorReport(Number(monitorExport[1]), format);
+      send(report ? 200 : 404, report || { error: "未找到该任务的深度巡检报告" });
+      return true;
+    }
     const exportMatch = parsed.pathname.match(/^\/api\/task\/(\d+)\/logs\/export$/);
     if (req.method === "GET" && exportMatch) {
       const result = taskService.getTrafficLogPage && taskService.exportTrafficLogs(Number(exportMatch[1]));
@@ -53,7 +68,7 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
     }
     if (req.method === "GET" && req.url === "/api/tasks") { send(200, { tasks: taskService.listTasks() }); return true; }
     if (req.method === "POST" && req.url === "/api/tasks/clean") { send(200, taskService.cleanTasks()); return true; }
-    if (req.method === "POST" && req.url === "/api/task") { const { query, firewall, source, replyTo } = JSON.parse(await readBody()); await ensureConnected(); send(200, await taskCreator(query, firewall, source || "web", { replyTo })); return true; }
+    if (req.method === "POST" && req.url === "/api/task") { const { query, firewall, source, replyTo } = JSON.parse(await readBody()); await ensureConnected(); try { send(200, await taskCreator(query, firewall, source || "web", { replyTo })); } catch (error) { if (error.code !== "MONITOR_INPUT") throw error; send(400, { error: error.message }); } return true; }
     if (req.method === "POST" && req.url.startsWith("/api/task/")) { const parts = req.url.split("/"), id = Number(parts[3]), action = parts[4], name = parts[5] ? decodeURIComponent(parts[5]) : null, task = taskService.getTask(id); if (!task) { send(404, { error: "task not found" }); return true; } try { if (action === "select" && task.status === "awaiting_selection" && task._candidate) send(200, await taskService.actOnTask(id, "select", { params: { name, keyword: task._candidate.keyword }, firewall: task._candidate.firewall, step: `用户从候选选中：${name}` })); else if (action === "select-multi") send(200, await taskService.startBatchSelection(id, JSON.parse(await readBody()).names)); else if (["approve", "reject", "confirm", "cancel"].includes(action)) send(200, await taskService.actOnTask(id, action)); else { send(400, { error: "非法操作或状态不匹配: " + task.status }); return true; } } catch (error) { const message = String(error.message || error); send(message === "变更计划已变化，请重新生成候选计划" ? 409 : 400, { error: message }); } return true; }
     return false;
   }
@@ -61,7 +76,15 @@ function createApiRouter({ dashboardService, llmService, taskService, authServic
     if (req.method === "GET" && req.url === "/api/firewalls") { const list = firewalls(); send(200, { firewalls: list, multi: list.length > 1 }); return true; }
     if (req.url === "/api/feishu/status") { send(200, await feishu.status()); return true; }
     if (req.url === "/api/feishu/send") { const { text } = JSON.parse(await readBody()); if (!text) { send(400, { error: "消息不能为空" }); return true; } send(200, await feishu.send(text)); return true; }
-    if (req.url === "/api/feishu/push-report") { const report = feishu.latestReport(); if (!report) { send(400, { error: "没有合规报告" }); return true; } send(200, await feishu.send(report)); return true; }
+    if (req.method === "POST" && req.url === "/api/feishu/push-report") {
+      let input;
+      try { input = JSON.parse((await readBody()) || "{}"); } catch { send(400, { error: "请求格式错误" }); return true; }
+      if (!input || typeof input !== "object" || Array.isArray(input) || (input.taskId !== undefined && (!Number.isSafeInteger(input.taskId) || input.taskId < 1))) { send(400, { error: "taskId 必须为正整数" }); return true; }
+      const report = taskService.getMonitorReportNotification({ taskId: input.taskId });
+      if (!report) { send(input.taskId === undefined ? 400 : 404, { error: "没有可推送的深度健康巡检报告" }); return true; }
+      send(200, { ...await feishu.send(report.text), taskId: report.taskId });
+      return true;
+    }
     return false;
   }
   async function handleAuth(req, send, readBody, touchIfUserAction) {

@@ -1,3 +1,5 @@
+const { parseMonitorRequest } = require("./monitor/request");
+
 function createTaskPlanner({ taskService, llmService, actions, changeTemplates, normalizeChangeParams, planFingerprint, callTool, clock = Date.now }) {
   const sessionGapMs = 5 * 60 * 1000;
   const activeForDedupe = ["pending", "running", "executing", "awaiting_approval", "awaiting_selection", "awaiting_commit"];
@@ -39,7 +41,7 @@ function createTaskPlanner({ taskService, llmService, actions, changeTemplates, 
   function dedupeActiveTask(input) {
     const normalized = normalizeInput(input);
     if (!normalized) return null;
-    const duplicate = taskService.listTasks().find((task) => task.input && activeForDedupe.includes(task.status) && (normalizeInput(task.input) === normalized || distance(normalizeInput(task.input), normalized) <= 3));
+    const duplicate = taskService.listTasks().find((task) => task.type !== "monitor" && task.input && activeForDedupe.includes(task.status) && (normalizeInput(task.input) === normalized || distance(normalizeInput(task.input), normalized) <= 3));
     if (!duplicate) return null;
     duplicate.status = "cancelled";
     duplicate.steps.push("🔁 与新提交任务完全一致，被新任务自动取消");
@@ -54,17 +56,26 @@ function createTaskPlanner({ taskService, llmService, actions, changeTemplates, 
     task.llm = llmService.getCurrent();
     task.decision = `LLM 兜底 → 自由问答（${providerLabel()}）`;
     task.steps.push(task.decision);
-    task.result = { answer: answer || "抱歉，LLM 未能给出回答。您可以换个说法，或试试：设备状态 / 安全策略 / 威胁日志 / 完整巡检 / 封禁 1.2.3.4。", sentTo: source === "feishu" ? "feishu" : "web" };
+    task.result = { answer: answer || "抱歉，LLM 未能给出回答。您可以换个说法，或试试：设备状态 / 安全策略 / 威胁日志 / 深度健康巡检 / 封禁 1.2.3.4。", sentTo: source === "feishu" ? "feishu" : "web" };
     task.status = "done";
     taskService.addTask(task);
     return { taskId: task.id, status: task.status, type: "chat" };
   }
   async function createTaskFromInput(input, firewall, source, options = {}) {
+    const monitor = parseMonitorRequest(input);
+    if (monitor) {
+      const conversation = resolveConversation(options.replyTo);
+      const task = taskService.dispatchTask("monitor", input, { firewall, source, monitor, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, null, (item) => taskService.runMonitor(item));
+      return { taskId: task.id, status: task.status, type: "monitor" };
+    }
     dedupeActiveTask(input);
     const conversation = resolveConversation(options.replyTo);
     let action = null, fromLlm = false, minutes = null, nlogs = null;
     for (const [key, value] of Object.entries(actions)) if (key === input || value.label === input) action = key;
     if (!action) { const resolved = await llmService.resolveAction(input, { conversationId: conversation.conversationId, actions }); if (resolved) { action = resolved.action; minutes = resolved.minutes; fromLlm = Boolean(action); } }
+    if (action === "monitor" || action === "inspect") {
+      throw Object.assign(new Error("无法确定深度巡检范围，请使用明确请求，例如：深度健康巡检 / 深度巡检 威胁日志 最近5分钟"), { code: "MONITOR_INPUT" });
+    }
     if (action === "traffic" && !minutes) {
       const count = String(input).match(/(?:最新|最近)\s*(\d{1,4})\s*条/);
       if (count) nlogs = Math.max(1, Math.min(1000, Number(count[1])));
@@ -83,7 +94,6 @@ function createTaskPlanner({ taskService, llmService, actions, changeTemplates, 
     }
     if (action === "audit") { const audit = await llmService.parseAudit(input); const task = taskService.dispatchTask("audit", input, { firewall, source, audit, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, (item) => { item.llm = llmService.getCurrent(); item.decision = `LLM 规划 → 审计查询（${audit.minutes} 分钟内${audit.object}）（${providerLabel()}）`; item.steps.push(item.decision); }, (item) => taskService.runAudit(item)); return { taskId: task.id, status: task.status, type: "audit" }; }
     if (action === "diag") { const diagnostic = await llmService.parseDiagnostic(input, conversation.conversationId); if (!diagnostic?.type) return createFreeAnswer(input, firewall, source, conversation); const task = taskService.dispatchTask("diag", input, { firewall, source, diag: diagnostic, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, (item) => { item.llm = llmService.getCurrent(); item.decision = `LLM 规划 → 诊断 ${diagnostic.type}（${providerLabel()}）`; item.steps.push(item.decision); }, (item) => taskService.runDiagnostic(item)); return { taskId: task.id, status: task.status, type: "diag" }; }
-    if (action === "inspect") { const task = taskService.dispatchTask("inspect", input, { firewall, source, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, null, (item) => taskService.runInspect(item)); return { taskId: task.id, status: task.status, type: "inspect" }; }
     if (action && actions[action]) { const task = taskService.dispatchTask("query", input, { action, firewall, source, minutes, nlogs, conversationId: conversation.conversationId, replyTo: conversation.replyTo }, (item) => { if (fromLlm) item.llm = llmService.getCurrent(); const detail = minutes ? "，时间窗口 " + minutes + " 分钟" : nlogs ? "，最新 " + nlogs + " 条" : ""; item.decision = fromLlm ? `LLM 规划 → 动作 ${action}（${providerLabel()}）${detail}` : `关键词匹配 → 动作 ${action}${detail}`; item.steps.push(item.decision); }, (item) => taskService.runQuery(item, action)); return { taskId: task.id, status: task.status, type: "query", label: actions[action].label }; }
     return createFreeAnswer(input, firewall, source, conversation);
   }

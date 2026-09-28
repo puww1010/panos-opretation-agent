@@ -426,26 +426,17 @@ test("ten-minute traffic queries keep a compact preview while exposing loaded ro
   assert.deepEqual(service.exportTrafficLogs(31).rows, rows);
 });
 
-test("inspection execution scores collected evidence and writes a report", async () => {
-  let report;
-  const now = new Date(2023, 10, 14, 22, 13).getTime();
-  const service = createTaskService({
-    actionDefinitions: { inspect: { tools: ["get_firewall_info", "get_security_rules", "get_licenses", "get_threat_logs", "get_wildfire_status"] } },
-    toolCaller: async (tool) => ({
-      get_firewall_info: { hostname: "lab-fw", model: "PA-440", "sw-version": "11.2" },
-      get_security_rules: { rules: { entry: [] } }, get_licenses: { licenses: { entry: [] } },
-      get_threat_logs: { entry: [{ receive_time: "2023/11/14 22:12:00" }] }, get_wildfire_status: { raw: "enabled" },
-    })[tool],
-    inspectReportWriter: async (value) => { report = value; return "/tmp/inspect.md"; },
-    taskStore: memoryStore(), auditStore: memoryStore(), clock: () => now,
-  });
-  service.seedTask({ id: 30, type: "inspect", status: "pending", firewall: "lab", steps: [] });
-  await service.runInspect(service.getTask(30));
-  const task = service.getTask(30);
-  assert.equal(task.status, "done");
-  assert.equal(task.result.grade, "优秀");
-  assert.equal(task.result.file, "/tmp/inspect.md");
-  assert.match(report.markdown, /PAN-OS 合规巡检报告/);
+test("legacy inspection history survives loading and saving without being re-executed or rescored", async () => {
+  const result = { grade: "优秀", rate: 100, file: "/tmp/legacy-fixture.md", checks: [{ name: "内容库更新", pass: true }] };
+  const store = memoryStore([{ id: 30, type: "inspect", status: "done", firewall: "lab", steps: [], result }]);
+  const service = createTaskService({ taskStore: store, auditStore: memoryStore() });
+  assert.equal(service.runInspect, undefined);
+  assert.deepEqual(service.getTask(30).result, result);
+  service.saveTask(service.getTask(30));
+  await service.flushPersistence();
+  const restored = createTaskService({ taskStore: store, auditStore: memoryStore() });
+  assert.equal(restored.getTask(30).type, "inspect");
+  assert.deepEqual(restored.getTask(30).result, result);
 });
 
 test("generic diagnostics collect health evidence and synthesize a verdict", async () => {

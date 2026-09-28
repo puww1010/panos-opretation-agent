@@ -98,11 +98,15 @@ def send_reply(text):
 
 def wait_task(task_id, timeout=90):
     """轮询任务直到 done/failed"""
-    end = time.time() + timeout
+    started = time.time()
+    end = started + timeout
     while time.time() < end:
         d = http_json("/api/tasks")
         for t in d.get("tasks", []):
             if t["id"] == task_id:
+                if t.get("type") == "monitor":
+                    # 深度巡检允许 10 分钟采集；额外 1 分钟等待报告落盘。
+                    end = max(end, started + 660)
                 if t["status"] in ("done", "failed", "cancelled"):
                     return t
         time.sleep(5)
@@ -111,6 +115,15 @@ def wait_task(task_id, timeout=90):
 def summarize_task(t):
     status = t.get("status", "")
     typ = t.get("type", "")
+    if typ == "monitor":
+        task_id = t.get("id")
+        try:
+            report = http_json(f"/api/task/{task_id}/monitor/notification")
+            if isinstance(report.get("text"), str) and report["text"]:
+                return report["text"]
+        except Exception:
+            pass
+        return f"深度健康巡检 #{task_id} 的报告暂不可读取，请在控制台查看任务状态。"
     if status == "failed":
         return "❌ 任务失败: " + str(t.get("error", ""))[:300]
     r = t.get("result") or {}
@@ -244,7 +257,7 @@ def main():
         #    全部交给后端 LLM 意图分类 + 自由问答兜底，任何消息都有响应。
         #    仅跳过纯闲聊/表情等明显非运维消息（避免浪费 LLM 调用）。
         if text.strip() in ("test", "测试", "你好", "hello", "hi", "在吗", "谢谢", "感谢"):
-            send_reply("【PA-440 Agent】你好，发送防火墙相关指令即可（如：设备状态 / 安全策略 / 完整巡检 / 封禁 1.2.3.4）\n" + SIGNATURE)
+            send_reply("【PA-440 Agent】你好，发送防火墙相关指令即可（如：设备状态 / 安全策略 / 深度健康巡检 / 封禁 1.2.3.4）\n" + SIGNATURE)
             continue
         print("trigger:", text[:60])
         res = http_json("/api/task", {"query": text, "source": "feishu"})
